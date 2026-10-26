@@ -1,0 +1,124 @@
+{
+  "input": "pipeline_no_historic/pandas_68469/mined/pandas-dev__pandas_68469.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 26441,
+    "output_tokens": 6461,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 68469,
+      "reference": "https://github.com/pandas-dev/pandas/pull/68469",
+      "buggy_commit": "1087a91a531b17a2ce37160cdd09f658f3991ac7",
+      "fixed_commit": "32b3ba3573f72a1e39539f4f26ca11cff324c6f1",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 8765,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce SparseArray.take(allow_fill=True) subtype promotion in pandas at buggy commit 1087a91a531b: identity takes on Sparse[int8,0], Sparse[uint64,0], and datetimelike sparse arrays widen the subtype via type-based np.result_type, so the developer's added tests in pandas/tests/arrays/sparse/test_indexing.py (and groupby first/last in pandas/tests/groupby/test_sparse.py) fail on buggy and pass on fixed. Requires building pandas from source with a NumPy release compatible with that revision; NumPy version is unbounded in the evidence and must be chosen.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain (gcc or clang)",
+            "git"
+          ],
+          "build_commands": [
+            "git checkout 1087a91a531b",
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy has no documented constraint and no era ceiling in the evidence; the choice of a recent NumPy (2.x series, which the COMPAT commit context references as 2.5 deprecating the generic unit) is an inference, not a documented requirement, so it is chosen here and flagged as such",
+            "Cython is needed for the source build; no version is documented, so the latest compatible release is used",
+            "tzdata is only required on Windows/Emscripten and is not numerically relevant on Linux"
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/arrays/sparse/test_indexing.py -k 'preserves_subtype or all_fill or datetimelike or empty or object_subtype or no_gaps' pandas/tests/groupby/test_sparse.py -k 'first_last' -q",
+        "reproducing_test": "pandas/tests/arrays/sparse/test_indexing.py::test_take_fill_preserves_subtype (parametrized over int8, int32, uint16, uint64, float32) and test_take_fill_datetimelike_no_gaps / test_take_fill_datetimelike_subtype, plus pandas/tests/groupby/test_sparse.py::test_sparse_groupby_first_last_preserves_subtype and test_sparse_groupby_first_last_datetimelike",
+        "success_criterion": "On the buggy revision 1087a91a531b the added tests fail: identity take on Sparse[int8,0] yields Sparse[int64,0] so tm.assert_sp_array_equal rejects the dtype change; the uint64 case yields float64 and rounds 2**63+12345; the datetime64[ns] fill yields object; the datetime64[s] case yields datetime64[us]; the no-gaps datetimelike case raises DTypePromotionError. On the fixed revision (the commit that keeps the subtype when the fill position holds fill_value and uses _promote_for_fill for -1 fills) all these tests pass, so the transition is fail-to-pass.",
+        "numerical_probe": "Sparse[uint64,0] with value 2**63+12345 taken at [0,1,2] with allow_fill=True, checking result.dtype.subtype and exact equality of the value",
+        "input_output_examples": [
+          {
+            "input": "arr.take([0, 1, 2], allow_fill=True) on a Sparse[int8, 0] array",
+            "buggy_output": "Sparse[int64, 0]",
+            "expected_output": "Sparse[int8, 0] (identity take should round-trip)"
+          },
+          {
+            "input": "arr.take([0, 1, 2], allow_fill=True) on a Sparse[uint64, 0] array",
+            "buggy_output": "Sparse[float64, 0], rounding values above 2**53",
+            "expected_output": "Sparse[uint64, 0] with values preserved exactly"
+          },
+          {
+            "input": "arr.take([0, 1, 2], allow_fill=True) on a Sparse[datetime64[ns], Timestamp(...)] array",
+            "buggy_output": "Sparse[object] holding raw integers",
+            "expected_output": "Sparse[datetime64[ns]] holding the Timestamp values"
+          },
+          {
+            "input": "arr.take([0, 1, 2], allow_fill=True) on a Sparse[datetime64[s], Timestamp(...)] array",
+            "buggy_output": "Sparse[datetime64[us]]",
+            "expected_output": "Sparse[datetime64[s]]"
+          },
+          {
+            "input": "arr.take([0, 1, 2], allow_fill=True) on a Sparse[datetime64[ns]] array with no gaps",
+            "buggy_output": "DTypePromotionError",
+            "expected_output": "no exception; identity take returns Sparse[datetime64[ns]]"
+          }
+        ],
+        "risks": [
+          "The defect is a dtype-subtype widening, so the test must assert result.dtype.subtype, not only values; value-only checks would pass on buggy code for small integers.",
+          "The uint64 precision loss only shows for values above 2**53; the test's 2**63+12345 value is required, and a smaller value will not transition.",
+          "NumPy version is unbounded in the evidence: the promotion behaviour of np.result_type on Python scalars changed across NumPy 2.x (NEP 50), so a NumPy 1.x environment may not reproduce the same widening and the transition could be absent; pin to a NumPy 2.x release and confirm the buggy failure before trusting the transition.",
+          "The datetimelike and object-subtype behaviour depends on the Timestamp/NaT handling in the buggy revision; if the wheel or build differs, DTypePromotionError may not appear.",
+          "The groupby first/last tests depend on the path through take; if the buggy revision densifies earlier, those tests may pass on buggy and not transition, so verify they fail before relying on them.",
+          "Nothing in the evidence indicates a platform-specific or sanitiser-only behaviour; the defect is pure Python-level dtype logic, so it should reproduce on Linux x86_64 without special flags, but this is an inference from the code path, not a stated fact.",
+          "The commit's numpy 2.5 reference is context only, not a documented constraint; the test may run on any NumPy 2.x that accepts the datetime unit constructors used."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "pandas/tests/arrays/sparse/test_indexing.py assertions via tm.assert_sp_array_equal and dtype equality",
+          "why": "The bug is a dtype and value-preservation transition; the developer's tests use exact equality, and no numerical tolerance is given in the evidence."
+        },
+        "fails_on_buggy": "On 1087a91a531b the identity take promotes the subtype via np.result_type(dtype, type(fill_value)), so tm.assert_sp_array_equal sees a changed dtype (for example int64 for int8, float64 for uint64, object or datetime64[us] for datetimelike) and the assertion fails.",
+        "passes_on_fixed": "On the fixed revision the subtype is kept when the fill position already holds fill_value and datetimelike fills use _promote_for_fill, so the dtype and values match the expected SparseArray and the tests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 9139,
+        "output_tokens": 2404,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 17302,
+        "output_tokens": 4057,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

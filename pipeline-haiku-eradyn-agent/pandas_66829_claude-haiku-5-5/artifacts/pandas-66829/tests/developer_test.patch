@@ -1,0 +1,128 @@
+diff --git a/pandas/tests/indexes/datetimes/methods/test_to_period.py b/pandas/tests/indexes/datetimes/methods/test_to_period.py
+index 84d34d80d024e..0a817871be73b 100644
+--- a/pandas/tests/indexes/datetimes/methods/test_to_period.py
++++ b/pandas/tests/indexes/datetimes/methods/test_to_period.py
+@@ -7,6 +7,7 @@
+ from pandas._libs.tslibs.ccalendar import MONTHS
+ from pandas._libs.tslibs.offsets import MonthEnd
+ from pandas._libs.tslibs.period import INVALID_FREQ_ERR_MSG
++from pandas.errors import OutOfBoundsDatetime
+ 
+ from pandas import (
+     DatetimeIndex,
+@@ -210,6 +211,14 @@ def test_to_period_millisecond(self):
+         assert period[0] == Period("2007-01-01 10:11:12.123Z", "ms")
+         assert period[1] == Period("2007-01-01 10:11:13.789Z", "ms")
+ 
++    def test_to_period_out_of_bounds_ordinal(self):
++        # GH#64158 the nanosecond ordinal overflows int64 for these dates; the
++        #  overflow used to be swallowed, giving 1970 epoch periods
++        dti = date_range("2300-01-01", periods=2, freq="D", unit="s")
++        msg = "Out of bounds nanosecond timestamp: 2300-01-01"
++        with pytest.raises(OutOfBoundsDatetime, match=msg):
++            dti.to_period("ns")
++
+     def test_to_period_microsecond(self):
+         index = DatetimeIndex(
+             [
+diff --git a/pandas/tests/indexes/datetimes/methods/test_tz_convert.py b/pandas/tests/indexes/datetimes/methods/test_tz_convert.py
+index 190149cae09ff..ca53b7fabcc58 100644
+--- a/pandas/tests/indexes/datetimes/methods/test_tz_convert.py
++++ b/pandas/tests/indexes/datetimes/methods/test_tz_convert.py
+@@ -383,21 +383,23 @@ def dti_local_on_sentinel():
+ 
+ 
+ @pytest.mark.parametrize(
+-    "func",
++    "func, msg",
+     [
+-        lambda dti: dti.tz_localize(None),
+-        lambda dti: dti.year,
+-        lambda dti: dti.floor("D"),
+-        lambda dti: dti.to_period("ns"),
++        (lambda dti: dti.tz_localize(None), "underflows past"),
++        (lambda dti: dti.year, "underflows past"),
++        (lambda dti: dti.floor("D"), "underflows past"),
++        # to_period rejects the wall time as out of bounds for the frequency
++        #  before it gets as far as an ordinal
++        (lambda dti: dti.to_period("ns"), "Out of bounds nanosecond timestamp"),
+     ],
+     ids=["tz_localize", "year", "floor", "to_period_ns"],
+ )
+ @pytest.mark.filterwarnings("ignore:Converting to PeriodArray:UserWarning")
+-def test_dti_local_on_sentinel_raises_where_stored(dti_local_on_sentinel, func):
++def test_dti_local_on_sentinel_raises_where_stored(dti_local_on_sentinel, func, msg):
+     # GH#66550 the wall time is fine to render, but these consumers store it in
+     #  an i8 buffer where the sentinel reads back as NaT -- tz_localize(None) and
+     #  to_period("ns") silently returned NaT, and the field accessors returned -1.
+-    with pytest.raises(OutOfBoundsDatetime, match="underflows past"):
++    with pytest.raises(OutOfBoundsDatetime, match=msg):
+         func(dti_local_on_sentinel)
+ 
+ 
+diff --git a/pandas/tests/indexes/period/test_constructors.py b/pandas/tests/indexes/period/test_constructors.py
+index 2149502c22923..b3895caef107e 100644
+--- a/pandas/tests/indexes/period/test_constructors.py
++++ b/pandas/tests/indexes/period/test_constructors.py
+@@ -434,6 +434,19 @@ def test_constructor_int_array_out_of_bounds(self):
+                 result = PeriodIndex(np.array([val], dtype=np.int64), freq="Y")
+             assert result.asi8[0] == val - 1970
+ 
++    @pytest.mark.filterwarnings(
++        "ignore:Passing integer data:pandas.errors.Pandas4Warning"
++    )
++    @pytest.mark.parametrize("dtype", [np.int64, object])
++    def test_constructor_int_array_out_of_bounds_ordinal(self, dtype):
++        # GH#64158 year 2300 is representable at most freqs but its nanosecond
++        #  ordinal overflows int64; the overflow used to be swallowed, giving
++        #  a 1970 epoch entry in the middle of valid ones
++        arr = np.array([2000, 2300, 2001], dtype=dtype)
++        msg = "Out of bounds nanosecond timestamp: 2300-01-01"
++        with pytest.raises(OutOfBoundsDatetime, match=msg):
++            PeriodIndex(arr, freq="ns")
++
+     @pytest.mark.parametrize("box", [None, "series", "index"])
+     def test_constructor_datetime64arr_ok(self, box):
+         # https://github.com/pandas-dev/pandas/issues/23438
+diff --git a/pandas/tests/scalar/period/test_period.py b/pandas/tests/scalar/period/test_period.py
+index ca96f84b276a0..40014c6fab121 100644
+--- a/pandas/tests/scalar/period/test_period.py
++++ b/pandas/tests/scalar/period/test_period.py
+@@ -174,6 +174,37 @@ def test_construction_from_timestamp_nanos(self):
+         rt2 = per2.to_timestamp()
+         assert rt2.asm8 == dt64
+ 
++    @pytest.mark.parametrize(
++        "freq",
++        ["Y", "Q-DEC", "M", "W-SUN", "D", "h", "min", "s", "ms", "us", "ns"],
++    )
++    @pytest.mark.parametrize(
++        "year", [2**31 - 1, -(2**31), 300000, -300000, 9999, 2263, 1677]
++    )
++    def test_construction_extreme_years_never_silent(self, freq, year):
++        # GH#64158 an ordinal that overflows int64 used to come back as 0,
++        #  i.e. a 1970 period, instead of raising
++        try:
++            per = Period(year=year, month=1, day=1, freq=freq)
++        except (OutOfBoundsDatetime, OverflowError):
++            return
++        assert per.year == year
++
++    @pytest.mark.parametrize("value", ["2300-01-01", "1600-01-01"])
++    def test_construction_out_of_bounds_ordinal(self, value):
++        # GH#64158 the ordinal overflows int64 at nanosecond freq; the C
++        #  conversion detected it but the error was swallowed, so we got a
++        #  1970 epoch Period instead
++        msg = f"Out of bounds nanosecond timestamp: {value}"
++        with pytest.raises(OutOfBoundsDatetime, match=msg):
++            Period(value, freq="ns")
++
++    def test_construction_out_of_bounds_ordinal_from_fields(self):
++        # GH#64158 same, for the year/month/day keywords
++        msg = "Out of bounds microsecond timestamp: 300000-01-01"
++        with pytest.raises(OutOfBoundsDatetime, match=msg):
++            Period(year=300000, month=1, day=1, freq="us")
++
+     @pytest.mark.parametrize("freq", ["ms", "us", "ns"])
+     def test_construction_from_min_timestamp(self, freq):
+         # GH-63278

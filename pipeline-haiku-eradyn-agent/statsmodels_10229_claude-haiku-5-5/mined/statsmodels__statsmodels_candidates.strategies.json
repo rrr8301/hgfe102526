@@ -1,0 +1,121 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/statsmodels_10229_claude-haiku-5-5/mined/statsmodels__statsmodels_10229.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 18163,
+    "output_tokens": 6798,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10229,
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10229",
+      "buggy_commit": "522283ef64247f8d465b766684f01631c34b1561",
+      "fixed_commit": "a0e465d212006e3de3af37958444d1f3b2d85ccb",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7742,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the Probit clipped-cdf defect by building statsmodels from source at buggy commit 522283ef6424 (Cython extensions must be compiled) and running the two new tests in statsmodels/discrete/tests/test_discrete.py. On the buggy revision, loglikeobs is clipped to log(eps) for z below about -8, so it disagrees with norm.logcdf at z=-1e4, and the hessian produces nan/exception under warnings-as-errors. On the fixed revision, log_ndtr gives exact values, the Mills-ratio score matches, and both newton and bfgs converge. Python version was not stated, so it is left null; the plan assumes a modern CPython (3.10 to 3.12) with numpy and scipy versions recent enough to pass the 1.8.1 floor. Numpy and statsmodels are unbounded in the evidence, so the plan takes the latest compatible releases of each.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "scipy>=1.8.1",
+            "pytest",
+            "pandas",
+            "patsy",
+            "cython",
+            "setuptools",
+            "wheel"
+          ],
+          "system_packages": [
+            "a C compiler (gcc or clang) and a Fortran-free BLAS/LAPACK (e.g. OpenBLAS) available to the Python build"
+          ],
+          "build_commands": [
+            "git checkout 522283ef6424",
+            "python -m pip install -U pip setuptools wheel cython numpy scipy pandas patsy pytest",
+            "python -m pip install -e . --no-build-isolation  (or python setup.py build_ext --inplace if pip editable fails; see INSTALL.txt)"
+          ],
+          "pinned_because": [
+            "scipy>=1.8.1: documented only as a min-version check run in the PR disclosure, not as a pinned constraint; treated as a floor, not an exact pin, because log_ndtr/norm.logcdf must exist and the reference values come from it",
+            "numpy: unbounded in evidence (no documented constraint, no era table entry); chose the latest release compatible with the build, and this choice is not evidenced",
+            "statsmodels: built from the buggy commit itself, so no version pin is needed; the Python version is unstated and is also a choice, not evidence"
+          ]
+        },
+        "test_command": "pytest statsmodels/discrete/tests/test_discrete.py -k \"probit_loglikeobs_extreme_linpred or probit_extreme_observation_fit\" -v",
+        "reproducing_test": "test_probit_loglikeobs_extreme_linpred (linspace z in [-1e4,1e4], n=50, y all ones; asserts finiteness of loglikeobs/score_obs/hessian under warnings-as-errors and agreement with stats.norm.logcdf at rtol=1e-14, plus Mills-ratio score at rtol=1e-12) and test_probit_extreme_observation_fit (n=300 reproducer data plus one extra observation x=40.0, y=0; checks loglike, score, hessian against exact formulas, finite-difference checks via approx_fprime_cs and approx_hess, and newton/bfgs fits against scipy.optimize.minimize)",
+        "success_criterion": "Transition: on the buggy revision 522283ef6424 both new tests FAIL. test_probit_loglikeobs_extreme_linpred fails because loglikeobs is clipped at log(eps) for large negative z, so assert_allclose against norm.logcdf fails, and/or the hessian raises or is nan under warnings-as-errors. test_probit_extreme_observation_fit fails on loglike/score mismatch at params [0,1.5] or on nan hessian/bse. On the fixed revision (the commit that switches Probit to log_ndtr with the Mills-ratio score) both tests PASS, and newton and bfgs both converge to the exact optimum with finite bse.",
+        "numerical_probe": "Run the two tests as the single pytest selection above; the pass/fail transition is the decision. Do not inspect printed numbers.",
+        "input_output_examples": [
+          {
+            "input": "params = np.array([0.0, 1.5]) with reproducer data (n=300, one extra observation x=40.0, y=0)",
+            "buggy_output": "model.loglike(params) = -155.934",
+            "expected_output": "-1924.904 (stats.norm.logcdf(z).sum())"
+          },
+          {
+            "input": "params = np.array([0.0, 1.5]) with reproducer data",
+            "buggy_output": "model.score(params) = [-4.874, 7.393]",
+            "expected_output": "[-64.891, -2393.273]"
+          },
+          {
+            "input": "params = np.array([0.0, 1.5]) with reproducer data",
+            "buggy_output": "np.isnan(model.hessian(params)).any() = True",
+            "expected_output": "False (hessian finite)"
+          },
+          {
+            "input": "model.fit(method=\"bfgs\", disp=0) with reproducer data",
+            "buggy_output": "params [-0.036, 1.72], bse [nan nan], llf -155.067",
+            "expected_output": "params [-0.129, 0.077], llf -202.674, finite bse"
+          }
+        ],
+        "risks": [
+          "Platform/architecture: the defect is a pure algorithmic clip-versus-log_ndtr difference and should reproduce on x86_64 and arm64 alike, but the hessian nan at z below -38 depends on exp/log underflow behaviour and BLAS path; if the test fails only on a non-default platform, that will not transfer.",
+          "Warnings-as-errors: on the buggy revision the hessian may raise FloatingPointError/RuntimeWarning as an exception rather than returning nan; either way the test fails, but the failure mode differs and should not be read as a numerical mismatch.",
+          "Build: statsmodels is Cython and needs a compiled build of the buggy commit; a stale build from a different commit would invalidate the transition.",
+          "Reproducer values (-1924.904, -155.934, optimum values) come from the issue text and depend on numpy default_rng(1) draws; the issue reproducer code is truncated in one passage, so the exact draws are reconstructed from the test diff, not verified.",
+          "scipy: the 1.8.1 floor is a documented check run in the PR disclosure, not a pinned constraint; an older scipy lacking log_ndtr-based norm.logcdf behaviour could change results and was not tested.",
+          "The fit test depends on approx_fprime_cs and approx_hess from statsmodels.tools.numdiff at the buggy commit; if their signatures differ, the test may error for reasons unrelated to the bug.",
+          "The first test also uses the module-level 'sm' and 'warnings' names; if these are not imported in test_discrete.py at the buggy revision, the test errors instead of failing on the numerical assertion.",
+          "Python version, numpy and statsmodels versions are unstated; the chosen latest-release installs are a reproduction choice, not evidence about the observation era."
+        ],
+        "oracle": {
+          "kind": "relative",
+          "tolerance": "rtol=1e-14 for loglikeobs vs norm.logcdf in test_probit_loglikeobs_extreme_linpred; rtol=1e-12 for loglike and score in the fit test; rtol=1e-8 for complex-step score check; rtol=1e-4 for hessian finite-difference check; rtol=1e-4 for fitted params",
+          "reference_source": "scipy.stats.norm.logcdf / scipy.special log_ndtr and norm.logpdf, plus scipy.optimize.minimize on the exact log-likelihood",
+          "why": "Exact log-probabilities are the reference; the Mills ratio exp(logpdf - logcdf) is the exact score factor. The tolerance on the 1e-14 check is tight, so the fixed code must match log_ndtr to near machine precision."
+        },
+        "fails_on_buggy": "On 522283ef6424 the clipped cdf gives loglikeobs equal to log(eps) = -36.04 for z around -1e4, which is finite, so the isfinite asserts pass; the assert_allclose against norm.logcdf at rtol=1e-14 then fails. The hessian at z below -38 is 0/0 nan, which triggers an error under warnings.simplefilter('error') or fails the isfinite check. In the fit test, the loglike mismatch at params [0,1.5] (-155.934 vs -1924.904) fails the first assert_allclose, before the optimizer checks.",
+        "passes_on_fixed": "On the fixed revision, loglikeobs equals norm.logcdf(z) at rtol=1e-14, the score equals the Mills-ratio form, the hessian is finite, and the approx_fprime_cs and approx_hess checks agree. Newton and bfgs both converge to the exact optimum near [-0.129, 0.077] with llf about -202.674 and finite bse, so both tests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6709,
+        "output_tokens": 4077,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 11454,
+        "output_tokens": 2721,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

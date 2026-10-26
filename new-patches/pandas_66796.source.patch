@@ -1,0 +1,42 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 4434e56157683..cf63941b618be 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -714,6 +714,7 @@ I/O
+ - Bug in :meth:`DataFrame.__repr__` raising ``TypeError`` for a column with a NumPy structured dtype (e.g. produced by :meth:`DataFrame.from_records` from a structured ``ndarray``) (:issue:`55011`)
+ - Bug in :meth:`DataFrame.__repr__` where horizontally truncated output could exceed the terminal width by up to 4 characters (:issue:`32461`)
+ - Bug in :meth:`DataFrame.to_json` and :meth:`Series.to_json` with ``orient="table"`` silently dropping the timezone of columns with a fixed-offset timezone (e.g. ``datetime.timezone(timedelta(hours=1))``), so the offset was lost on round-trip through :func:`read_json` (:issue:`39537`)
++- Bug in :meth:`DataFrame.to_json` and :meth:`Series.to_json` writing unsigned NumPy integer scalars stored in ``object`` dtype as negative numbers when they exceeded the signed ``int64`` maximum (:issue:`66142`)
+ - Bug in :meth:`DataFrame.to_stata` raising ``KeyError`` when column names require renaming and ``convert_dates`` is specified for a different column (:issue:`60536`)
+ - Bug in :meth:`DataFrame.to_string` where ``formatters`` dict was applied to wrong columns when output was horizontally truncated via ``max_cols`` (:issue:`35410`)
+ - Fixed :func:`read_json` with ``lines=True`` and ``nrows=0`` to return an empty DataFrame (:issue:`64025`)
+diff --git a/pandas/_libs/src/vendored/ujson/python/objToJSON.c b/pandas/_libs/src/vendored/ujson/python/objToJSON.c
+index 0e98944c1f486..8783c6f9a0eea 100644
+--- a/pandas/_libs/src/vendored/ujson/python/objToJSON.c
++++ b/pandas/_libs/src/vendored/ujson/python/objToJSON.c
+@@ -1814,6 +1814,25 @@ static void Object_beginTypeContext(JSOBJ _obj, JSONTypeContext *tc) {
+       tc->type = JT_LONG;
+     }
+     pc->longValue = value;
++    return;
++  } else if (PyArray_IsScalar(obj, UnsignedInteger)) {
++    // GH#66142 casting to int64 would silently wrap values above int64 max;
++    // hand those to JT_BIGNUM, which prints the exact digits via str().
++    npy_uint64 uintValue;
++    PyArray_CastScalarToCtype(obj, &uintValue,
++                              PyArray_DescrFromType(NPY_UINT64));
++
++    if (PyErr_Occurred() && PyErr_ExceptionMatches(PyExc_OverflowError)) {
++      goto INVALID;
++    }
++
++    if (uintValue > (npy_uint64)NPY_MAX_INT64) {
++      tc->type = JT_BIGNUM;
++    } else {
++      pc->longValue = (JSINT64)uintValue;
++      tc->type = JT_LONG;
++    }
++
+     return;
+   } else if (PyArray_IsScalar(obj, Integer)) {
+     tc->type = JT_LONG;

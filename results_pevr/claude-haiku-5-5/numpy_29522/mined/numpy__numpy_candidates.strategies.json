@@ -1,0 +1,104 @@
+{
+  "input": "pipeline_no_historic/numpy_29522/mined/numpy__numpy_29522.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 21959,
+    "output_tokens": 6987,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "numpy/numpy",
+      "pr_number": 29522,
+      "reference": "https://github.com/numpy/numpy/pull/29522",
+      "buggy_commit": "f6c2bb97146adb8f8e1a65cd6fccd2a12976ba40",
+      "fixed_commit": "0653d084c7182480d317097099d5ad9509a766bc",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6338,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the Generator.binomial inversion-branch defect at n=5e10, p=5e-17 by building NumPy from source at the buggy commit f6c2bb97146a, applying the PR's test_p_extremely_small, and running that single test. On the buggy revision 1.0 - 5e-17 rounds to exactly 1.0 in double precision, so log(q)=0 and every draw is 0, giving mean 0 against an expected 2.5e-6 and a 6-sigma failure. On the fixed revision log1p(-p) keeps the signal, the mean is about 2.25e-6, and the test passes. The legacy np.random.binomial path is kept unchanged and stays at zero, so it is not a valid probe of the fix.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "meson-python",
+            "cython",
+            "ninja",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "a C compiler (gcc or clang)",
+            "git"
+          ],
+          "build_commands": [
+            "git checkout f6c2bb97146a",
+            "git submodule update --init --recursive",
+            "python -m pip install -r requirements/build_requirements.txt",
+            "python -m pip install pytest hypothesis",
+            "python -m pip install --no-build-isolation -e . -Csetup-args=-Dbuildtype=release"
+          ],
+          "pinned_because": [
+            "Build requirements (meson-python, Cython, etc.) are pinned by the requirements/build_requirements.txt or pyproject.toml present at the buggy commit; this is era-inferred, not a documented constraint, so use that file's versions rather than latest.",
+            "pytest and hypothesis are documented in README.md as required, with no version constraint; latest versions are chosen and stated here as a choice."
+          ]
+        },
+        "test_command": "python -m pytest numpy/random/tests/test_generator_mt19937.py -k test_p_extremely_small -v",
+        "reproducing_test": "numpy/random/tests/test_generator_mt19937.py::TestBinomial::test_p_extremely_small (added by the PR diff; apply the diff before running)",
+        "success_criterion": "On buggy f6c2bb97146a with the test applied, the test FAILS on the assertion abs(expected_mean - sample_mean) < 6*sigma, because the sample mean is 0 and expected_mean is 2.5e-6 while 6*sigma is about 2.1e-6. On the fixed revision (the PR merge that uses log1p(-p) in random_binomial_inversion), the same test PASSES because the sample mean is about 2.25e-6 and the deviation is well below 6*sigma. The transition is buggy FAIL to fixed PASS.",
+        "numerical_probe": "Run Generator.binomial(50000000000, 5e-17, size=20000000) and check the mean against n*p. Buggy gives 0.0; fixed gives about 2.25e-6. Also confirm 1.0 - 5e-17 == 1.0 in Python to explain the cancellation.",
+        "input_output_examples": [
+          {
+            "input": "n = 50000000000; p = 5e-17; sample_size = 20000000; x = random.binomial(n, p, size=sample_size) (Generator)",
+            "buggy_output": "x.max() == 0 and x.mean() == 0.0",
+            "expected_output": "Sample mean near n*p = 2.4999999999999998e-06; fixed Generator gives mean about 2.25e-06"
+          }
+        ],
+        "risks": [
+          "The buggy-revision failure depends on the C inversion path being taken (n*p = 2.5e-6 <= 30) and on the floating-point rounding of 1 - 5e-17 to 1.0. Any platform or build that uses extended-precision intermediates for q could change the outcome; the transition is expected on standard IEEE-754 double x86_64 and aarch64 builds, but this is not tested here.",
+          "The test's assertion relies on sampling 20 million draws, so runtime is noticeable. The sample mean is only about 50 nonzero hits, so the discrimination is statistical; the 6-sigma margin separates buggy 0 from fixed 2.25e-6 by roughly 0.4e-6 against a threshold of about 2.1e-6.",
+          "The test as written does not set a seed; it depends on the seeded Generator fixture in the test module. If the fixture is unseeded, the fixed revision could in principle fail at the 6-sigma tail, so verify the seed setup at the buggy commit.",
+          "The test_command given in the environment (python -c 'import numpy; numpy.test()') is not a valid selector for this defect and was not used; numpy.test() is not a supported entry point in this codebase.",
+          "Legacy np.random.binomial still returns zeros after the fix by design (legacy_random_binomial_inversion), so it cannot distinguish buggy from fixed; the probe must use Generator.binomial.",
+          "The PR date is not given, so the exact era of the buggy commit cannot be confirmed; the build requirements at f6c2bb97146a are the authority for build pins.",
+          "The C source files changed by the diff (distributions.c and legacy-distributions.c) mean that a stale editable build will silently test the wrong behaviour; rebuild after checkout before running the test."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "abs(expected_mean - sample_mean) < 6*sigma, with sigma = sqrt(n*p*(1-p)/sample_size)",
+          "reference_source": "PR test test_p_extremely_small in numpy/random/tests/test_generator_mt19937.py",
+          "why": "The test compares the sample mean with the analytic mean n*p using a 6-sigma binomial bound, so the buggy zero mean fails and the fixed mean passes."
+        },
+        "fails_on_buggy": "The test's 6-sigma assertion sees sample_mean = 0.0 on the buggy revision, since 1.0 - 5e-17 rounds to 1.0 so q is exactly 1 and log(q)=0 makes every draw 0. |2.5e-6 - 0| = 2.5e-6 exceeds 6*sigma of about 2.1e-6, so the assertion fails.",
+        "passes_on_fixed": "On the fixed revision, the inversion uses log1p(-p), which preserves the small probability, and the sample mean is about 2.25e-6. The deviation is about 2.5e-7, well below 6*sigma of about 2.1e-6, so the assertion passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4808,
+        "output_tokens": 3694,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 17151,
+        "output_tokens": 3293,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

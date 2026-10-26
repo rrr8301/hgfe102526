@@ -1,0 +1,99 @@
+{
+  "input": "pipeline-gpt-5.4-nano/jax_25791_gpt-5.4-nano/mined/jax-ml__jax_25791.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 8425,
+    "output_tokens": 2898,
+    "cost_usd": 0.005307,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "jax-ml/jax",
+      "pr_number": 25791,
+      "reference": "https://github.com/jax-ml/jax/pull/25791",
+      "buggy_commit": "8f2f4b45fb07b2e1ad74909573142b8119471fa6",
+      "fixed_commit": "aed79707e29451156058025c0a5d349493fd8669",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 5557,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the JAX special-value bug where the gradient of logsumexp with a boolean `where` mask leaks NaN into masked-out positions; ensure the project's added test `testLogSumExpWhereGrad` fails on buggy commit 8f2f4b45fb07 and passes on the fixed revision from PR #25791.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "jax",
+            "jaxlib",
+            "numpy"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip",
+            "pip install -U numpy",
+            "pip install -U jax jaxlib",
+            "pip install -e ."
+          ],
+          "pinned_because": [
+            "The bug is in JAX\u2019s implementation and its gradient rules; reproducing requires installing the exact buggy source revision and then running the repo\u2019s own test suite on CPU/GPU as available. No specific Python/XLA version is stated in the evidence, so keep versions unpinned unless your CI requires pinning for compatibility."
+          ]
+        },
+        "test_command": "python -m pytest -q tests/lax_scipy_test.py -k \"testLogSumExpWhereGrad\"",
+        "reproducing_test": "In `tests/lax_scipy_test.py`, run: `testLogSumExpWhereGrad` which computes `g = jax.grad(lambda x: lsp_special.logsumexp(x, where=jnp.arange(5) < 4))(x)` for `x = jnp.array([0., 0., 0., 0., 100.])` and asserts `g == jnp.array([0.25, 0.25, 0.25, 0.25, 0.])`.",
+        "success_criterion": "On buggy revision (commit `8f2f4b45fb07`), `testLogSumExpWhereGrad` should fail because the gradient at the masked-out index (where is False, index 4) is not `0` (often NaN/invalid). On the fixed revision from PR #25791, the test should pass because the implementation projects masked-out inputs (`a = jnp.where(where, a, 0)`), making the gradient at masked-out positions exactly zero.",
+        "numerical_probe": "Use the test\u2019s own gradient assertion: `g = jax.grad(lambda x: logsumexp(x, where=jnp.arange(5) < 4))(x)` and check that `g` equals `[0.25, 0.25, 0.25, 0.25, 0.]` with `assertAllClose`. The key transition is whether masked-out index 4 produces a non-zero/NaN gradient versus zero.",
+        "input_output_examples": [
+          {
+            "input": "x = jnp.array([0., 0., 100.]); where = jnp.array([True, True, False])",
+            "buggy_output": "[0.5, 0.5, nan]",
+            "expected_output": "[0.5, 0.5, 0.0]"
+          },
+          {
+            "input": "x = jnp.array([0., 0., 0., 0., 100.]); where = jnp.arange(5) < 4",
+            "buggy_output": "Not specified (test should fail on buggy revision due to masked-out gradient at index 4 not being 0).",
+            "expected_output": "[0.25, 0.25, 0.25, 0.25, 0.0]"
+          }
+        ],
+        "risks": [
+          "Platform/toolchain risk: evidence mentions XLA and GPU/TPU execution generally, but does not state that the bug is GPU/TPU-specific. If your environment runs only CPU and the bug reproduces only on GPU/TPU, the test may not transition. Try enabling GPU/TPU if available in CI or set the JAX platform accordingly.",
+          "Dtype risk: the evidence does not specify dtype requirements; the test uses float literals, so it likely runs float32/float64 depending on JAX defaults. If a fixed bug is dtype-specific, you may need to force dtype in the test environment (not part of the provided diff).",
+          "Versioning risk: the evidence does not provide exact Python/jaxlib/XLA versions. You must check out the buggy commit `8f2f4b45fb07` and the fixed commit from PR #25791 to guarantee the transition; otherwise outcomes may vary.",
+          "Mask/where semantics risk: the reproduction relies on `where` being not-None and having at least one False element; the test\u2019s `jnp.arange(5) < 4` satisfies this by masking out index 4. Do not alter this in the reproduction."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "Project test oracle in `tests/lax_scipy_test.py::testLogSumExpWhereGrad` expecting `jnp.array([0.25, 0.25, 0.25, 0.25, 0.])`. Failure is detected by `self.assertAllClose` on the whole gradient array.",
+          "why": "The bug fix is explicitly described as ensuring gradient produces 0s where `where` is False; the provided test asserts the exact expected gradient vector."
+        },
+        "fails_on_buggy": "On `8f2f4b45fb07`, `testLogSumExpWhereGrad` should fail because the gradient at the masked-out element (index 4 where `where=False`) is not `0` (evidence indicates NaN can appear in masked positions, e.g., `[0.5, 0.5, nan]` for a smaller example). The test\u2019s `assertAllClose(g, [0.25,0.25,0.25,0.25,0.])` will therefore fail.",
+        "passes_on_fixed": "On the PR #25791 fixed revision, the test should pass because masked-out inputs are projected to 0 before further logsumexp computations, preventing NaNs from leaking into masked-out gradients and yielding `g == [0.25, 0.25, 0.25, 0.25, 0.]`."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 2547,
+        "output_tokens": 1278,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002107
+      },
+      "miner_usage": {
+        "input_tokens": 5878,
+        "output_tokens": 1620,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0032,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+diff --git a/scipy/_lib/_array_api.py b/scipy/_lib/_array_api.py
+index a73ad16f4af9..54033aee0092 100644
+--- a/scipy/_lib/_array_api.py
++++ b/scipy/_lib/_array_api.py
+@@ -628,6 +628,20 @@ def xp_default_dtype(xp):
+         return xp.float64
+ 
+ 
++def xp_result_device(*args):
++    """Return the device of an array in `args`, for the purpose of
++    input-output device propagation.
++    If there are multiple devices, return an arbitrary one.
++    If there are no arrays, return None (this typically happens only on NumPy).
++    """
++    for arg in args:
++        # Do not do a duck-type test for the .device attribute, as many backends today
++        # don't have it yet. See workarouunds in array_api_compat.device().
++        if is_array_api_obj(arg):
++            return xp_device(arg)
++    return None
++
++
+ def is_marray(xp):
+     """Returns True if `xp` is an MArray namespace; False otherwise."""
+     return "marray" in xp.__name__
+diff --git a/scipy/_lib/_util.py b/scipy/_lib/_util.py
+index 2de7552b45d9..79b916757e8e 100644
+--- a/scipy/_lib/_util.py
++++ b/scipy/_lib/_util.py
+@@ -12,7 +12,8 @@
+ 
+ import numpy as np
+ from scipy._lib._array_api import (Array, array_namespace, is_lazy_array,
+-                                   is_numpy, is_marray, xp_size, xp_result_type)
++                                   is_numpy, is_marray, xp_result_device,
++                                   xp_size, xp_result_type)
+ from scipy._lib._docscrape import FunctionDoc, Parameter
+ from scipy._lib._sparse import issparse
+ 
+@@ -1009,11 +1010,14 @@ def _rng_spawn(rng, n_children):
+     return child_rngs
+ 
+ 
+-def _get_nan(*data, xp=None):
++def _get_nan(*data, shape=(), xp=None):
+     xp = array_namespace(*data) if xp is None else xp
+     # Get NaN of appropriate dtype for data
+     dtype = xp_result_type(*data, force_floating=True, xp=xp)
+-    res = xp.asarray(xp.nan, dtype=dtype)[()]
++    device = xp_result_device(*data)
++    res = xp.full(shape, xp.nan, dtype=dtype, device=device)
++    if not shape:
++        res = res[()]
+     # whenever mdhaber/marray#89 is resolved, could just return `res`
+     return res.data if is_marray(xp) else res
+ 
+diff --git a/scipy/stats/_stats_py.py b/scipy/stats/_stats_py.py
+index 84aa28749a9e..561ae7821f44 100644
+--- a/scipy/stats/_stats_py.py
++++ b/scipy/stats/_stats_py.py
+@@ -6762,8 +6762,7 @@ def ttest_ind(a, b, *, axis=0, equal_var=True, nan_policy='propagate',
+         raise NotImplementedError(message)
+ 
+     result_shape = _broadcast_array_shapes_remove_axis((a, b), axis=axis)
+-    NaN = xp.full(result_shape, _get_nan(a, b, xp=xp))
+-    NaN = NaN[()] if NaN.ndim == 0 else NaN
++    NaN = _get_nan(a, b, shape=result_shape, xp=xp)
+     if xp_size(a) == 0 or xp_size(b) == 0:
+         return TtestResult(NaN, NaN, df=NaN, alternative=NaN,
+                            standard_error=NaN, estimate=NaN)
+diff --git a/scipy/stats/_variation.py b/scipy/stats/_variation.py
+index 09f18f6896d9..595098c5a3ee 100644
+--- a/scipy/stats/_variation.py
++++ b/scipy/stats/_variation.py
+@@ -103,22 +103,20 @@ def variation(a, axis=0, nan_policy='propagate', ddof=0, *, keepdims=False):
+         axis = 0
+ 
+     n = a.shape[axis]
+-    NaN = _get_nan(a)
+ 
+     if a.size == 0 or ddof > n:
+         # Handle as a special case to avoid spurious warnings.
+         # The return values, if any, are all nan.
+-        shp = list(a.shape)
+-        shp.pop(axis)
+-        result = xp.full(shp, fill_value=NaN)
+-        return result[()] if result.ndim == 0 else result
++        shape = list(a.shape)
++        shape.pop(axis)
++        return _get_nan(a, shape=tuple(shape), xp=xp)
+ 
+     mean_a = xp.mean(a, axis=axis)
+ 
+     if ddof == n:
+         # Another special case.  Result is either inf or nan.
+         std_a = xp.std(a, axis=axis, correction=0)
+-        result = xp.where(std_a > 0, xp.copysign(xp.inf, mean_a), NaN)
++        result = xp.where(std_a > 0, xp.copysign(xp.inf, mean_a), xp.nan)
+         return result[()] if result.ndim == 0 else result
+ 
+     with np.errstate(divide='ignore', invalid='ignore'):

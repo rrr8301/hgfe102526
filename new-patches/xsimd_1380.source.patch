@@ -1,0 +1,99 @@
+diff --git a/include/xsimd/arch/common/xsimd_common_arithmetic.hpp b/include/xsimd/arch/common/xsimd_common_arithmetic.hpp
+index 6e2b41812..0c4d2c437 100644
+--- a/include/xsimd/arch/common/xsimd_common_arithmetic.hpp
++++ b/include/xsimd/arch/common/xsimd_common_arithmetic.hpp
+@@ -398,7 +398,12 @@ namespace xsimd
+         {
+             if (std::is_signed_v<T>)
+             {
+-                return sadd(self, -other);
++                // Saturating self - other, mirroring the signed sadd above.
++                // sadd(self, -other) is wrong when other == numeric_limits<T>::min(),
++                // since -other is not representable.
++                auto self_underflow_branch = max(std::numeric_limits<T>::min() + other, self);
++                auto self_overflow_branch = min(std::numeric_limits<T>::max() + other, self);
++                return select(other >= 0, self_underflow_branch, self_overflow_branch) - other;
+             }
+             else
+             {
+diff --git a/include/xsimd/arch/xsimd_avx.hpp b/include/xsimd/arch/xsimd_avx.hpp
+index 814452cea..84b1ba3a0 100644
+--- a/include/xsimd/arch/xsimd_avx.hpp
++++ b/include/xsimd/arch/xsimd_avx.hpp
+@@ -1718,9 +1718,20 @@ namespace xsimd
+         template <class A, class T, class = std::enable_if_t<std::is_integral_v<T>>>
+         XSIMD_INLINE batch<T, A> ssub(batch<T, A> const& self, batch<T, A> const& other, requires_arch<avx>) noexcept
+         {
+-            if (std::is_signed_v<T>)
++            // 8 and 16 bit saturating subtraction has dedicated SSE2 instructions,
++            // wider types have none, so only those take the generic sequence below.
++            if constexpr (sizeof(T) <= 2)
++            {
++                return detail::fwd_to_sse([](__m128i s, __m128i o) noexcept
++                                          { return ssub(batch<T, sse4_2>(s), batch<T, sse4_2>(o)); },
++                                          self, other);
++            }
++            else if (std::is_signed_v<T>)
+             {
+-                return sadd(self, -other);
++                auto mask = (other >> (8 * sizeof(T) - 1));
++                auto self_overflow_branch = min(std::numeric_limits<T>::max() + other, self);
++                auto self_underflow_branch = max(std::numeric_limits<T>::min() + other, self);
++                return select(batch_bool<T, A>(mask.data), self_overflow_branch, self_underflow_branch) - other;
+             }
+             else
+             {
+diff --git a/include/xsimd/arch/xsimd_avx512f.hpp b/include/xsimd/arch/xsimd_avx512f.hpp
+index 658b7d448..24900e46d 100644
+--- a/include/xsimd/arch/xsimd_avx512f.hpp
++++ b/include/xsimd/arch/xsimd_avx512f.hpp
+@@ -2419,9 +2419,20 @@ namespace xsimd
+         template <class A, class T, class = std::enable_if_t<std::is_integral_v<T>>>
+         XSIMD_INLINE batch<T, A> ssub(batch<T, A> const& self, batch<T, A> const& other, requires_arch<avx512f>) noexcept
+         {
+-            if (std::is_signed_v<T>)
++            // Saturating sub for 8/16-bit integers needs AVX512BW; on AVX512F
++            // fall back to the AVX2 implementation on each 256-bit half.
++            if constexpr (sizeof(T) == 1 || sizeof(T) == 2)
++            {
++                return detail::fwd_to_avx([](__m256i s, __m256i o) noexcept
++                                          { return ssub(batch<T, avx2>(s), batch<T, avx2>(o), avx2 {}); },
++                                          self, other);
++            }
++            else if (std::is_signed_v<T>)
+             {
+-                return sadd(self, -other);
++                auto mask = other < 0;
++                auto self_overflow_branch = min(std::numeric_limits<T>::max() + other, self);
++                auto self_underflow_branch = max(std::numeric_limits<T>::min() + other, self);
++                return select(mask, self_overflow_branch, self_underflow_branch) - other;
+             }
+             else
+             {
+diff --git a/include/xsimd/arch/xsimd_scalar.hpp b/include/xsimd/arch/xsimd_scalar.hpp
+index f3e3692c0..215006ade 100644
+--- a/include/xsimd/arch/xsimd_scalar.hpp
++++ b/include/xsimd/arch/xsimd_scalar.hpp
+@@ -720,7 +720,21 @@ namespace xsimd
+     {
+         if (std::numeric_limits<T>::is_signed)
+         {
+-            return sadd(lhs, (T)-rhs);
++            // Compute the saturating difference directly. Using sadd(lhs, -rhs)
++            // is wrong when rhs == numeric_limits<T>::min(), because -rhs is not
++            // representable.
++            if ((rhs < 0) && (lhs > std::numeric_limits<T>::max() + rhs))
++            {
++                return std::numeric_limits<T>::max();
++            }
++            else if ((rhs > 0) && (lhs < std::numeric_limits<T>::lowest() + rhs))
++            {
++                return std::numeric_limits<T>::lowest();
++            }
++            else
++            {
++                return lhs - rhs;
++            }
+         }
+         else
+         {

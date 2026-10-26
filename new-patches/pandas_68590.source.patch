@@ -1,0 +1,76 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index f7bd58a543954..87d9204e60b1d 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -1158,9 +1158,11 @@ Sparse
+ - Bug in :meth:`Series.reindex` and alignment raising when extending a boolean :class:`SparseDtype`-backed :class:`Series`; missing entries now upcast to ``object`` to match the dense behavior (:issue:`32119`)
+ - Bug in :meth:`Series.reindex`, :meth:`DataFrame.reindex`, :meth:`GroupBy.first`, :meth:`GroupBy.last`, and :meth:`SparseArray.take` returning the wrong subtype for :class:`SparseDtype` data: ``uint64`` values above ``2**53`` were silently rounded, and a datetime64 or timedelta64 subtype changed unit, became ``object`` holding raw integers, or raised ``DTypePromotionError`` (:issue:`68469`)
+ - Bug in :meth:`Series.sum`, :meth:`Series.min`, and :meth:`Series.max` with ``skipna=False`` ignoring missing values for :class:`SparseDtype`-backed :class:`Series` (:issue:`65478`)
++- Bug in :meth:`Series.to_numpy`, :meth:`DataFrame.to_numpy`, and casting to ``object`` on a datetime64 or timedelta64 :class:`SparseArray` whose ``fill_value`` is a :class:`Timestamp`, :class:`Timedelta`, or ``np.nan``, returning ``object`` dtype mixing ``datetime.datetime`` values or raw integers with the fill value (:issue:`68590`)
+ - Bug in :meth:`SparseArray.astype` where converting a datetime64 or timedelta64 :class:`SparseArray` to an integer or boolean ``Sparse`` dtype silently replaced the fill value with the target's default (``0``/``False``) instead of converting it (:issue:`49631`)
+ - Bug in :meth:`SparseArray.mean` raising a ``TypeError`` when called with the ``skipna`` argument (:issue:`65478`)
+ - Bug in :meth:`SparseArray.sum` with ``skipna=False`` returning ``NA`` for a non-null ``fill_value`` and ignoring missing values under a null ``fill_value`` (:issue:`65478`)
++- Bug in :meth:`SparseArray.to_dense` and :meth:`Series.to_numpy` with an explicit ``dtype`` on a datetime64 or timedelta64 :class:`SparseArray` mishandling the ``fill_value``: a nanosecond :class:`Timestamp` or :class:`Timedelta` was truncated to microseconds, and a ``fill_value`` whose unit differed from the column's was read as a raw integer (:issue:`68590`)
+ - Bug in NumPy ufunc reductions such as ``np.logaddexp.reduce``, ``np.bitwise_or.reduce``, and ``np.gcd.reduce`` on a :class:`SparseArray` reducing only the stored values, ignoring the entries equal to ``fill_value`` (:issue:`68453`)
+ - Bug in ``np.prod`` and ``np.multiply.reduce`` on a :class:`SparseArray` silently returning the product of only the stored values, ignoring the entries equal to ``fill_value`` (:issue:`68194`)
+ - Bug in ``np.std`` and ``np.var`` on a :class:`SparseArray` returning ``NaN`` when the array held missing values, inconsistently with ``np.sum`` and ``np.mean``, which skip them (:issue:`68194`)
+diff --git a/pandas/core/arrays/sparse/array.py b/pandas/core/arrays/sparse/array.py
+index 87aa87e899aac..37555593da5a2 100644
+--- a/pandas/core/arrays/sparse/array.py
++++ b/pandas/core/arrays/sparse/array.py
+@@ -360,12 +360,12 @@ def _wrap_result(
+ 
+ def _promote_for_fill(dtype: np.dtype, fill_value) -> tuple[np.dtype, Any]:
+     """
+-    Dense dtype wide enough to hold ``fill_value``, and ``fill_value`` unboxed.
++    Dense dtype wide enough to hold ``fill_value``, and ``fill_value`` unboxed —
++    for a datetimelike ``dtype``, as a numpy scalar in that dtype's own unit.
+ 
+     ``maybe_promote`` is no good on its own: its datetime64 arm widens to ``M8[ns]``
+     whenever the fill value's unit differs, so a ``Timestamp`` would pull a
+-    ``Sparse[M8[s]]`` up to nanoseconds.  A ``Timestamp``/``Timedelta`` is unboxed
+-    because ``np.full`` would otherwise truncate it to microseconds.
++    ``Sparse[M8[s]]`` up to nanoseconds.
+     """
+     dummy = ensure_wrapped_if_datetimelike(np.empty(0, dtype=dtype))
+     if can_hold_element(dummy, fill_value):
+@@ -375,8 +375,11 @@ def _promote_for_fill(dtype: np.dtype, fill_value) -> tuple[np.dtype, Any]:
+             if isna(fill_value):
+                 # a unitless NaT is deprecated as of numpy 2.5
+                 fill_value = dtype.type("NaT", np.datetime_data(dtype)[0])
+-            elif isinstance(fill_value, (Timestamp, Timedelta)):
+-                fill_value = fill_value.asm8
++            else:
++                # np.full truncates a Timestamp/Timedelta to microseconds;
++                #  can_hold_element has already ruled out a lossy conversion
++                box = Timestamp if dtype.kind == "M" else Timedelta
++                fill_value = box(fill_value).asm8.astype(dtype)
+         return dtype, fill_value
+     return maybe_promote(dtype, fill_value)
+ 
+@@ -684,17 +687,17 @@ def __array__(
+ 
+         fill_value = self.fill_value
+ 
+-        if dtype is None:
++        if self.sp_values.dtype.kind in "mM":
++            # np.result_type gives object for a Timestamp/Timedelta fill value
++            #  and raises for np.nan; the helper also puts the fill in the
++            #  subtype's unit, see test_to_dense_datetimelike_fill_other_unit
++            inferred, fill_value = _promote_for_fill(self.sp_values.dtype, fill_value)
++            if dtype is None:
++                dtype = inferred
++        elif dtype is None:
+             # Can NumPy represent this type?
+             # If not, `np.result_type` will raise. We catch that
+             # and return object.
+-            if self.sp_values.dtype.kind == "M":
+-                # However, we *do* special-case the common case of
+-                # a datetime64 with pandas NaT.
+-                if fill_value is NaT:
+-                    # Can't put pd.NaT in a datetime64[ns]
+-                    unit = np.datetime_data(self.sp_values.dtype)[0]
+-                    fill_value = np.datetime64("NaT", unit)  # type: ignore[call-overload]
+             try:
+                 dtype = np.result_type(self.sp_values.dtype, type(fill_value))
+             except TypeError:

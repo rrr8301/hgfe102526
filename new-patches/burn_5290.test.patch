@@ -1,0 +1,556 @@
+diff --git a/crates/burn-backend-tests/tests/fusion/reduce_broadcasted.rs b/crates/burn-backend-tests/tests/fusion/reduce_broadcasted.rs
+index ae5643e48d7..af8c5d40729 100644
+--- a/crates/burn-backend-tests/tests/fusion/reduce_broadcasted.rs
++++ b/crates/burn-backend-tests/tests/fusion/reduce_broadcasted.rs
+@@ -1,4 +1,5 @@
+ use super::*;
++use burn_fusion::inspect::FusionInspector;
+ use burn_tensor::{ElementConversion, TensorData, Tolerance};
+ 
+ #[test]
+@@ -220,3 +221,44 @@ fn test_reduce_broadcasted_masked_softmax() {
+         Tolerance::permissive(),
+     );
+ }
++
++#[test]
++fn test_reduce_broadcasted_max_nan() {
++    let stream = test_stream();
++    stream.executes(|| {
++        let device = Default::default();
++        let tensor = TestTensor::<2>::zeros([2, 4], &device);
++        let fused_on_read = TestTensor::<2>::from_data(
++            TensorData::from([[1.0, f32::NAN, 3.0, 2.0], [1.0, 4.0, 3.0, 2.0]]),
++            &device,
++        );
++        let fused_on_write = TestTensor::<2>::zeros([2, 1], &device);
++
++        // Materialize the inputs before recording the fused graph.
++        device.sync().unwrap();
++        let inspector = FusionInspector::install(stream);
++
++        let output = tensor + fused_on_read.clone();
++        let output = output.max_dim(1);
++        let output = output + fused_on_write;
++        let output = output + fused_on_read;
++        let output = output + 1.0;
++        let actual = output.into_data();
++        device.sync().unwrap();
++
++        let expected = TensorData::from([
++            [f32::NAN, f32::NAN, f32::NAN, f32::NAN],
++            [6.0, 9.0, 8.0, 7.0],
++        ]);
++        actual.assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
++
++        let reports = inspector.drain();
++        assert!(
++            reports
++                .iter()
++                .flat_map(|report| report.fused_blocks())
++                .any(|block| block.fuser_name() == Some("ReduceBroadcasted")),
++            "expected ReduceBroadcasted fusion, got {reports:#?}"
++        );
++    });
++}
+diff --git a/crates/burn-backend-tests/tests/tensor/float/ops/arg.rs b/crates/burn-backend-tests/tests/tensor/float/ops/arg.rs
+index 7b88fa18752..a84bbdc156a 100644
+--- a/crates/burn-backend-tests/tests/tensor/float/ops/arg.rs
++++ b/crates/burn-backend-tests/tests/tensor/float/ops/arg.rs
+@@ -151,78 +151,101 @@ fn test_argmax_permuted_correctness() {
+         .assert_eq(&TensorData::from([[[1], [1], [1]], [[1], [1], [1]]]), false);
+ }
+ 
+-// NaN-propagation tests. All burn backends should propagate NaN from
+-// argmax/argmin (matching PyTorch/NumPy/JAX/TF semantics). See issue #4814.
+-#[cfg(any(feature = "flex", feature = "ndarray"))]
+ #[test]
+-fn test_argmax_nan_propagation() {
+-    let tensor = TestTensor::<2>::from([[1.0, f32::NAN, 3.0]]);
+-    let output = tensor.argmax(1);
++fn test_arg_extrema_ties_use_lowest_index() {
++    let tensor = TestTensor::<2>::from([[3.0, 3.0, -2.0, -2.0]]);
+ 
+-    output
++    tensor
++        .clone()
++        .argmax(1)
+         .into_data()
+-        .assert_eq(&TensorData::from([[1]]), false);
+-}
++        .assert_eq(&TensorData::from([[0]]), false);
++    tensor
++        .clone()
++        .argmin(1)
++        .into_data()
++        .assert_eq(&TensorData::from([[2]]), false);
+ 
+-// First-NaN wins: when row[0] is NaN AND a later element is also NaN,
+-// argmax must return 0 (the earlier NaN index), not the later one.
+-#[cfg(any(feature = "flex", feature = "ndarray"))]
+-#[test]
+-fn test_argmax_nan_leading_with_trailing_nan() {
+-    let tensor = TestTensor::<2>::from([[f32::NAN, f32::NAN, 3.0]]);
+-    let output = tensor.argmax(1);
+-    output
++    let (_, max_indices) = tensor.clone().max_dim_with_indices(1);
++    max_indices
+         .into_data()
+         .assert_eq(&TensorData::from([[0]]), false);
++
++    let (_, min_indices) = tensor.min_dim_with_indices(1);
++    min_indices
++        .into_data()
++        .assert_eq(&TensorData::from([[2]]), false);
++}
++
++// All burn backends should propagate NaN from argmax/argmin. See issue #4814.
++#[test]
++fn test_argmax_and_argmin_nan_propagation() {
++    let tensor = TestTensor::<2>::from([[1.0, f32::NAN, -3.0]]);
++
++    for output in [tensor.clone().argmax(1), tensor.argmin(1)] {
++        output
++            .into_data()
++            .assert_eq(&TensorData::from([[1]]), false);
++    }
+ }
+ 
+-#[cfg(any(feature = "flex", feature = "ndarray"))]
++// First-NaN wins: when row[0] is NaN AND a later element is also NaN,
++// argmax and argmin must return 0 (the earlier NaN index), not the later one.
+ #[test]
+-fn test_argmin_nan_leading_with_trailing_nan() {
++fn test_argmax_and_argmin_nan_leading_with_trailing_nan() {
+     let tensor = TestTensor::<2>::from([[f32::NAN, f32::NAN, 3.0]]);
+-    let output = tensor.argmin(1);
+-    output
+-        .into_data()
+-        .assert_eq(&TensorData::from([[0]]), false);
++
++    for output in [tensor.clone().argmax(1), tensor.argmin(1)] {
++        output
++            .into_data()
++            .assert_eq(&TensorData::from([[0]]), false);
++    }
+ }
+ 
+-// All-NaN row: argmax should return 0 (first NaN).
+-#[cfg(any(feature = "flex", feature = "ndarray"))]
++// All-NaN row: argmax and argmin should return 0 (first NaN).
+ #[test]
+-fn test_argmax_all_nan_row() {
++fn test_argmax_and_argmin_all_nan_row() {
+     let tensor = TestTensor::<2>::from([[f32::NAN, f32::NAN, f32::NAN]]);
+-    let output = tensor.argmax(1);
+-    output
+-        .into_data()
+-        .assert_eq(&TensorData::from([[0]]), false);
++    for output in [tensor.clone().argmax(1), tensor.argmin(1)] {
++        output
++            .into_data()
++            .assert_eq(&TensorData::from([[0]]), false);
++    }
+ }
+ 
+-// NaN propagation must also hold for non-last-dim argmax, which routes
++// NaN propagation must also hold for non-last-dim argmax and argmin, which route
+ // through a different kernel than the last-dim fast path.
+-#[cfg(any(feature = "flex", feature = "ndarray"))]
+ #[test]
+-fn test_argmax_nan_leading_non_last_dim() {
++fn test_argmax_and_argmin_nan_leading_non_last_dim() {
+     // Column 0: [NaN, NaN, 3.0] -> argmax along dim 0 = 0.
+     // Column 1: [1.0, 2.0, 4.0] -> argmax along dim 0 = 2.
+-    let tensor = TestTensor::<2>::from([[f32::NAN, 1.0], [f32::NAN, 2.0], [3.0, 4.0]]);
+-    let output = tensor.argmax(0);
+-    output
++    let tensor = TestTensor::<2>::from([[f32::NAN, 1.0], [f32::NAN, 2.0], [-3.0, 4.0]]);
++    tensor
++        .clone()
++        .argmax(0)
+         .into_data()
+         .assert_eq(&TensorData::from([[0, 2]]), false);
++    tensor
++        .argmin(0)
++        .into_data()
++        .assert_eq(&TensorData::from([[0, 0]]), false);
+ }
+ 
+-// max_dim_with_indices on a leading-NaN row should return (NaN, 0).
+-// Complements test_max_dim_with_indices_nan_propagation in maxmin.rs,
++// max/min_dim_with_indices on a leading-NaN row should return (NaN, 0).
++// Complements test_max_min_dim_with_indices_nan_propagation in maxmin.rs,
+ // which uses a single NaN in the middle of the row.
+-#[cfg(any(feature = "flex", feature = "ndarray"))]
+ #[test]
+-fn test_max_dim_with_indices_nan_leading() {
+-    let tensor = TestTensor::<2>::from([[f32::NAN, f32::NAN, 3.0]]);
+-    let (values, indices) = tensor.max_dim_with_indices(1);
+-    let vdata = values.into_data();
+-    let slice = vdata.as_slice::<FloatElem>().unwrap();
+-    assert!(slice[0].is_nan());
+-    indices
+-        .into_data()
+-        .assert_eq(&TensorData::from([[0]]), false);
++fn test_max_min_dim_with_indices_nan_leading() {
++    let tensor = TestTensor::<2>::from([[f32::NAN, f32::NAN, -3.0]]);
++
++    for (values, indices) in [
++        tensor.clone().max_dim_with_indices(1),
++        tensor.min_dim_with_indices(1),
++    ] {
++        let values = values.into_data();
++        assert!(values.as_slice::<FloatElem>().unwrap()[0].is_nan());
++        indices
++            .into_data()
++            .assert_eq(&TensorData::from([[0]]), false);
++    }
+ }
+diff --git a/crates/burn-backend-tests/tests/tensor/float/ops/cumulative.rs b/crates/burn-backend-tests/tests/tensor/float/ops/cumulative.rs
+index 042b1c530af..fda52143b3b 100644
+--- a/crates/burn-backend-tests/tests/tensor/float/ops/cumulative.rs
++++ b/crates/burn-backend-tests/tests/tensor/float/ops/cumulative.rs
+@@ -1,7 +1,6 @@
+ use super::*;
+ use burn_tensor::TensorData;
+ 
+-#[cfg(any(feature = "flex", feature = "ndarray"))]
+ use burn_tensor::ElementConversion;
+ 
+ #[test]
+@@ -200,9 +199,7 @@ fn test_cummax_float_3d() {
+     );
+ }
+ 
+-// NaN-propagation tests. All burn backends should propagate NaN from
+-// cummin/cummax (matching PyTorch/NumPy/JAX/TF semantics). See issue #4814.
+-#[cfg(any(feature = "flex", feature = "ndarray"))]
++// All burn backends should propagate NaN from cummin/cummax. See issue #4814.
+ #[test]
+ fn test_cummin_nan_propagation() {
+     // Once NaN appears, cummin propagates it forward.
+@@ -217,7 +214,6 @@ fn test_cummin_nan_propagation() {
+     assert!(data[3].is_nan());
+ }
+ 
+-#[cfg(any(feature = "flex", feature = "ndarray"))]
+ #[test]
+ fn test_cummax_nan_propagation() {
+     let tensor = TestTensor::<1>::from([1.0, f32::NAN, 5.0, 2.0]);
+@@ -231,16 +227,15 @@ fn test_cummax_nan_propagation() {
+     assert!(data[3].is_nan());
+ }
+ 
+-#[cfg(any(feature = "flex", feature = "ndarray"))]
+ #[test]
+-fn test_cummin_nan_at_start() {
++fn test_cummin_and_cummax_nan_at_start() {
+     // NaN on the first element should poison the entire output.
+     let tensor = TestTensor::<1>::from([f32::NAN, 1.0, 2.0]);
+ 
+-    let output = tensor.cummin(0);
+-
+-    let data: Vec<FloatElem> = output.into_data().to_vec().unwrap();
+-    assert!(data[0].is_nan());
+-    assert!(data[1].is_nan());
+-    assert!(data[2].is_nan());
++    for output in [tensor.clone().cummin(0), tensor.cummax(0)] {
++        let data: Vec<FloatElem> = output.into_data().to_vec().unwrap();
++        assert!(data[0].is_nan());
++        assert!(data[1].is_nan());
++        assert!(data[2].is_nan());
++    }
+ }
+diff --git a/crates/burn-backend-tests/tests/tensor/float/ops/maxmin.rs b/crates/burn-backend-tests/tests/tensor/float/ops/maxmin.rs
+index d00d4186485..f39dc509b4e 100644
+--- a/crates/burn-backend-tests/tests/tensor/float/ops/maxmin.rs
++++ b/crates/burn-backend-tests/tests/tensor/float/ops/maxmin.rs
+@@ -1,5 +1,5 @@
+ use super::*;
+-use burn_tensor::TensorData;
++use burn_tensor::{ElementConversion, TensorData};
+ 
+ #[test]
+ fn test_max_dim_2d() {
+@@ -268,35 +268,162 @@ fn test_max_abs_dim_2d_dim_1() {
+     output.into_data().assert_eq(&expected, false);
+ }
+ 
+-// NaN-propagation tests. All burn backends should propagate NaN from
+-// min/max (matching PyTorch/NumPy/JAX/TF semantics). See issue #4814.
+-#[cfg(any(feature = "flex", feature = "ndarray"))]
+ #[test]
+-fn test_max_dim_nan_propagation() {
+-    let tensor = TestTensor::<2>::from([[1.0, f32::NAN, 3.0]]);
+-    let data = tensor.max_dim(1).into_data();
+-    let values = data.as_slice::<FloatElem>().unwrap();
+-    assert!(values[0].is_nan());
++fn test_whole_max_min_finite_and_infinite_values() {
++    let tensor = TestTensor::<1>::from([f32::NEG_INFINITY, -2.0, 7.0, 7.0, f32::INFINITY]);
++
++    tensor
++        .clone()
++        .max()
++        .into_data()
++        .assert_eq(&TensorData::from([f32::INFINITY]), false);
++    tensor
++        .min()
++        .into_data()
++        .assert_eq(&TensorData::from([f32::NEG_INFINITY]), false);
+ }
+ 
+-#[cfg(any(feature = "flex", feature = "ndarray"))]
+ #[test]
+-fn test_min_dim_nan_propagation() {
+-    let tensor = TestTensor::<2>::from([[1.0, f32::NAN, 3.0]]);
+-    let data = tensor.min_dim(1).into_data();
+-    let values = data.as_slice::<FloatElem>().unwrap();
++fn test_whole_max_min_integer_control() {
++    let tensor = TestTensor::<1>::from([3.0, -2.0, 7.0, 1.0]).int();
++
++    tensor
++        .clone()
++        .max()
++        .into_data()
++        .assert_eq(&TensorData::from([7]), false);
++    tensor
++        .min()
++        .into_data()
++        .assert_eq(&TensorData::from([-2]), false);
++}
++
++#[test]
++fn test_whole_max_min_nan_propagation_by_position() {
++    for values in [
++        [f32::NAN, 1.0, 2.0],
++        [1.0, f32::NAN, 2.0],
++        [1.0, 2.0, f32::NAN],
++    ] {
++        let tensor = TestTensor::<1>::from(values);
++
++        let max = tensor.clone().max().into_data();
++        assert!(max.as_slice::<FloatElem>().unwrap()[0].is_nan());
++
++        let min = tensor.min().into_data();
++        assert!(min.as_slice::<FloatElem>().unwrap()[0].is_nan());
++    }
++}
++
++#[test]
++fn test_whole_max_min_nan_non_contiguous_view() {
++    let tensor = TestTensor::<2>::from([[1.0, f32::NAN, 2.0], [3.0, 4.0, 5.0]])
++        .narrow(0, 0, 1)
++        .swap_dims(0, 1);
++
++    let max = tensor.clone().max().into_data();
++    assert!(max.as_slice::<FloatElem>().unwrap()[0].is_nan());
++
++    let min = tensor.min().into_data();
++    assert!(min.as_slice::<FloatElem>().unwrap()[0].is_nan());
++}
++
++#[test]
++fn test_whole_max_min_ignore_nan_outside_logical_view() {
++    let tensor = TestTensor::<2>::from([[f32::NAN, 1.0, 2.0], [3.0, 4.0, 5.0]])
++        .narrow(0, 1, 1)
++        .swap_dims(0, 1);
++
++    tensor
++        .clone()
++        .max()
++        .into_data()
++        .assert_eq(&TensorData::from([5.0]), false);
++    tensor
++        .min()
++        .into_data()
++        .assert_eq(&TensorData::from([3.0]), false);
++}
++
++#[test]
++fn test_whole_max_min_expanded_view_uses_only_logical_elements() {
++    let tensor = TestTensor::<2>::from([[f32::NAN, 1.0], [2.0, 3.0]])
++        .narrow(0, 1, 1)
++        .expand([2, 2]);
++
++    tensor
++        .clone()
++        .max()
++        .into_data()
++        .assert_eq(&TensorData::from([3.0]), false);
++    tensor
++        .min()
++        .into_data()
++        .assert_eq(&TensorData::from([2.0]), false);
++}
++
++#[test]
++fn test_whole_max_abs_nan_propagation() {
++    let tensor = TestTensor::<1>::from([-3.0, f32::NAN, 2.0]);
++    let output = tensor.max_abs().into_data();
++    assert!(output.as_slice::<FloatElem>().unwrap()[0].is_nan());
++}
++
++#[test]
++fn test_max_abs_dim_nan_propagation() {
++    let tensor = TestTensor::<2>::from([[1.0, f32::NAN, -3.0], [1.0, -4.0, 3.0]]);
++    let output = tensor.max_abs_dim(1).into_data();
++    let values = output.as_slice::<FloatElem>().unwrap();
++
+     assert!(values[0].is_nan());
++    assert_eq!(values[1], 4.0f32.elem::<FloatElem>());
+ }
+ 
+ #[cfg(any(feature = "flex", feature = "ndarray"))]
+ #[test]
+-fn test_max_dim_with_indices_nan_propagation() {
++fn test_whole_max_min_nan_f64_cpu_backends() {
++    let tensor = TestTensor::<1>::from([1.0, f32::NAN, 2.0]).cast(burn_tensor::DType::F64);
++
++    assert!(tensor.clone().max().into_data().as_slice::<f64>().unwrap()[0].is_nan());
++    assert!(tensor.min().into_data().as_slice::<f64>().unwrap()[0].is_nan());
++}
++
++#[cfg(feature = "flex")]
++#[test]
++fn test_whole_max_min_nan_flex_half_dtypes() {
++    for dtype in [burn_tensor::DType::F16, burn_tensor::DType::BF16] {
++        let tensor = TestTensor::<1>::from([1.0, f32::NAN, 2.0]).cast(dtype);
++
++        for output in [tensor.clone().max(), tensor.min()] {
++            let output = output.into_data().convert::<f32>();
++            assert!(output.as_slice::<f32>().unwrap()[0].is_nan());
++        }
++    }
++}
++
++// All burn backends should propagate NaN from min/max. See issue #4814.
++#[test]
++fn test_max_min_dim_nan_propagation() {
+     let tensor = TestTensor::<2>::from([[1.0, f32::NAN, 3.0]]);
+-    let (values, indices) = tensor.max_dim_with_indices(1);
+-    let vdata = values.into_data();
+-    let slice = vdata.as_slice::<FloatElem>().unwrap();
+-    assert!(slice[0].is_nan());
+-    indices
+-        .into_data()
+-        .assert_eq(&TensorData::from([[1]]), false);
++
++    for output in [tensor.clone().max_dim(1), tensor.min_dim(1)] {
++        let data = output.into_data();
++        assert!(data.as_slice::<FloatElem>().unwrap()[0].is_nan());
++    }
++}
++
++#[test]
++fn test_max_min_dim_with_indices_nan_propagation() {
++    let tensor = TestTensor::<2>::from([[1.0, f32::NAN, -3.0]]);
++
++    for (values, indices) in [
++        tensor.clone().max_dim_with_indices(1),
++        tensor.min_dim_with_indices(1),
++    ] {
++        let values = values.into_data();
++        assert!(values.as_slice::<FloatElem>().unwrap()[0].is_nan());
++        indices
++            .into_data()
++            .assert_eq(&TensorData::from([[1]]), false);
++    }
+ }
+diff --git a/crates/burn-flex/src/ops/reduce.rs b/crates/burn-flex/src/ops/reduce.rs
+index 93b682f185f..48c681470c6 100644
+--- a/crates/burn-flex/src/ops/reduce.rs
++++ b/crates/burn-flex/src/ops/reduce.rs
+@@ -2262,9 +2343,65 @@ mod tests {
+     use alloc::vec;
+     use burn_backend::TensorData;
+     use burn_backend::ops::{FloatTensorOps, IntTensorOps};
+-    use burn_std::{bf16, f16};
++    use burn_std::{Shape, bf16, f16};
++
++    use crate::strided_index::StridedIter;
++    use crate::{Flex, FlexTensor, Layout};
++
++    #[test]
++    fn test_layout_covers_storage_once() {
++        fn reference(layout: &Layout, storage_len: usize) -> bool {
++            if storage_len == 0 || layout.num_elements() != storage_len {
++                return false;
++            }
+ 
+-    use crate::{Flex, FlexTensor};
++            let mut indices: Vec<_> = StridedIter::new(layout).collect();
++            indices.sort_unstable();
++            indices.into_iter().eq(0..storage_len)
++        }
++
++        let base = Layout::contiguous(Shape::from(vec![2, 3, 4]));
++        let cases = [
++            ("contiguous", base.clone(), 24),
++            ("permuted", base.permute(&[2, 0, 1]), 24),
++            ("flipped", base.flip(&[0, 2]), 24),
++            (
++                "permuted singleton dimension",
++                Layout::contiguous(Shape::from(vec![2, 1, 3])).permute(&[1, 2, 0]),
++                6,
++            ),
++            ("narrowed", base.narrow(1, 1, 1), 24),
++            (
++                "expanded",
++                Layout::new(Shape::from(vec![2, 2]), vec![0, 1], 2),
++                4,
++            ),
++            (
++                "overlapping",
++                Layout::new(Shape::from(vec![2, 2]), vec![1, 1], 0),
++                4,
++            ),
++            (
++                "gapped",
++                Layout::new(Shape::from(vec![2, 2]), vec![3, 1], 0),
++                4,
++            ),
++            (
++                "offset",
++                Layout::new(Shape::from(vec![2, 2]), vec![2, 1], 1),
++                4,
++            ),
++            ("empty", Layout::contiguous(Shape::from(vec![0, 3])), 0),
++        ];
++
++        for (name, layout, storage_len) in cases {
++            assert_eq!(
++                super::layout_covers_storage_once(&layout, storage_len),
++                reference(&layout, storage_len),
++                "{name}"
++            );
++        }
++    }
+ 
+     #[test]
+     fn test_mean_f16_overflow_intermediate_sum() {
+diff --git a/crates/burn-flex/src/simd/kernels.rs b/crates/burn-flex/src/simd/kernels.rs
+index 43429d655d1..e12a4c92694 100644
+--- a/crates/burn-flex/src/simd/kernels.rs
++++ b/crates/burn-flex/src/simd/kernels.rs
+@@ -314,4 +355,20 @@ mod tests {
+         let data = vec![-3.0, -1.0, -4.0, -1.0, -5.0];
+         assert_eq!(min_f32(&data), -5.0);
+     }
++
++    #[test]
++    fn test_max_min_f32_nan_propagation() {
++        for nan_index in [0, 32, 64] {
++            let mut data = vec![1.0; 65];
++            data[nan_index] = f32::NAN;
++            assert!(
++                max_f32(&data).is_nan(),
++                "max failed with NaN at index {nan_index}"
++            );
++            assert!(
++                min_f32(&data).is_nan(),
++                "min failed with NaN at index {nan_index}"
++            );
++        }
++    }
+ }

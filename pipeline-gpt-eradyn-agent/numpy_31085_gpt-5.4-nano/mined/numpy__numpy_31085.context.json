@@ -1,0 +1,311 @@
+{
+  "repo": "numpy/numpy",
+  "pr_number": 31085,
+  "reference": "https://github.com/numpy/numpy/pull/31085",
+  "buggy_commit": "6a8599103202609be3dc6516c602c018a4ae2cef",
+  "fixed_commit": "849a584e06b2ab98f02b1600bc643b01e9aa8047",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "numpy",
+        "constraint": "numpy 1.23.1 (reported in issue)",
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "ISSUE #22346 (closes): \"numpy 1.23.1\""
+      },
+      {
+        "name": "pytest",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md: \"NumPy requires `pytest` and `hypothesis`.\""
+      },
+      {
+        "name": "hypothesis",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md: \"NumPy requires `pytest` and `hypothesis`.\""
+      }
+    ],
+    "installation_commands": [],
+    "build_commands": [],
+    "test_commands": [
+      "python -c \"import numpy, sys; sys.exit(numpy.test() is False)\""
+    ],
+    "system_packages": [],
+    "era_constraints": [
+      "explicit: numpy numpy 1.23.1 (reported in issue)  [numerically relevant]",
+      "unbounded: pytest \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: hypothesis \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "numpy",
+        "documented_constraint": "numpy 1.23.1 (reported in issue)",
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "explicit",
+        "source": "ISSUE #22346 (closes): \"numpy 1.23.1\""
+      },
+      {
+        "package": "pytest",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md: \"NumPy requires `pytest` and `hypothesis`.\""
+      },
+      {
+        "package": "hypothesis",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md: \"NumPy requires `pytest` and `hypothesis`.\""
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "numpy.datetime64.astype",
+    "observed_behavior": "Converting a datetime64 value from seconds to minutes overflows/produces an incorrect datetime64 value instead of raising or preserving correctness: dt.astype(\"M8[m]\") returns numpy.datetime64('292277026596-12-04T15:29').",
+    "expected_behavior": "The correct result should match the expected datetime64 value: numpy.datetime64('-292277022657-01-27T08:29'). The linked bug description also states the intended behavior is to raise OverflowError on datetime64 unit conversion overflow (and the implementation adds overflow checking that sets PyExc_OverflowError on overflow).",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "When casting a datetime64 scalar created as np.datetime64(np.iinfo(np.int64).min + 1, \"s\") to minutes via astype(\"M8[m]\").",
+      "Occurs specifically for datetime64 unit conversion (seconds to minutes) where scaling by num/denom can overflow; the passages describe this as an overflow-related casting bug."
+    ],
+    "input_output_examples": [
+      {
+        "input": "dt = np.datetime64(np.iinfo(np.int64).min + 1, \"s\")",
+        "buggy_output": "numpy.datetime64('292277026596-12-04T15:29') (from dt.astype(\"M8[m]\") )",
+        "expected_output": "numpy.datetime64('-292277022657-01-27T08:29')",
+        "value_kind": "string",
+        "source": "issue#22346 (reproducer + expected)"
+      }
+    ],
+    "oracle_clues": [
+      "Issue #22346 provides an explicit expected datetime64 value for the cast.",
+      "Issue #22346 shows the observed wrong output from dt.astype(\"M8[m]\").",
+      "PR text states: \"BUG: raise OverflowError on datetime64 unit conversion overflow\" and the added helper returns -1 on overflow with PyExc_OverflowError set (suggesting overflow should not silently wrap).",
+      "Implementation change replaces direct scaling with _datetime_scale_with_overflow_check(&dt, num, denom, \"datetime64\"); on overflow it returns -1 (so casting should error instead of producing an incorrect scaled value)."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": null,
+    "precision": null,
+    "magnitude": null,
+    "tolerance": null,
+    "category_specific_evidence": [
+      "The mathematical property/formula violated: datetime64 scaling was computed as `dt * num / denom` for nonnegative `dt`, and as `(dt * num - (denom - 1)) / denom` for negative `dt`; the fix states this multiplication overflowed int64 and caused silent wraparound for large datetime64 values (overflow in `dt * num`).",
+      "Issue #22346 concrete values: `dt = np.datetime64(np.iinfo(np.int64).min + 1, 's')` and `dt.astype('M8[m]')` produces `numpy.datetime64('292277026596-12-04T15:29')` (incorrect result due to overflow), while the passage lists an `expected` value of `np.datetime64('-292277022657-01-27T08:29')`.",
+      "Issue #16352 concrete repro name (no exact formula given beyond unit directions): `datetime64[h] -> datetime64[ns] upconversion overflow`.",
+      "The problematic rounding formula for negative values (evidence of the specific violated computation): when `dt < 0`, the code used `dt * num - (denom - 1)) / denom` (as quoted in the issue discussion), with `num = 1` and `denom = 60` for the `datetime64[s] -> M8[m]` case, where the temporary overflows occur."
+    ],
+    "reproduction_risks": [
+      "If reproductions use different unit conversions than those mentioned (e.g., the specific `s->ns`, `h->ns`, `s->m` paths), the overflow/wraparound may not trigger.",
+      "Tests/cases that include `NPY_DATETIME_NAT` are special-cased (`dt != NPY_DATETIME_NAT`), so including NAT may change behavior (silent return vs scaling/overflow).",
+      "Some test infrastructure breaks out of the loop on `OverflowError` (comment: extreme values like `INT64_MAX` can overflow when scaled), so a reproduction should ensure it targets the specific overflow regime rather than relying on broad random extremes."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.test_commands",
+      "value": [
+        "python -c \"import numpy, sys; sys.exit(numpy.test() is False)\""
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "numpy",
+      "source": "ISSUE #22346 (closes): \"numpy 1.23.1\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "pytest",
+      "source": "README.md: \"NumPy requires `pytest` and `hypothesis`.\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "hypothesis",
+      "source": "README.md: \"NumPy requires `pytest` and `hypothesis`.\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "numpy.datetime64.astype",
+      "source": "discussion",
+      "evidence_location": "discussion:numpy/_core/src/multiarray/_datetime.h"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "Converting a datetime64 value from seconds to minutes overflows/produces an incorrect datetime64 value instead of raising or preserving correctness: dt.astype(\"M8[m]\") returns numpy.datetime64('292277026596-12-04T15:29').",
+      "source": "discussion",
+      "evidence_location": "discussion:numpy/_core/src/multiarray/_datetime.h"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "The correct result should match the expected datetime64 value: numpy.datetime64('-292277022657-01-27T08:29'). The linked bug description also states the intended behavior is to raise OverflowError on datetime64 unit conversion overflow (and the implementation adds overflow checking that sets PyExc_OverflowError on overflow).",
+      "source": "discussion",
+      "evidence_location": "discussion:numpy/_core/src/multiarray/_datetime.h"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "discussion",
+      "evidence_location": "discussion:numpy/_core/src/multiarray/_datetime.h"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 2,
+      "source": "discussion",
+      "evidence_location": "discussion:numpy/_core/src/multiarray/_datetime.h"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 4,
+      "source": "discussion",
+      "evidence_location": "discussion:numpy/_core/src/multiarray/_datetime.h"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 1,
+      "source": "discussion",
+      "evidence_location": "discussion:numpy/_core/src/multiarray/_datetime.h"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 4,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "issue:issue#22346",
+        "readme:README.md",
+        "pr_body:PR#31085",
+        "commit:commits",
+        "diff:numpy/_core/src/multiarray/_datetime.h:335-379",
+        "issue:issue#22346",
+        "issue:issue#16352"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "discussion:numpy/_core/src/multiarray/_datetime.h",
+        "pr_body:PR#31085",
+        "issue:issue#22346",
+        "issue:issue#22346",
+        "commit:commits",
+        "diff:numpy/_core/src/multiarray/dtype_transfer.c:851-858",
+        "discussion:numpy/_core/tests/test_datetime.py",
+        "discussion:numpy/_core/src/multiarray/dtype_transfer.c"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "diff:numpy/_core/src/multiarray/dtype_transfer.c:851-858",
+        "test_diff:numpy/_core/tests/test_casting_unittests.py:482-493",
+        "discussion:numpy/_core/src/multiarray/dtype_transfer.c",
+        "pr_body:PR#31085",
+        "issue:issue#22346",
+        "issue:issue#22346",
+        "diff:numpy/_core/src/multiarray/dtype_transfer.c:821-828"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 1.0,
+        "required_total": 2,
+        "required_present": 2,
+        "required_missing": [],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          },
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          }
+        ],
+        "present": [
+          "environment.test_commands",
+          "environment.dependencies"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 1.0,
+        "required_total": 5,
+        "required_present": 5,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 6191,
+    "output_tokens": 1243,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.0027919999999999998,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": []
+}

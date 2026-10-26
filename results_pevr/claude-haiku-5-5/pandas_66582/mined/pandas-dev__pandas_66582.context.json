@@ -1,0 +1,403 @@
+{
+  "repo": "pandas-dev/pandas",
+  "pr_number": 66582,
+  "reference": "https://github.com/pandas-dev/pandas/pull/66582",
+  "buggy_commit": "92d805f913febf5ece5a91a96d2a54ef8b7f0c7d",
+  "fixed_commit": "eac34231b720d3f9fa2130bc87dcfc607f2138c2",
+  "pr_date": "",
+  "category": "accuracy",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "NumPy",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "readme:README.md"
+      },
+      {
+        "name": "python-dateutil",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md"
+      },
+      {
+        "name": "tzdata",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md"
+      },
+      {
+        "name": "Cython",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md"
+      }
+    ],
+    "installation_commands": [
+      "pip install cython",
+      "pip install .",
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "build_commands": [
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: NumPy \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: python-dateutil \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: tzdata \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: Cython \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "NumPy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "readme:README.md"
+      },
+      {
+        "package": "python-dateutil",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md"
+      },
+      {
+        "package": "tzdata",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md"
+      },
+      {
+        "package": "Cython",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md"
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "accuracy",
+    "affected_api": "pandas.core.nanops.nansum",
+    "observed_behavior": "nansum summed timedelta64 (i8-viewed) values with dtype=np.float64, so totals above 2**53 were silently rounded and a few representable values were turned into NaT. Series([Timedelta.min]).sum() gives NaT; Series([Timedelta(2**53 + 1, 'ns'), Timedelta(0, 'ns')]).sum() is off by 1; Series([Timedelta(2**62 + 1, 'ns'), Timedelta(-(2**62), 'ns')]).sum() gives 0 days.",
+    "expected_behavior": "The sum should be exact in int64: Series([Timedelta.min]).sum() should return Timedelta.min; the 2**53 + 1 case should return exactly 2**53 + 1 ns; the 2**62 + 1 case should return 1 ns. A total outside (iNaT, i8max] should raise OutOfBoundsTimedelta('overflow in timedelta operation'), except for exempt slices (skipna=False reducing to NaT, or min_count nulling).",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "timedelta64 dtype values summed through nansum (Series.sum or DataFrame.sum)",
+      "exact total above 2**53 in magnitude, so float64 accumulation rounds it",
+      "values near"
+    ],
+    "input_output_examples": [],
+    "oracle_clues": []
+  },
+  "numerical_characteristics": {
+    "dtype": "timedelta64 (i8-viewed values); the faulty accumulation used float64 and the fix sums in int64",
+    "precision": "float64 with a 53-bit mantissa caused silent rounding above 2**53; fix uses int64 (modular addition) with block sums combined in Python ints",
+    "magnitude": "totals above 2**53 round incorrectly under float64; Timedelta.min is turned into NaT; the valid range is (iNaT, i8max], totals outside raise OutOfBoundsTimedelta",
+    "tolerance": null,
+    "category_specific_evidence": [
+      "nansum summed timedelta64 i8 values with dtype=np.float64, whose 53-bit mantissa silently rounded any total above 2**53",
+      "Series([Timedelta.min]).sum() returned NaT instead of Timedelta.min under the float64 path",
+      "Series([Timedelta(2**53 + 1, 'ns'), Timedelta(0, 'ns')]).sum() was off by 1 instead of exact",
+      "Series([Timedelta(2**62 + 1, 'ns'), Timedelta(-(2**62), 'ns')]).sum() gave 0 days instead of 1 ns",
+      "Fix sums in int64; int64 addition is modular so only the total needs a range check; blocks of i8max // max(|min|,|max|) keep block sums in range",
+      "A total outside (iNaT, i8max] raises OutOfBoundsTimedelta('overflow in timedelta operation'); a total equal to the NaT sentinel is also rejected",
+      "Exemptions: slices reducing to NaT under skipna=False and slices nulled by min_count are not raised",
+      "Regression test test_sum_timedelta64_exact uses arr = np.array([2**53 + 1, 0], dtype='m8[ns]') on DataFrame axes 0 and 1",
+      "Fuzz verification against a Python-int oracle: 20k Series, 4k DataFrame, 30k skipna/min_count/NaT combinations, 0 mismatches (PR#66582)",
+      "Performance: 1M values on macOS arm64, 0.27-0.31 ms new vs 0.43-0.47 ms old (PR#66582)"
+    ],
+    "reproduction_risks": [
+      "Overflow behaviour depends on the (iNaT, i8max] bound; a total equal to iNaT must raise, not return NaT",
+      "Exempt slices (skipna=False NaT reduction, min_count nulling) must not raise, or existing behaviour regresses",
+      "Block size depends on max(|min|,|max|) of the values, so tests must cover both boundary values and typical values"
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "pip install cython",
+        "pip install .",
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.build_commands",
+      "value": [
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "NumPy",
+      "source": "readme:README.md",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "python-dateutil",
+      "source": "readme:README.md",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "tzdata",
+      "source": "readme:README.md",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "Cython",
+      "source": "readme:README.md",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "pandas.core.nanops.nansum",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "nansum summed timedelta64 (i8) values with dtype=np.float64, so totals above 2**53 were silently rounded, and a few representable values were turned into NaT. Series([Timedelta.min]).sum() gives NaT; Series([Timedel",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.dtype",
+      "value": "timedelta64 (i8-viewed values); the faulty accumulation used float64 and the fix sums in int64",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.precision",
+      "value": "float64 with a 53-bit mantissa caused silent rounding above 2**53; fix uses int64 (modular addition) with block sums combined in Python ints",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "totals above 2**53 round incorrectly under float64; Timedelta.min is turned into NaT; the valid range is (iNaT, i8max], totals outside raise OutOfBoundsTimedelta",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 10,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "pandas.core.nanops.nansum",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "nansum summed timedelta64 (i8-viewed) values with dtype=np.float64, so totals above 2**53 were silently rounded and a few representable values were turned into NaT. Series([Timedelta.min]).sum() gives NaT; Series([Timedelta(2**53 + 1, 'ns'), Timedelta(0, 'ns')]).sum() is off by 1; Series([Timedelta(2**62 + 1, 'ns'), Timedelta(-(2**62), 'ns')]).sum() gives 0 days.",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "The sum should be exact in int64: Series([Timedelta.min]).sum() should return Timedelta.min; the 2**53 + 1 case should return exactly 2**53 + 1 ns; the 2**62 + 1 case should return 1 ns. A total outside (iNaT, i8max] should raise OutOfBoundsTimedelta('overflow in timedelta operation'), except for exempt slices (skipna=False reducing to NaT, or min_count nulling).",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "readme:README.md",
+        "pr_body:PR#66582",
+        "commit:commits",
+        "diff:pandas/core/nanops.py:692-794",
+        "readme:README.md",
+        "readme:README.md",
+        "readme:README.md"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "diff:pandas/core/nanops.py:692-794",
+        "pr_body:PR#66582",
+        "diff:doc/source/whatsnew/v3.1.0.rst:375-381",
+        "pr_body:PR#66582",
+        "diff:pandas/core/nanops.py:638-644",
+        "diff:pandas/core/nanops.py:692-794",
+        "pr_body:PR#66582"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "diff:pandas/core/nanops.py:692-794",
+        "pr_body:PR#66582",
+        "test_diff:pandas/tests/frame/test_reductions.py:2558-2597",
+        "diff:doc/source/whatsnew/v3.1.0.rst:375-381",
+        "diff:pandas/core/nanops.py:638-644",
+        "test_diff:pandas/tests/series/test_reductions.py:135-176",
+        "pr_body:PR#66582"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "accuracy",
+        "checked": 5,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          },
+          {
+            "path": "environment.numerical_backend",
+            "why": "BLAS/LAPACK choice changes results for linear algebra instances"
+          }
+        ],
+        "present": [
+          "environment.dependencies",
+          "environment.build_commands"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "accuracy",
+        "checked": 10,
+        "score": 0.714,
+        "required_total": 7,
+        "required_present": 5,
+        "required_missing": [
+          {
+            "path": "numerical_failure.input_output_examples",
+            "why": "a concrete (input, buggy output, expected output) triple IS the oracle; without one the generated test can only assert a property vague enough to hold on both revisions"
+          },
+          {
+            "path": "numerical_characteristics.tolerance",
+            "why": "a 1-ULP defect is invisible at a default tolerance"
+          }
+        ],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.dtype",
+          "numerical_characteristics.magnitude",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "budget": {
+      "max_calls": 1,
+      "max_rung": "widened",
+      "spent": 1,
+      "log": [
+        {
+          "rung": "targeted",
+          "note": "failure: The first pass left these REQUIRED fields empty. Search the ",
+          "input_tokens": 6362,
+          "output_tokens": 1400,
+          "cost_usd": 0.0
+        }
+      ]
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 19150,
+    "output_tokens": 3926,
+    "cache_read_tokens": 0,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "errors": {},
+  "expansions": [
+    {
+      "rung": "targeted",
+      "question": "failure",
+      "error": "",
+      "n_passages": 8,
+      "fields_added": [
+        "_truncated",
+        "affected_api",
+        "expected_behavior",
+        "manifestation",
+        "observed_behavior",
+        "trigger_conditions"
+      ]
+    }
+  ]
+}

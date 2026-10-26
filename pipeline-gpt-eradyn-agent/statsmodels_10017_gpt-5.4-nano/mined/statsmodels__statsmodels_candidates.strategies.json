@@ -1,0 +1,93 @@
+{
+  "input": "pipeline-gpt-5.4-nano/statsmodels_10017_gpt-5.4-nano/mined/statsmodels__statsmodels_10017.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 8947,
+    "output_tokens": 3065,
+    "cost_usd": 0.005622,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10017,
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10017",
+      "buggy_commit": "da83c3b8e37fb382b06f8534534b9be88f42c7a4",
+      "fixed_commit": "2edccacdb602db748963e36766d57f722968a69e",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 6888,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce statsmodels#10017 (acf: wrong nobs used for Bartlett confint + Ljung-Box qstat when missing=\"drop\"/\"conservative\"). The failing regression is the project\u2019s own newly-added assertions in statsmodels/tsa/tests/test_stattools.py for qstat_* and confint_* using a preloaded series with a leading NaN.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "scipy",
+            "statsmodels"
+          ],
+          "system_packages": [],
+          "build_commands": [],
+          "pinned_because": [
+            "No explicit Python/NumPy/SciPy version constraints are provided in the evidence. Use the same resolver method suggested by the PR/reproducer so the CI/test environment is likely to match behavior around NaN handling and array math."
+          ]
+        },
+        "test_command": "python -m pytest -q statsmodels/tsa/tests/test_stattools.py::TestCorrGram::test_qstat_drop statsmodels/tsa/tests/test_stattools.py::TestCorrGram::test_qstat_conservative statsmodels/tsa/tests/test_stattools.py::TestCorrGram::test_confint_drop statsmodels/tsa/tests/test_stattools.py::TestCorrGram::test_confint_conservative",
+        "reproducing_test": "statsmodels/tsa/tests/test_stattools.py (class TestCorrGram; uses setup_class to prepend a leading NaN to cls.x, sets cls.acf/cls.qstat from cls.results, then asserts res_drop[2][:40] == cls.qstat and centered[1:41] == confint_res with DECIMAL_8).",
+        "success_criterion": "On buggy revision da83c3b8e37f: test_qstat_drop and/or test_qstat_conservative fail (q-stat differs at least at DECIMAL_3), and/or test_confint_drop and/or test_confint_conservative fail (Bartlett confint differs at least at DECIMAL_8). On fixed revision: all four tests pass because nobs for confint/qstat uses the non-missing count when missing is \"drop\" or \"conservative\".",
+        "numerical_probe": "The test uses cls.results[\"Q1\"] and cls.results[[\"acvar_lb\",\"acvar_ub\"]] as the oracle, and compares them against outputs from acf(..., missing=\"drop\"/\"conservative\", qstat=True, alpha=0.05, fft=False). The core bug is nobs being effectively computed as len(x) including NaNs instead of counting non-missing observations for the Bartlett variance and Ljung-Box q-statistic.",
+        "input_output_examples": [
+          {
+            "input": "(Within TestCorrGram.setup_class) create x_with_nan = np.concatenate((np.array([np.nan]), cls.x)) and compute res_drop = acf(x_with_nan, nlags=40, qstat=True, alpha=0.05, missing=\"drop\", fft=False); then compare res_drop[2][:40] to cls.results[\"Q1\"].",
+            "buggy_output": "q-statistic mismatches cls.results[\"Q1\"] because effective nobs is taken as len(x) including the NaN.",
+            "expected_output": "q-statistic matches cls.results[\"Q1\"] because effective nobs uses the non-missing sample size after dropping NaNs."
+          },
+          {
+            "input": "(Within TestCorrGram.test_confint_drop) centered = res_drop[1] - res_drop[1].mean(1)[:, None]; assert centered[1:41] equals cls.results[[\"acvar_lb\",\"acvar_ub\"]] with DECIMAL_8.",
+            "buggy_output": "Bartlett confint bounds differ from stored reference because varacf/qstat variance uses nobs including NaNs (understated CI width).",
+            "expected_output": "Bartlett confint bounds match stored reference because varacf uses nobs excluding NaNs for missing=\"drop\"."
+          }
+        ],
+        "risks": [
+          "Version sensitivity: the evidence does not specify exact Python/NumPy/SciPy versions. This bug is about internal nobs counting with NaNs; it should reproduce across versions, but to ensure a transition between buggy and fixed revisions, prefer the same installation approach used by the PR/reproducer (see build_commands).",
+          "Platform/toolchain: no architecture-specific behavior is described. If the project\u2019s CI uses different BLAS/LAPACK backends or threading, floating rounding could affect DECIMAL_3/DECIMAL_8 assertions; if that happens, pin to the CI\u2019s standard wheels (nightly scientific-python as in the suggested command) or align NumPy/SciPy versions.",
+          "Test depends on setup_class fixtures/results: the regression assertions rely on cls.results loaded in the same file (results_corrgram.csv referenced in PR description). If that fixture file or path differs, the test may fail for unrelated reasons. Run from the statsmodels repo root to match paths."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": "statsmodels/tsa/tests/test_stattools.py (cls.results loaded in setup_class; clses confint_res from cls.results[[\"acvar_lb\",\"acvar_ub\"]] and qstat from cls.results[\"Q1\"], where those values were checked against Stata in the PR#10017 work).",
+          "why": "The project test asserts exact agreement to DECIMAL_3 for qstat and DECIMAL_8 for centered confidence intervals against stored reference values computed for the missing='drop'/'conservative' behavior with correct nobs."
+        },
+        "fails_on_buggy": "The assertions in TestCorrGram::test_qstat_drop and/or test_qstat_conservative observe that res_drop[2][:40] (or res_conservative[2][:40]) is not equal (to DECIMAL_3) to cls.results['Q1'] because q-stat uses nobs=len(x) including NaNs; similarly test_confint_drop/conservative observe centered confint bounds not equal (to DECIMAL_8) because Bartlett varacf uses the wrong nobs.",
+        "passes_on_fixed": "All four tests pass because acf computes nobs as the non-missing count (np.sum(~np.isnan(x))) for missing='drop' and missing='conservative', making Bartlett confidence intervals and Ljung-Box q-statistics match the stored Stata-derived reference values."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3009,
+        "output_tokens": 1296,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002222
+      },
+      "miner_usage": {
+        "input_tokens": 5938,
+        "output_tokens": 1769,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0034,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

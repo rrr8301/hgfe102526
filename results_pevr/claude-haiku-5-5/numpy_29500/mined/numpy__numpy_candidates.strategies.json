@@ -1,0 +1,111 @@
+{
+  "input": "pipeline_no_historic/numpy_29500/mined/numpy__numpy_29500.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 17424,
+    "output_tokens": 5734,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "numpy/numpy",
+      "pr_number": 29500,
+      "reference": "https://github.com/numpy/numpy/pull/29500",
+      "buggy_commit": "b7e5173c13d1e773d526b0484d697163f9e41a15",
+      "fixed_commit": "c6eac44e914413ce48439d2435abbfd493149485",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5793,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the complex-input dtype bug in numpy.linalg.cond by building numpy at the buggy commit b7e5173c13d1 and running the PR's new TestCond tests. The decisive failures are the dtype assertions in test_cond_dtypes for complex dtypes with p in {1,-1,'fro',inf,-inf}, which return complex instead of real on the buggy revision and pass once _realType is applied in the fix.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "pytest",
+            "hypothesis",
+            "meson-python",
+            "ninja",
+            "Cython"
+          ],
+          "system_packages": [
+            "git",
+            "a C/C++ and Fortran-capable compiler toolchain (gcc or clang with gfortran or equivalent)",
+            "a BLAS/LAPACK provider (OpenBLAS or the bundled default)"
+          ],
+          "build_commands": [
+            "git checkout b7e5173c13d1",
+            "git submodule update --init",
+            "python -m pip install -r requirements/build_requirements.txt",
+            "python -m pip install --no-build-isolation -e .",
+            "python -c 'import numpy; print(numpy.__version__)'"
+          ],
+          "pinned_because": [
+            "Python 3.7.7 is only the issue-reporter environment (issue#18304) and is not a documented constraint; the buggy commit's build system is modern (meson), so 3.12 is chosen by this plan, not by evidence",
+            "numpy is unbounded in the context; it is built from source at the buggy commit so the code under test is the buggy code, not a released wheel",
+            "pytest and hypothesis are documented in README.md with no version constraint; latest compatible versions are chosen"
+          ]
+        },
+        "test_command": "python -m pytest numpy/linalg/tests/test_linalg.py::TestCond -q",
+        "reproducing_test": "numpy/linalg/tests/test_linalg.py::TestCond::test_cond_dtypes (parametrized over dtype in [single, double, csingle, cdouble] and norm_ord in [1, -1, 2, -2, 'fro', inf, -inf]); test_basic_nonsvd is also parametrized with is_complex but is not the decisive failure",
+        "success_criterion": "On the buggy revision b7e5173c13d1, test_cond_dtypes fails for the csingle and cdouble cases with norm_ord in {1,-1,'fro',inf,-inf}, each raising an AssertionError from assert_equal because linalg.cond(...).dtype is complex64/complex128 where float32/float64 is expected; the real-dtype cases and the 2/-2 cases still pass. On the fixed revision (buggy plus PR #29500, which adds result_t = _realType(result_t) in cond), all TestCond tests pass, including every test_cond_dtypes case.",
+        "numerical_probe": "linalg.cond(A.astype(complex128), p=1).dtype versus linalg.cond(A.astype(complex128), p=2).dtype on the 3x3 matrix [[1,0,1],[0,-2,0],[0,0,3]]; the dtype comparison is the signal, not the printed value",
+        "input_output_examples": [
+          {
+            "input": "a = np.random.randn(10, 10) + 1j * np.random.randn(10, 10); np.linalg.cond(a, p=1)",
+            "buggy_output": "(253.11513101087314+0j)",
+            "expected_output": "253.11513101087314 as a real float64 (no complex dtype)"
+          },
+          {
+            "input": "np.linalg.cond(a, p='fro') on complex 10x10 matrix",
+            "buggy_output": "(126.26418916571008+0j)",
+            "expected_output": "126.26418916571008 as a real float64 (no complex dtype)"
+          }
+        ],
+        "risks": [
+          "The issue's example uses unseeded random matrices, so printed values are not reproducible; only the dtype pattern is stable and is what the test checks",
+          "Test assertions depend on get_real_dtype being importable in test_linalg.py at the buggy revision; the PR diff does not show an import change, so if it is missing the test errors on both revisions and does not transition",
+          "The given test_commands entry uses numpy.test(), which is not the project's pytest path and may be removed or behave differently across numpy versions; this plan runs pytest directly on the test file instead",
+          "Building numpy at this commit requires a working meson/ninja toolchain and BLAS/LAPACK; if the build fails the transition cannot be observed",
+          "Running pytest from the source root may import the source tree or an installed numpy; ensure the editable install is the one imported, otherwise the buggy code is not exercised",
+          "Only the dtype path is decisive; the value assertions in test_basic_nonsvd use assert_almost_equal, which compares complex 4+0j to 4 numerically, so test_basic_nonsvd[True] likely passes on the buggy revision and does not provide the transition",
+          "The bug is platform independent (no architecture, sanitiser, or threading dependence in the evidence), so no special platform is required; the era of the reporter's environment (numpy 1.19.1, Python 3.7.7) is not needed to reproduce a dtype bug that the fix addresses on main"
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "test_cond_dtypes compares the dtype of linalg.cond output to get_real_dtype(dtype), exact dtype equality; value checks in test_basic_nonsvd use assert_almost_equal with default decimal precision",
+          "why": "The transition is decided by dtype equality, which is exact, not by a numerical tolerance"
+        },
+        "fails_on_buggy": "test_cond_dtypes csingle/cdouble cases for p in {1,-1,'fro',inf,-inf} hit assert_equal on .dtype and see complex64/complex128 where float32/float64 is expected, so AssertionError is raised; this is why the test fails on the buggy revision.",
+        "passes_on_fixed": "With result_t = _realType(result_t) in cond, linalg.cond returns real dtype for complex inputs for every p, so all test_cond_dtypes cases match get_real_dtype(dtype) and TestCond passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4845,
+        "output_tokens": 3787,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 12579,
+        "output_tokens": 1947,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

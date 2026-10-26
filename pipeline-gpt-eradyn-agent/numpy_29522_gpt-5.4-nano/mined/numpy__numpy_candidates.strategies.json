@@ -1,0 +1,102 @@
+{
+  "input": "pipeline-gpt-5.4-nano/numpy_29522_gpt-5.4-nano/mined/numpy__numpy_29522.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 13820,
+    "output_tokens": 3683,
+    "cost_usd": 0.007369,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "numpy/numpy",
+      "pr_number": 29522,
+      "reference": "https://github.com/numpy/numpy/pull/29522",
+      "buggy_commit": "f6c2bb97146adb8f8e1a65cd6fccd2a12976ba40",
+      "fixed_commit": "0653d084c7182480d317097099d5ad9509a766bc",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 6777,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce NumPy#29522 by running the specific added unit test `test_p_extremely_small` that checks the legacy interface `numpy.random.binomial` in the extremely-small-probability regime (n=5e10, p=5e-17, sample_size=2e7). On the buggy revision it should fail the 6-sigma mean accuracy assertion because samples collapse to all zeros; on the fixed revision it should pass because `Generator.binomial`/shared binomial logic correctly handles very small p (using higher-precision computation of 1-p via log1p).",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip",
+            "python -m pip install pytest hypothesis",
+            "git clone https://github.com/numpy/numpy.git",
+            "cd numpy",
+            "git fetch --all",
+            "git checkout f6c2bb97146a",
+            "python -m pip install -v -e .",
+            "python -c \"import numpy as np; print(np.__version__)\""
+          ],
+          "pinned_because": [
+            "No exact version constraints are documented in the provided evidence (pytest/hypothesis/NumPy are unbounded), so pinning is intentionally avoided to keep the strategy focused on the failing numerical behavior."
+          ]
+        },
+        "test_command": "python -m pytest -q numpy/random/tests/test_generator_mt19937.py -k test_p_extremely_small",
+        "reproducing_test": "In `numpy/random/tests/test_generator_mt19937.py`, run the method `test_p_extremely_small`:\n- n = 50000000000\n- p = 5e-17\n- sample_size = 20000000\n- x = numpy.random.binomial(n, p, size=sample_size)  (legacy interface)\n- compute sample_mean = x.mean(), expected_mean = n*p, sigma = sqrt(n*p*(1-p)/sample_size)\n- assert abs(expected_mean - sample_mean) < 6*sigma (after asserting expected_mean - 6*sigma > 0).",
+        "success_criterion": "The project's own unit test fails on the buggy revision f6c2bb97146a and passes on the fixed revision from PR #29522, with no additional numeric inspection: specifically, the assertion `abs(expected_mean - sample_mean) < 6 * sigma` in `test_p_extremely_small` should be violated on the buggy revision (likely because sample_mean becomes 0 when all samples are 0) and satisfied on the fixed revision (sample_mean close to n*p within 6 sigma).",
+        "numerical_probe": "The numerical probe is the unit test\u2019s statistical check of the sample mean of a binomial draw in the extremely small p regime for the legacy API `numpy.random.binomial`. The critical quantities are expected_mean = n*p and sigma = sqrt(n*p*(1-p)/sample_size;] and the test asserts a 6-sigma bound on sample_mean.",
+        "input_output_examples": [
+          {
+            "input": "n = 50000000000; p = 5e-17; sample_size = 20000000; x = np.random.binomial(n, p, size=sample_size)  (legacy interface); then x.mean() is used by the test.",
+            "buggy_output": "sample values collapse to all zeros (so the test\u2019s sample_mean becomes 0), causing abs(expected_mean - sample_mean) >= 6*sigma and therefore failure.",
+            "expected_output": "sample_mean is non-zero and close enough to expected_mean=n*p that abs(expected_mean - sample_mean) < 6*sigma, so the assertion passes."
+          },
+          {
+            "input": "n = 50000000000; p = 5e-17; sample_size = 20000000; rng = np.random.default_rng(); x = rng.binomial(n, p, size=sample_size)  (fixed method referenced in PR example); then x.mean() ~ 2.25e-06 vs expected 2.4999999999999998e-06.",
+            "buggy_output": "Not required for the unit test below (the unit test uses the legacy `np.random.binomial`), but PR example indicates the fixed method yields non-zero samples.",
+            "expected_output": "Non-zero sample mean close to n*p (as referenced by the PR example), consistent with the acceptance criterion in the unit test."
+          }
+        ],
+        "risks": [
+          "Toolchain/build variability: the evidence does not specify dtype/precision or backend compilation flags. The binomial path may differ across builds; the test should still transition between the buggy and fixed revisions under typical NumPy builds, but if the behavior is only present under certain architectures or SIMD implementations, it may not reproduce identically.",
+          "Interface path: the unit test calls the legacy interface `numpy.random.binomial` (not `Generator.binomial` directly). The PR description states the legacy interface exhibits the all-zeros failure before the fix; if your local build/config redirects the legacy call to a different implementation, the failure mode might differ (but the goal here is to run the exact unit test as provided).",
+          "Statistical sensitivity: the test uses a 6-sigma acceptance criterion with a specific sample_size (2e7). Changing sample_size or running with different random streams could in principle change whether the test passes/fails, but the evidence indicates the buggy behavior is severe (all zeros), so it should deterministically violate the bound.",
+          "Platform limitation: if you run on an unusual platform where the random number generation implementation diverges, the buggy collapse-to-zeros may not occur. The evidence does not specify OS/architecture constraints, so this is a residual risk."
+        ],
+        "oracle": {
+          "kind": "relative",
+          "tolerance": "6*sigma computed as sqrt(n*p*(1-p)/sample_size); acceptance is abs(expected_mean - sample_mean) < 6*sigma.",
+          "reference_source": "The unit test in `numpy/random/tests/test_generator_mt19937.py` added in the diff for PR #29522.",
+          "why": "This is exactly what the test asserts. It is not an external numeric reference beyond the analytically computed expected_mean=n*p and the sigma for a binomial distribution averaged over sample_size."
+        },
+        "fails_on_buggy": "On revision f6c2bb97146a, the unit test should fail because `numpy.random.binomial(n=50000000000, p=5e-17, size=20000000)` produces all-zero samples (so sample_mean\u22480). Then abs(expected_mean - sample_mean) \u2248 expected_mean, which exceeds 6*sigma (and the test\u2019s message indicates deviation beyond the threshold).",
+        "passes_on_fixed": "On the PR-fixed revision (from PR #29522), the same test should pass because the binomial sampling in the very small p regime produces non-zero samples and a sample_mean close enough to n*p to satisfy abs(expected_mean - sample_mean) < 6*sigma."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3009,
+        "output_tokens": 1431,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002391
+      },
+      "miner_usage": {
+        "input_tokens": 10811,
+        "output_tokens": 2252,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.004978,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

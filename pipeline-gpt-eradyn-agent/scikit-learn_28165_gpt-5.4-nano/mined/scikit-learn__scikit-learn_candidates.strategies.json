@@ -1,0 +1,95 @@
+{
+  "input": "pipeline-gpt-5.4-nano/scikit-learn_28165_gpt-5.4-nano/mined/scikit-learn__scikit-learn_28165.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 13765,
+    "output_tokens": 3563,
+    "cost_usd": 0.007206,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scikit-learn/scikit-learn",
+      "pr_number": 28165,
+      "reference": "https://github.com/scikit-learn/scikit-learn/pull/28165",
+      "buggy_commit": "d43d7d61c159a63fd2c8ffebca505b9b3ae41a4e",
+      "fixed_commit": "26dfe833aa5122997a6b66197df0e03629a45e3a",
+      "bug_type": "convergence",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 10299,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce scikit-learn convergence regression in KMeans where, in the duplicate-samples / more-centers-than-non-duplicate-points regime, inertia reaches 0.0 after the second iteration but the algorithm fails to stop and instead runs until `max_iter` (default 300). The project regression test expects `km.n_iter_ == 1` and a specific ConvergenceWarning; it should fail on the buggy revision and pass on the fixed one.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "scipy",
+            "joblib",
+            "threadpoolctl",
+            "pytest",
+            "scikit-learn"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "# Checkout buggy scikit-learn revision\ngit clone https://github.com/scikit-learn/scikit-learn.git\ncd scikit-learn\ngit fetch --all --tags --prune\ngit checkout d43d7d61c159\n\n# Install build requirements and editable install\npython -m pip install -U pip\npython -m pip install -e .[test]\n\n# Ensure no stale artifacts from previous runs\npython -m pip uninstall -y scikit-learn || true\npython -m pip install -e .[test]\n"
+          ],
+          "pinned_because": [
+            "Pinned to scikit-learn commit d43d7d61c159 to ensure the buggy behaviour exists (bug report specifies the buggy commit).",
+            "No explicit NumPy/SciPy version is provided in the evidence; only their documented minimum constraints are known, so keep them at versions available in the build environment that satisfy scikit-learn's declared requirements. This is relied upon for binary wheels/builds and numerical stability without assuming exact versions."
+          ]
+        },
+        "test_command": "python -m pytest sklearn/cluster/tests/test_k_means.py -k relocating_with_duplicates -q",
+        "reproducing_test": "test_relocating_with_duplicates(algorithm, array_constr) from sklearn/cluster/tests/test_k_means.py",
+        "success_criterion": "Run the test command above on the buggy revision: the assertion `assert km.n_iter_ == 1` should FAIL because `km.n_iter_` will be > 1 (the run continues past the point where inertia becomes 0.0, typically until `max_iter` default 300). Then switch to the fixed scikit-learn revision from PR #28165 and rerun the same test: the assertion should PASS with `km.n_iter_ == 1` and the ConvergenceWarning message matching `Number of distinct clusters (4) found smaller than n_clusters (5)`.",
+        "numerical_probe": "Although the regression manifests as repeated iterations with inertia staying at 0.0, the project test does not directly check printed inertia; it asserts the internal stopping iteration count `km.n_iter_ == 1` and the specific ConvergenceWarning. Use the test as the oracle rather than adding custom numerical assertions.",
+        "input_output_examples": [
+          {
+            "input": "KMeans(n_clusters=5, init=X, algorithm in {'lloyd','elkan'}).fit(X) where X has duplicates so there are 4 distinct points and 5 requested clusters; with a warnings expectation that matches \"Number of distinct clusters (4) found smaller than n_clusters (5)\".",
+            "buggy_output": "Test observes `km.n_iter_ != 1` (algorithm does not stop after the iteration where inertia becomes 0.0; it continues until the default `max_iter`), causing `assert km.n_iter_ == 1` to fail.",
+            "expected_output": "Test observes `km.n_iter_ == 1` with the same ConvergenceWarning message matching the regex; the assertion passes."
+          }
+        ],
+        "risks": [
+          "The evidence does not provide an explicit fixed commit hash for PR #28165; to complete the transition (buggy FAIL \u2192 fixed PASS), you must check out the PR\u2019s merged/fixed revision (e.g., the commit(s) containing the fix) and rerun the identical test command.",
+          "Exact values of `km.n_iter_` beyond `!= 1` are not specified in the evidence; the test\u2019s failure condition is specifically that it is not 1, so environment differences should not matter as long as the bug reproduces (the convergence logic should still over-iterate on buggy code).",
+          "Platform/toolchain effects: if the bug only manifests under certain backends/BLAS threading behavior or numerical tolerances, it may not transition everywhere. The evidence mentions convergence/iteration logic rather than SIMD, so risk is moderate; still, if it does not reproduce, try controlling threads (e.g., `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`) and rerun the same test command.",
+          "The test is parameterized over `array_constr` (data containers in `data_containers`); you must run with the provided `-k relocating_with_duplicates` selection so all parameterizations execute. If `data_containers` excludes some containers in your environment, reproduction may vary."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "Project test assertion and warning regex in sklearn/cluster/tests/test_k_means.py diff shown in the provided evidence.",
+          "why": "The regression test checks an exact equality `km.n_iter_ == 1` and matches a regex for the specific ConvergenceWarning message; no numeric tolerance is involved."
+        },
+        "fails_on_buggy": "`assert km.n_iter_ == 1` fails because `km.n_iter_` is larger than 1 (algorithm continues iterating even after inertia reaches 0.0 due to empty-cluster relocation triggering each iteration, so stopping happens only at `max_iter` default 300).",
+        "passes_on_fixed": "`assert km.n_iter_ == 1` passes: KMeans stops after the expected iteration when more centers than non-duplicate samples exist, still emitting the expected ConvergenceWarning message."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3910,
+        "output_tokens": 1220,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002307
+      },
+      "miner_usage": {
+        "input_tokens": 9855,
+        "output_tokens": 2343,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.004899,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

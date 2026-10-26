@@ -1,0 +1,375 @@
+{
+  "repo": "pandas-dev/pandas",
+  "pr_number": 63132,
+  "reference": "https://github.com/pandas-dev/pandas/pull/63132",
+  "buggy_commit": "a7e0900cfb75d3b97ab522e20dc3f2b5807b75be",
+  "fixed_commit": "19ad2ecc2d522abee94886655e950da3bcdb77e4",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "NumPy",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "[issue:issue#60303] shows numpy : 1.26.4"
+      },
+      {
+        "name": "pytz",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "[issue:issue#60303] shows pytz : 2024.2"
+      },
+      {
+        "name": "python-dateutil",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "[issue:issue#60303] shows dateutil : 2.9.0.post0"
+      },
+      {
+        "name": "Cython",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "[readme:README.md] requires Cython for installing from sources; [issue:issue#60303] shows Cython : None"
+      },
+      {
+        "name": "pytest",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "[issue:issue#60303] shows pytest : 8.3.3"
+      }
+    ],
+    "installation_commands": [
+      "pip install cython",
+      "pip install .",
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "build_commands": [],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: NumPy \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: pytz \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: python-dateutil \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: Cython \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: pytest \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "NumPy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "[issue:issue#60303] shows numpy : 1.26.4"
+      },
+      {
+        "package": "pytz",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "[issue:issue#60303] shows pytz : 2024.2"
+      },
+      {
+        "package": "python-dateutil",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "[issue:issue#60303] shows dateutil : 2.9.0.post0"
+      },
+      {
+        "package": "Cython",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "[readme:README.md] requires Cython for installing from sources; [issue:issue#60303] shows Cython : None"
+      },
+      {
+        "package": "pytest",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "[issue:issue#60303] shows pytest : 8.3.3"
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "pandas._libs.groupby.group_sum",
+    "observed_behavior": "During overflow in the groupby/group_sum Kahan compensation path, the final float result becomes NaN instead of infinity (or -infinity).",
+    "expected_behavior": "Return infinity (or -infinity) in case of overflow.",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "Summing float values that overflow the float64 range (e.g., using np.finfo(np.float64).max / 1.7976931348623157e+308 as inputs).",
+      "Overflow occurs during the group_sum aggregation when using the Kahan compensation implementation (compensation becomes non-finite/NaN).",
+      "Affects groupby.sum() (and differs from groupby.apply(lambda: _grp.sum()) and numpy/python sum which return inf)."
+    ],
+    "input_output_examples": [
+      {
+        "input": "s = pd.Series([1.797693e+308, 1.797693e+308, 1.797693e+308])\ns.groupby([1, 1, 1]).sum()",
+        "buggy_output": "1   NaN\ndtype: float64",
+        "expected_output": "1   inf\ndtype: float64",
+        "value_kind": "float",
+        "source": "issue:issue#60303 Reproducible Example"
+      },
+      {
+        "input": "df = pd.DataFrame({\"col\": [1.797693e+308, 1.797693e+308, 1.797693e+308]}, index=pd.DatetimeIndex([pd.Timestamp(\"1970-01-01 00:00:00.000000000\"), pd.Timestamp(\"1970-01-01 00:00:00.000000001\"), pd.Timestamp(\"1970-01-01 00:00:00.000000002\")] ))\ndf.resample('1min').agg(col=(\"col\", \"sum\"))",
+        "buggy_output": "col\n1970-01-01\tNaN",
+        "expected_output": "col\n1970-01-01\tinf",
+        "value_kind": "float",
+        "source": "issue:issue#60303 Reproducible Example"
+      }
+    ],
+    "oracle_clues": [
+      "The issue states that when overflow happens during a sum aggregator the float result becomes NaN instead of inf.",
+      "The issue states this contradicts Python `sum` and `numpy.sum`, which both return `inf`.",
+      "The fix/implementation adds handling: if float compensation becomes non-finite (not isfinite) it is set to 0 to prevent NaN results instead of +/- infinity.",
+      "Specifically: 'If val is +/- infinity compensation is NaN which would lead to results being NaN instead of +/- infinity. We cannot use util.is_nan because of no gil'."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": null,
+    "precision": null,
+    "magnitude": null,
+    "tolerance": null,
+    "category_specific_evidence": [
+      "Mathematical/overflow property violated: group_sum overflow produced `NaN` instead of the expected `inf`/`-inf` (issue#60303).",
+      "Expected behavior stated: \u201cReturn infinity (or -infinity) in case of overflow.\u201d",
+      "Test demonstrating the violation/coverage for float overflow: `np.finfo(np.float64).max` equals `np.float64(1.7976931348623157e+308)` and `np.finfo(np.float64).min` equals `np.float64(-1.7976931348623157e+308)`; it \u201crequires 3 values to trigger `NaN`.\u201d",
+      "Code change indicates the prior issue mechanism: \u201cThanks for the report. This is due to our use of Kahan summation.\u201d",
+      "Test added for overflow in group_sum: `test_cython_group_sum_overflow` constructs `data = np.array([[values] for _ in range(3)])`, with `labels = np.array([0, 0, 0], dtype=np.intp)` and `group_sum(...)`; it asserts `actual` equals `expected` using `tm.assert_numpy_array_equal(actual, expected)`.",
+      "Implementation requirement for non-finite numeric handling: \u201cCheck if value is finite using the C macro `isfinite` and use special verification for complex types.\u201d",
+      "Implementation details showing the numerical property being enforced: for float32/float64, if `compensation[lab, j]` becomes non-finite (not `isfinite`) then `compensation[lab, j] = 0` to avoid results being `NaN` instead of `+/-infinity`.",
+      "Implementation detail for complex: for complex64/complex128, if `not isfinite(compensation[lab, j].real)` then special overflow handling is applied (complex overflow)."
+    ],
+    "reproduction_risks": [
+      "Reproduction depends on triggering the overflow/NaN path in the Kahan-compensated group_sum, which the PR notes requires 3 values to trigger `NaN` (not just a single overflow value).",
+      "Reproduction must use group_sum with the same aggregation setup (group labels and counts) since the test builds `data` with 3 rows and all `labels` set to 0.",
+      "Reproduction must consider float vs complex overflow handling separately, since the fix includes distinct handling for float (`isfinite(compensation)`) and complex (`isfinite(compensation.real)`)."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "pip install cython",
+        "pip install .",
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "NumPy",
+      "source": "[issue:issue#60303] shows numpy : 1.26.4",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "pytz",
+      "source": "[issue:issue#60303] shows pytz : 2024.2",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "python-dateutil",
+      "source": "[issue:issue#60303] shows dateutil : 2.9.0.post0",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "Cython",
+      "source": "[readme:README.md] requires Cython for installing from sources; [issue:issue#60303] shows Cython : None",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "pytest",
+      "source": "[issue:issue#60303] shows pytest : 8.3.3",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "pandas._libs.groupby.group_sum",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "During overflow in the groupby/group_sum Kahan compensation path, the final float result becomes NaN instead of infinity (or -infinity).",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "Return infinity (or -infinity) in case of overflow.",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 4,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 2,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 8,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "readme:README.md",
+        "issue:issue#60303",
+        "diff:pandas/_libs/groupby.pyx:5-11",
+        "pr_body:PR#63132",
+        "commit:commits",
+        "readme:README.md",
+        "readme:README.md"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "diff:pandas/_libs/groupby.pyx:5-11",
+        "pr_body:PR#63132",
+        "issue:issue#60303",
+        "issue:issue#60303",
+        "discussion:PR#63132",
+        "diff:pandas/_libs/groupby.pyx:794-822",
+        "diff:pandas/_libs/groupby.pyx:794-822"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "diff:pandas/_libs/groupby.pyx:5-11",
+        "test_diff:pandas/tests/groupby/test_libgroupby.py:329-376",
+        "discussion:PR#63132",
+        "issue:issue#60303",
+        "pr_body:PR#63132",
+        "issue:issue#60303",
+        "diff:pandas/_libs/groupby.pyx:794-822"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          },
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          }
+        ],
+        "present": [
+          "environment.dependencies"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 1.0,
+        "required_total": 5,
+        "required_present": 5,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 6578,
+    "output_tokens": 1458,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.003137,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": []
+}

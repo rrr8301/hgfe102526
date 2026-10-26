@@ -1,0 +1,108 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_68315_gpt-5.4-nano/mined/pandas-dev__pandas_68315.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 11411,
+    "output_tokens": 2930,
+    "cost_usd": 0.005944,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 68315,
+      "reference": "https://github.com/pandas-dev/pandas/pull/68315",
+      "buggy_commit": "7d79fc4499441ace8aa7bb79c385b8cfb642383d",
+      "fixed_commit": "a77f7cd865b78bb728d410d946a5ec20e9d8511c",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 7792,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas GH#68315 (wrong float->Int64 conversion in Series.convert_dtypes for out-of-int64-range floats, plus spurious RuntimeWarning) by installing pandas from a known buggy commit and running the specific failing test(s) added/modified in pandas/tests/series/methods/test_convert_dtypes.py. The test expects out-of-range floats/\u00b1inf to convert to Float64 with no warnings, and float(INT_MAX+1) to fall back to Float64 rather than producing an off-by-one Int64.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata; platform_system=='Windows' or platform_system=='Emscripten'",
+            "pytest"
+          ],
+          "system_packages": [
+            "(build tooling for compiling pandas extensions, e.g. gcc/clang and python headers)"
+          ],
+          "build_commands": [
+            "python -m pip install -U pip setuptools wheel",
+            "pip install cython numpy pytest",
+            "pip install . --no-build-isolation  # for deps present in environment, if needed",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "Exact pandas revision is required: BUGGY COMMIT 7d79fc449944 must be checked out; the fix is in a later revision and the test must switch from failing to passing across that transition.",
+            "The reproduction relies on pandas core casting behavior in convert_dtypes and downcasting helpers; using the repo\u2019s exact source tree (editable install) ensures the test exercises that revision\u2019s code."
+          ]
+        },
+        "test_command": "python -m pytest -q pandas/tests/series/methods/test_convert_dtypes.py -k \"convert_dtypes_float_out_of_int64_range or convert_dtypes_float_one_past_max or convert_dtypes_float16_no_overflow_warning\"",
+        "reproducing_test": "pandas/tests/series/methods/test_convert_dtypes.py\n- test_convert_dtypes_float_out_of_int64_range (parametrize data: [1e30], [np.inf], [-np.inf])\n- test_convert_dtypes_float_one_past_max (uses float(int(np.iinfo(np.dtype(int)).max)+1) and float(np.iinfo(np.dtype(int)).min))",
+        "success_criterion": "On buggy revision 7d79fc449944: the selected test(s) fail because convert_dtypes either (1) emits a RuntimeWarning for out-of-range floats/\u00b1inf despite tm.assert_produces_warning(None), and/or (2) incorrectly returns an Int64/incorrect value for float(INT_MAX+1) instead of falling back to Float64. On fixed revision (the PR containing the floats_fit_integer_dtype guard): the same test(s) pass with no warnings and with dtype fallback to Float64 when values do not fit in int64 bounds.",
+        "numerical_probe": "The test asserts dtype/value equality via tm.assert_series_equal, not by manually inspecting numerical scalars. It specifically targets the buggy cast path where an unguarded (arr.astype(int) == arr).all() can become true due to saturating cast behavior for out-of-range floats.",
+        "input_output_examples": [
+          {
+            "input": "pd.Series([2.0**63]).convert_dtypes()",
+            "buggy_output": "returns dtype Int64 with stored value 9223372036854775807",
+            "expected_output": "should not convert to Int64; should fall back to Float64 (exact numeric Float64 output not specified in provided evidence)"
+          },
+          {
+            "input": "pd.Series([1e30], dtype='float64').convert_dtypes()",
+            "buggy_output": "spurious RuntimeWarning emitted before fallback",
+            "expected_output": "no RuntimeWarning; result equals ser.astype('Float64')"
+          },
+          {
+            "input": "pd.Series([np.inf], dtype='float64').convert_dtypes()",
+            "buggy_output": "spurious RuntimeWarning emitted before fallback",
+            "expected_output": "no RuntimeWarning; result equals ser.astype('Float64')"
+          }
+        ],
+        "risks": [
+          "Platform/toolchain dependency: the test_convert_dtypes_float_one_past_max derives bounds from np.dtype(int) (platform C int). As noted in the test, the cast is to the platform\u2019s C int; if the buggy behavior differs across 32-bit vs 64-bit builds, the failing value might change or the path might not reproduce identically.",
+          "Warnings behavior sensitivity: the reproduction relies on tm.assert_produces_warning(None) catching a RuntimeWarning. If warning emission is suppressed differently by the runtime or compile flags, the assertion could pass even if the dtype is still wrong.",
+          "Architecture-specific casting: the described saturating cast behavior from float to int may differ by platform/ABI; if the issue only triggers on certain architectures, you may need to run on the same architecture as the bug report (not specified in evidence)."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": null,
+          "why": "The expected outputs are constructed in the test using ser.astype('Float64') (and ser.astype('Int64') for an unaffected minimum case), so equality is exact within those dtypes."
+        },
+        "fails_on_buggy": "For the buggy commit 7d79fc449944, at least one of the selected tests fails: (a) tm.assert_produces_warning(None) fails because a RuntimeWarning is raised for out-of-range floats (e.g., 1e30, \u00b1inf), and/or (b) tm.assert_series_equal fails because convert_dtypes incorrectly accepts a float as integral and returns an Int64 (off-by-one for float(INT_MAX+1)), rather than falling back to ser.astype('Float64').",
+        "passes_on_fixed": "On the fixed pandas revision that adds the floats_fit_integer_dtype guard before the integrality check in convert_dtypes, the selected tests pass: no RuntimeWarning is produced and the results exactly match ser.astype('Float64') for out-of-range/\u00b1inf and float(INT_MAX+1), while float(iinfo.min) still converts to Int64 as expected."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3894,
+        "output_tokens": 1289,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.00239
+      },
+      "miner_usage": {
+        "input_tokens": 7517,
+        "output_tokens": 1641,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.003554,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

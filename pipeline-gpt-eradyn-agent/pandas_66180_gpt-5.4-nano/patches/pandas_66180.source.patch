@@ -1,0 +1,70 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 3f4bd40617df2..dc07ea3c77c98 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -314,6 +314,7 @@ Timedelta
+ - Bug in :meth:`Series.sum` and :meth:`DataFrame.sum` on an overflowing ``timedelta64`` object where :meth:`Series.sum` raised a plain ``ValueError`` and :meth:`DataFrame.sum` silently returned a saturated result instead of raising :class:`OutOfBoundsTimedelta` (:issue:`43178`)
+ - Bug in ``Series.dt.seconds`` and ``Series.dt.microseconds`` with :class:`ArrowDtype` durations returning the ``Series.dt.components`` field values (e.g. 0-59 for seconds, or 0 for ``microseconds`` on a ``"ms"`` unit) instead of the totals within each day and second respectively, inconsistent with NumPy-backed timedeltas (:issue:`63470`)
+ - Bug in multiplying a :class:`Series` of ``timedelta64`` by an integer or float, or dividing it by a float, where an overflowing result silently wrapped or saturated instead of raising :class:`OutOfBoundsTimedelta`; multiplying by ``inf`` now raises :class:`OutOfBoundsTimedelta` instead of returning ``NaT`` (:issue:`43178`)
++- Bug in the :class:`Series` and :class:`DataFrame` constructors not honoring the unit of a ``timedelta64[unit]`` dtype when constructing from floats or a mix of integers and floats, e.g. ``pd.Series([1.5, 90.0], dtype="timedelta64[s]")`` interpreted the numbers as nanoseconds and silently truncated them to zero instead of interpreting them as seconds (:issue:`63499`)
+ 
+ Timezones
+ ^^^^^^^^^
+diff --git a/pandas/_libs/lib.pyi b/pandas/_libs/lib.pyi
+index d8d169fc30b47..04989f778bd39 100644
+--- a/pandas/_libs/lib.pyi
++++ b/pandas/_libs/lib.pyi
+@@ -62,6 +62,7 @@ def is_datetime_array(values: np.ndarray, skipna: bool = ...): ...
+ def is_string_array(values: np.ndarray, skipna: bool = ...): ...
+ def is_float_array(values: np.ndarray, skipna: bool = ...): ...
+ def is_integer_array(values: np.ndarray, skipna: bool = ...): ...
++def is_integer_float_array(values: np.ndarray, skipna: bool = ...): ...
+ def is_bool_array(values: np.ndarray, skipna: bool = ...): ...
+ def fast_multiget(
+     mapping: dict,
+diff --git a/pandas/_libs/lib.pyx b/pandas/_libs/lib.pyx
+index 4dcca10eebae9..d155e4a8d8634 100644
+--- a/pandas/_libs/lib.pyx
++++ b/pandas/_libs/lib.pyx
+@@ -2158,7 +2158,7 @@ cdef class IntegerFloatValidator(Validator):
+         return cnp.PyDataType_ISINTEGER(self.dtype)
+ 
+ 
+-cdef bint is_integer_float_array(ndarray values, bint skipna=True):
++cpdef bint is_integer_float_array(ndarray values, bint skipna=True):
+     cdef:
+         IntegerFloatValidator validator = IntegerFloatValidator(values.size,
+                                                                 values.dtype,
+diff --git a/pandas/core/arrays/timedeltas.py b/pandas/core/arrays/timedeltas.py
+index 6834226e86cbf..ba717153b77b7 100644
+--- a/pandas/core/arrays/timedeltas.py
++++ b/pandas/core/arrays/timedeltas.py
+@@ -247,10 +247,26 @@ def _simple_new(  # type: ignore[override]
+ 
+     @classmethod
+     def _from_sequence(cls, data, *, dtype=None, copy: bool = False) -> Self:
+-        unit = None
+         if dtype:
+             dtype = _validate_td64_dtype(dtype)
+-            if lib.infer_dtype(data) == "integer":
++
++        data, copy = dtl.ensure_arraylike_for_datetimelike(
++            data, copy, cls_name="TimedeltaArray"
++        )
++
++        unit = None
++        if dtype is not None:
++            if data.dtype == object:
++                # the unit applies iff the non-null values are all numeric
++                mask = isna(data)
++                notna_data = data[~mask] if mask.any() else data
++                is_numeric = lib.is_integer_float_array(notna_data)
++            else:
++                is_numeric = data.dtype.kind in "iuf"
++            if is_numeric:
++                # numeric data is interpreted in the dtype's unit, matching
++                #  to_timedelta(data, unit=...); mixed Timedelta/numeric data
++                #  keeps the "ns" default, unlike to_timedelta
+                 unit = np.datetime_data(dtype)[0]
+ 
+         data = sequence_to_td64ns(data, copy=copy, unit=unit)

@@ -1,0 +1,1171 @@
+[
+  {
+    "slug": "scikit-learn_28295",
+    "bug_type": "correctness",
+    "image": "python:3.9",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/1 reported example(s))",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "not_reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import numpy as np\nfrom sklearn import datasets\nfrom sklearn.ensemble import RandomForestClassifier, RandomForestRegressor\nfrom sklearn.impute import SimpleImputer\nfrom sklearn.model_selection import train_test_split, cross_validate\nfrom sklearn.pipeline import Pipeline\nfrom sklearn.compose import ColumnTransformer\nfrom sklearn.preprocessing import OrdinalEncoder\nfrom sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor\n\nX, y = datasets.load_iris(return_X_y=True)\nrng = np.random.RandomState(42)\nX_missing = X.copy()\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1); y = np.arange(6); tree = DecisionTreeRegressor(random_state=0).fit(X, y); leaves_idx = np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))\", \"np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))\", [\"X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1)\", \"y = np.arange(6)\", \"tree = DecisionTreeRegressor(random_state=0).fit(X, y)\"], \"all(tree.tree_.impurity >= 0) is True; tree.tree_.impurity[leaves_idx] is allclose to 0.0.\"], [\"X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',random_state=1857819720).fit(X_train[indices],y_train[indices])\", \"DecisionTreeClassifier(max_depth=3,max_features='sqrt',random_state=1857819720).fit(X_train[indices],y_train[indices])\", [\"X, y = datasets.load_iris(return_X_y=True)\", \"rng=np.random.RandomState(42)\", \"mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool)\", \"X_missing[mask]=np.nan\", \"X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13)\"], \"all(tree.tree_.impurity >= 0) is True; tree.tree_.impurity[leaves_idx] allclose to 0.0.\"], [\"RandomForestClassifier(n_estimators=4, random_state=1).fit(X_train, y_train) on iris with NaNs (mask from rng.binomial(n=np.array([1,1,1,1]).reshape(1,-1), p=(X['petal length (cm)']/8).values.reshape(-1,1))), train_test_split(random_state=13)\", \"RandomForestClassifier(n_estimators=4, random_state=1).fit(X_train, y_train) on iris with NaNs (mask from rng.binomial(n=np.array([1,1,1,1]).reshape(1,-1), p=(X['petal length (cm)']/8).values.reshape(-1,1))), train_test_split(random_state=13)\", [], \"criterion for node #5 is a valid finite (non-NaN) impurity value\"], [\"pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values\", \"pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values\", [], \"0\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "impurity_reproducer_v2": "import numpy as np\nfrom sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier\n\n# Helper: extract impurity values for single-sample leaves\ndef single_sample_leaf_indices(tree):\n    children_left = tree.tree_.children_left\n    children_right = tree.tree_.children_right\n    is_leaf = (children_left == -1) & (children_right == -1)\n    single = (tree.tree_.n_node_samples == 1)\n    return np.flatnonzero(is_leaf & single)\n\nresults = {}\n\n# 1) Regression toy with all-missing pair at start (from report)\nX = np.array([np.nan, np.nan, 3, 4, 5, 6], dtype=float).reshape(-1, 1)\ny = np.arange(6)\nreg = DecisionTreeRegressor(random_state=0)\nreg.fit(X, y)\nidx = single_sample_leaf_indices(reg)\nimp = reg.tree_.impurity[idx]\nresults['reg_toy_single_leaf_impurity'] = imp\nresults['reg_toy_single_leaf_all_finite'] = np.all(np.isfinite(imp)) if imp.size else True\nresults['reg_toy_single_leaf_all_nonneg'] = np.all(imp >= -1e-12) if imp.size else True\nresults['reg_toy_single_leaf_max_abs'] = float(np.max(np.abs(imp))) if imp.size else 0.0\n\n# 2) Classification toy on iris with NaNs (approximate construction from report)\nfrom sklearn import datasets\nfrom sklearn.model_selection import train_test_split\n\nX, y = datasets.load_iris(return_X_y=True)\nrng = np.random.RandomState(42)\n# mask shape (n_samples, 1) based on 4 features -> uses only feature 2 proportion (report has X[:,[2]]/8)\n# We'll follow report literally: mask sampled with p = X[:,[2]]/8\np = (X[:, [2]] / 8.0)\nmask = rng.binomial(n=np.ones((1,4), dtype=np.int32), p=p.T).T.astype(bool)  # may produce Nx1\nX_missing = X.copy()\n# Ensure mask is (n_samples,)\nmask_flat = mask.reshape(-1)\nX_missing[mask_flat, :] = np.nan\nX_train, _, y_train, _ = train_test_split(X_missing, y, random_state=13)\n\nclf = DecisionTreeClassifier(max_depth=3, max_features='sqrt', random_state=1857819720)\nclf.fit(X_train, y_train)\nidx = single_sample_leaf_indices(clf)\nimp = clf.tree_.impurity[idx]\nresults['cls_toy_single_leaf_impurity'] = imp\nresults['cls_toy_single_leaf_all_finite'] = np.all(np.isfinite(imp)) if imp.size else True\nresults['cls_toy_single_leaf_all_nonneg'] = np.all(imp >= -1e-12) if imp.size else True\nresults['cls_toy_single_leaf_max_abs'] = float(np.max(np.abs(imp))) if imp.size else 0.0\n\n# 3) Reduce to a single representative summary for quick defect signal\n# If any single-sample leaf impurity is non-finite or negative or max_abs > 1e-9, record defect flag.\n\ndefect = False\nfor key in ['reg_toy_single_leaf_impurity', 'cls_toy_single_leaf_impurity']:\n    arr = results[key]\n    if arr.size:\n        if (not np.all(np.isfinite(arr))) or np.any(arr < -1e-12) or np.max(np.abs(arr)) > 1e-9:\n            defect = True\nresults['defect_flag'] = defect\n\nfor k,v in results.items():\n    # probe contract: record at least one scalar via numeric values; arrays are okay but keep them small\n    if isinstance(v, np.ndarray):\n        # record summary statistics plus first few values\n        if v.size:\n            probe_name = k\n            probe(v[:10])\n        else:\n            probe( np.array([], dtype=float) )\n    else:\n        probe(k, v)\n"
+      },
+      "fixed": {
+        "impurity_reproducer_v2": "import numpy as np\nfrom sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier\n\ndef single_sample_leaf_indices(tree):\n    children_left = tree.tree_.children_left\n    children_right = tree.tree_.children_right\n    is_leaf = (children_left == -1) & (children_right == -1)\n    single = (tree.tree_.n_node_samples == 1)\n    return np.flatnonzero(is_leaf & single)\n\nresults = {}\n\n# 1) Regression toy\nX = np.array([np.nan, np.nan, 3, 4, 5, 6], dtype=float).reshape(-1, 1)\ny = np.arange(6)\nreg = DecisionTreeRegressor(random_state=0)\nreg.fit(X, y)\nidx = single_sample_leaf_indices(reg)\nimp = reg.tree_.impurity[idx]\nresults['reg_toy_single_leaf_impurity'] = imp\nresults['reg_toy_single_leaf_all_finite'] = np.all(np.isfinite(imp)) if imp.size else True\nresults['reg_toy_single_leaf_all_nonneg'] = np.all(imp >= -1e-12) if imp.size else True\nresults['reg_toy_single_leaf_max_abs'] = float(np.max(np.abs(imp))) if imp.size else 0.0\n\n# 2) Classification toy\nfrom sklearn import datasets\nfrom sklearn.model_selection import train_test_split\n\nX, y = datasets.load_iris(return_X_y=True)\nrng = np.random.RandomState(42)\np = (X[:, [2]] / 8.0)\nmask = rng.binomial(n=np.ones((1,4), dtype=np.int32), p=p.T).T.astype(bool)\nX_missing = X.copy()\nmask_flat = mask.reshape(-1)\nX_missing[mask_flat, :] = np.nan\nX_train, _, y_train, _ = train_test_split(X_missing, y, random_state=13)\n\nclf = DecisionTreeClassifier(max_depth=3, max_features='sqrt', random_state=1857819720)\nclf.fit(X_train, y_train)\nidx = single_sample_leaf_indices(clf)\nimp = clf.tree_.impurity[idx]\nresults['cls_toy_single_leaf_impurity'] = imp\nresults['cls_toy_single_leaf_all_finite'] = np.all(np.isfinite(imp)) if imp.size else True\nresults['cls_toy_single_leaf_all_nonneg'] = np.all(imp >= -1e-12) if imp.size else True\nresults['cls_toy_single_leaf_max_abs'] = float(np.max(np.abs(imp))) if imp.size else 0.0\n\n# 3) defect flag\n\ndefect = False\nfor key in ['reg_toy_single_leaf_impurity', 'cls_toy_single_leaf_impurity']:\n    arr = results[key]\n    if arr.size:\n        if (not np.all(np.isfinite(arr))) or np.any(arr < -1e-12) or np.max(np.abs(arr)) > 1e-9:\n            defect = True\nresults['defect_flag'] = defect\n\nfor k,v in results.items():\n    if isinstance(v, np.ndarray):\n        if v.size:\n            probe(v[:10])\n        else:\n            probe(np.array([], dtype=float))\n    else:\n        probe(k, v)\n",
+        "reported_examples": "import numpy as np\nfrom sklearn import datasets\nfrom sklearn.ensemble import RandomForestClassifier, RandomForestRegressor\nfrom sklearn.impute import SimpleImputer\nfrom sklearn.model_selection import train_test_split, cross_validate\nfrom sklearn.pipeline import Pipeline\nfrom sklearn.compose import ColumnTransformer\nfrom sklearn.preprocessing import OrdinalEncoder\nfrom sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor\n\nX, y = datasets.load_iris(return_X_y=True)\nrng = np.random.RandomState(42)\nX_missing = X.copy()\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1); y = np.arange(6); tree = DecisionTreeRegressor(random_state=0).fit(X, y); leaves_idx = np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))\", \"np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))\", [\"X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1)\", \"y = np.arange(6)\", \"tree = DecisionTreeRegressor(random_state=0).fit(X, y)\"], \"all(tree.tree_.impurity >= 0) is True; tree.tree_.impurity[leaves_idx] is allclose to 0.0.\"], [\"X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',random_state=1857819720).fit(X_train[indices],y_train[indices])\", \"DecisionTreeClassifier(max_depth=3,max_features='sqrt',random_state=1857819720).fit(X_train[indices],y_train[indices])\", [\"X, y = datasets.load_iris(return_X_y=True)\", \"rng=np.random.RandomState(42)\", \"mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool)\", \"X_missing[mask]=np.nan\", \"X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13)\"], \"all(tree.tree_.impurity >= 0) is True; tree.tree_.impurity[leaves_idx] allclose to 0.0.\"], [\"RandomForestClassifier(n_estimators=4, random_state=1).fit(X_train, y_train) on iris with NaNs (mask from rng.binomial(n=np.array([1,1,1,1]).reshape(1,-1), p=(X['petal length (cm)']/8).values.reshape(-1,1))), train_test_split(random_state=13)\", \"RandomForestClassifier(n_estimators=4, random_state=1).fit(X_train, y_train) on iris with NaNs (mask from rng.binomial(n=np.array([1,1,1,1]).reshape(1,-1), p=(X['petal length (cm)']/8).values.reshape(-1,1))), train_test_split(random_state=13)\", [], \"criterion for node #5 is a valid finite (non-NaN) impurity value\"], [\"pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values\", \"pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values\", [], \"0\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/1 reported example(s))",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "not_reproduced",
+      "success_criterion": "Running the two tests at buggy commit cb836be produces a FAILURE (impurity assertions fail), and the same tests would PASS at fixed commit 0fb5295. The failure must be the numerical impurity assertion, not an import/collection error.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 1,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 1,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "impurity_reproducer_v2",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between arg 0 with shape (1, 150) and arg 1 with shape (1, 4)."
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between arg 0 with shape (1, 150) and arg 1 with shape (1, 4)."
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1); y = np.arange(6); tree = DecisionTreeRegressor(random_state=0).fit(X, y); leaves_idx = np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))": [
+                3,
+                5,
+                6
+              ],
+              "X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',random_state=1857819720).fit(X_train[indices],y_train[indices])": "__error__: NameError: name 'indices' is not defined",
+              "RandomForestClassifier(n_estimators=4, random_state=1).fit(X_train, y_train) on iris with NaNs (mask from rng.binomial(n=np.array([1,1,1,1]).reshape(1,-1), p=(X['petal length (cm)']/8).values.reshape(-1,1))), train_test_split(random_state=13)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values": 0
+            },
+            "fixed_values": {
+              "X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1); y = np.arange(6); tree = DecisionTreeRegressor(random_state=0).fit(X, y); leaves_idx = np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))": [
+                3,
+                5,
+                6
+              ],
+              "X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',random_state=1857819720).fit(X_train[indices],y_train[indices])": "__error__: NameError: name 'indices' is not defined",
+              "RandomForestClassifier(n_estimators=4, random_state=1).fit(X_train, y_train) on iris with NaNs (mask from rng.binomial(n=np.array([1,1,1,1]).reshape(1,-1), p=(X['petal length (cm)']/8).values.reshape(-1,1))), train_test_split(random_state=13)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values": 0
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1); y = np.arange(6); tree = DecisionTreeRegressor(random_state=0).fit(X, y); leaves_idx = np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))",
+            "expected_output": "all(tree.tree_.impurity >= 0) is True; tree.tree_.impurity[leaves_idx] is allclose to 0.0.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "all(tree.tree_.impurity >= 0) is False and/or assert_allclose(tree.tree_.impurity[leaves_idx], 0.0) fails: single-sample-leaf MSE (impurity) is not 0.0 (criterion wrongly retains state from the earlier missing-value split).",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1); y = np.arange(6); tree = DecisionTreeRegressor(random_state=0).fit(X, y); leaves_idx = np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))",
+              "observed": [
+                3,
+                5,
+                6
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1); y = np.arange(6); tree = DecisionTreeRegressor(random_state=0).fit(X, y); leaves_idx = np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))",
+              "observed": [
+                3,
+                5,
+                6
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',",
+            "expected_output": "all(tree.tree_.impurity >= 0) is True; tree.tree_.impurity[leaves_idx] allclose to 0.0.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "assert all(tree.tree_.impurity >= 0) fails and/or assert_allclose(tree.tree_.impurity[leaves_idx], 0.0) fails: leaf impurity is negative/NaN or non-zero for single-sample leaves.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',random_state=1857819720).fit(X_train[indices],y_train[indices])",
+              "observed": "__error__: NameError: name 'indices' is not defined",
+              "evaluation_error": "NameError: name 'indices' is not defined",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',random_state=1857819720).fit(X_train[indices],y_train[indices])",
+              "observed": "__error__: NameError: name 'indices' is not defined",
+              "evaluation_error": "NameError: name 'indices' is not defined",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "RandomForestClassifier(n_estimators=4, random_state=1).fit(X_train, y_train) on iris with NaNs (mask from rng.binomial(n=np.array([1,1,1,1]).reshape(1,-1), p=(X['petal length (cm)']/8).values.reshape(-1,1))), train_test_split(random_state=13)",
+            "expected_output": "criterion for node #5 is a valid finite (non-NaN) impurity value",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "criterion is still nan for node #5",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values",
+            "expected_output": "correct statistic after the criterion is reinitialized even when n_missing=0",
+            "expected_value": 0,
+            "expected_from": "evaluated",
+            "buggy_output_reported": "wrong statistic reported by the criterion (criterion not reinitialized when n_missing=0, contaminated by a previous split with missing values)",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 5,
+            "n_failed": 3,
+            "ran_test": true,
+            "failed_setup_or_build": [
+              "cd /workspace/buggy && python -I -m pip install -q -U pip setuptools wheel && python -I -m pip install -q cython>=0.29.33 numpy>=1.25 scipy>=1.6.0 pytest && python -I -m pip install -q -e ."
+            ]
+          },
+          "fixed": {
+            "n_commands": 1,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2024-01-27T00:09:38+01:00",
+        "fixed_commit_date": "2024-01-30T15:48:19+00:00",
+        "reproducing_test_present": true,
+        "build_detected": "meson.build|setup.py:ext_modules|cython-source:sklearn/_isotonic.pyx",
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2024-01-30T15:48:19+00:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.9/site-packages/sklearn/__init__.py",
+            "build_requires": [
+              "setuptools",
+              "wheel",
+              "Cython>=0.29.33",
+              "scipy>=1.6.0"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [
+              "permissive_c"
+            ],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "1.26.3",
+              "pandas": "2.2.0",
+              "matplotlib": "3.8.2",
+              "pyparsing": "3.1.1",
+              "setuptools": "69.0.3",
+              "wheel": "0.42.0",
+              "cython": "3.0.8",
+              "scipy": "1.12.0"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): finished with status 'done'\nCollecting threadpoolctl>=2.0.0\n  Downloading threadpoolctl-3.7.0-py3-none-any.whl (26 kB)\nRequirement already satisfied: scipy>=1.6.0 in /workspace/.venvs/buggy/lib/python3.9/site-packages (from scikit-learn==1.5.dev0) (1.12.0)\nCollecting joblib>=1.2.0\n  Downloading joblib-1.5.3-py3-none-any.whl (309 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 309.1/309.1 kB 31.0 MB/s eta 0:00:00\nRequirement already satisfied: numpy>=1.19.5 in /workspace/.venvs/buggy/lib/python3.9/site-packages (from scikit-learn==1.5.dev0) (1.26.3)\nBuilding wheels for collected packages: scikit-learn\n  Building wheel for scikit-learn (pyproject.toml): started\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): finished with status 'done'\n  Created wheel for scikit-learn: filename=scikit_learn-1.5.dev0-cp39-cp39-linux_x86_64.whl size=12374826 sha256=3d4e8ef21e8bee0ddfbe33641985c3c287b477534b3ebed555d6e67de704ade4\n  Stored in directory: /tmp/pip-ephem-wheel-cache-ykv4_cxn/wheels/af/59/8d/0bbd819162f7fc2bc4949215064695a6020b025da2e0f21c03\nSuccessfully built scikit-learn\nInstalling collected packages: threadpoolctl, joblib, scikit-learn\nSuccessfully installed joblib-1.5.3 scikit-learn-1.5.dev0 threadpoolctl-3.7.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.0.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.9/site-packages/sklearn/__init__.py",
+            "build_requires": [
+              "setuptools",
+              "wheel",
+              "Cython>=0.29.33",
+              "scipy>=1.6.0"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [
+              "permissive_c"
+            ],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "1.26.3",
+              "pandas": "2.2.0",
+              "matplotlib": "3.8.2",
+              "pyparsing": "3.1.1",
+              "setuptools": "69.0.3",
+              "wheel": "0.42.0",
+              "cython": "3.0.8",
+              "scipy": "1.12.0"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): finished with status 'done'\nCollecting threadpoolctl>=2.0.0\n  Downloading threadpoolctl-3.7.0-py3-none-any.whl (26 kB)\nRequirement already satisfied: numpy>=1.19.5 in /workspace/.venvs/fixed/lib/python3.9/site-packages (from scikit-learn==1.5.dev0) (1.26.3)\nCollecting joblib>=1.2.0\n  Downloading joblib-1.5.3-py3-none-any.whl (309 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 309.1/309.1 kB 27.2 MB/s eta 0:00:00\nRequirement already satisfied: scipy>=1.6.0 in /workspace/.venvs/fixed/lib/python3.9/site-packages (from scikit-learn==1.5.dev0) (1.12.0)\nBuilding wheels for collected packages: scikit-learn\n  Building wheel for scikit-learn (pyproject.toml): started\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): finished with status 'done'\n  Created wheel for scikit-learn: filename=scikit_learn-1.5.dev0-cp39-cp39-linux_x86_64.whl size=12374863 sha256=ce9de909a920ef16be06f4e4c3f57a17dffb7c6b32af20b1dce2bc8ed596dd2c\n  Stored in directory: /tmp/pip-ephem-wheel-cache-d1r14df5/wheels/c8/8c/63/2a046f36555c1481521e72b76d461fc0c95a7d1e5f91387f47\nSuccessfully built scikit-learn\nInstalling collected packages: threadpoolctl, joblib, scikit-learn\nSuccessfully installed joblib-1.5.3 scikit-learn-1.5.dev0 threadpoolctl-3.7.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.0.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 1,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 1,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 2,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "impurity_reproducer_v2",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between arg 0 with shape (1, 150) and arg 1 with shape (1, 4)."
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between arg 0 with shape (1, 150) and arg 1 with shape (1, 4)."
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1); y = np.arange(6); tree = DecisionTreeRegressor(random_state=0).fit(X, y); leaves_idx = np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))": [
+                3,
+                5,
+                6
+              ],
+              "X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',random_state=1857819720).fit(X_train[indices],y_train[indices])": "__error__: NameError: name 'indices' is not defined",
+              "RandomForestClassifier(n_estimators=4, random_state=1).fit(X_train, y_train) on iris with NaNs (mask from rng.binomial(n=np.array([1,1,1,1]).reshape(1,-1), p=(X['petal length (cm)']/8).values.reshape(-1,1))), train_test_split(random_state=13)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values": 0
+            },
+            "fixed_values": {
+              "X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1); y = np.arange(6); tree = DecisionTreeRegressor(random_state=0).fit(X, y); leaves_idx = np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))": [
+                3,
+                5,
+                6
+              ],
+              "X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',random_state=1857819720).fit(X_train[indices],y_train[indices])": "__error__: NameError: name 'indices' is not defined",
+              "RandomForestClassifier(n_estimators=4, random_state=1).fit(X_train, y_train) on iris with NaNs (mask from rng.binomial(n=np.array([1,1,1,1]).reshape(1,-1), p=(X['petal length (cm)']/8).values.reshape(-1,1))), train_test_split(random_state=13)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values": 0
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 4,
+        "n_judged": 1,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 3,
+        "n_contested": 0,
+        "unobserved": [
+          "X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',",
+          "RandomForestClassifier(n_estimators=4, random_state=1).fit(X_train, y_train) on iris with NaNs (mask from rng.binomial(n=np.array([1,1,1,1]).reshape(1,-1), p=(X['petal length (cm)']/8).values.reshape(-1,1))), train_test_split(random_state=13)",
+          "pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values"
+        ],
+        "verdict": "not_reproduced",
+        "examples": [
+          {
+            "input": "X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1); y = np.arange(6); tree = DecisionTreeRegressor(random_state=0).fit(X, y); leaves_idx = np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))",
+            "expected_output": "all(tree.tree_.impurity >= 0) is True; tree.tree_.impurity[leaves_idx] is allclose to 0.0.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "all(tree.tree_.impurity >= 0) is False and/or assert_allclose(tree.tree_.impurity[leaves_idx], 0.0) fails: single-sample-leaf MSE (impurity) is not 0.0 (criterion wrongly retains state from the earlier missing-value split).",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1); y = np.arange(6); tree = DecisionTreeRegressor(random_state=0).fit(X, y); leaves_idx = np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))",
+              "observed": [
+                3,
+                5,
+                6
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1); y = np.arange(6); tree = DecisionTreeRegressor(random_state=0).fit(X, y); leaves_idx = np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1))",
+              "observed": [
+                3,
+                5,
+                6
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',",
+            "expected_output": "all(tree.tree_.impurity >= 0) is True; tree.tree_.impurity[leaves_idx] allclose to 0.0.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "assert all(tree.tree_.impurity >= 0) fails and/or assert_allclose(tree.tree_.impurity[leaves_idx], 0.0) fails: leaf impurity is negative/NaN or non-zero for single-sample leaves.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',random_state=1857819720).fit(X_train[indices],y_train[indices])",
+              "observed": "__error__: NameError: name 'indices' is not defined",
+              "evaluation_error": "NameError: name 'indices' is not defined",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',random_state=1857819720).fit(X_train[indices],y_train[indices])",
+              "observed": "__error__: NameError: name 'indices' is not defined",
+              "evaluation_error": "NameError: name 'indices' is not defined",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "RandomForestClassifier(n_estimators=4, random_state=1).fit(X_train, y_train) on iris with NaNs (mask from rng.binomial(n=np.array([1,1,1,1]).reshape(1,-1), p=(X['petal length (cm)']/8).values.reshape(-1,1))), train_test_split(random_state=13)",
+            "expected_output": "criterion for node #5 is a valid finite (non-NaN) impurity value",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "criterion is still nan for node #5",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "pipeline with ColumnTransformer + SimpleImputer + OrdinalEncoder + RandomForestRegressor(random_state=0); cross_validate(model, X, y, cv=10, scoring='neg_mean_absolute_error') on Ames Housing data containing missing values",
+            "expected_output": "correct statistic after the criterion is reinitialized even when n_missing=0",
+            "expected_value": 0,
+            "expected_from": "evaluated",
+            "buggy_output_reported": "wrong statistic reported by the criterion (criterion not reinitialized when n_missing=0, contaminated by a previous split with missing values)",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 5,
+          "n_failed": 3,
+          "ran_test": true,
+          "failed_setup_or_build": [
+            "cd /workspace/buggy && python -I -m pip install -q -U pip setuptools wheel && python -I -m pip install -q cython>=0.29.33 numpy>=1.25 scipy>=1.6.0 pytest && python -I -m pip install -q -e ."
+          ]
+        },
+        "fixed": {
+          "n_commands": 1,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "Running the two tests at buggy commit cb836be produces a FAILURE (impurity assertions fail), and the same tests would PASS at fixed commit 0fb5295. The failure must be the numerical impurity assertion, not an import/collection error."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2024-01-27T00:09:38+01:00",
+      "fixed_commit_date": "2024-01-30T15:48:19+00:00",
+      "reproducing_test_present": true,
+      "build_detected": "meson.build|setup.py:ext_modules|cython-source:sklearn/_isotonic.pyx",
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2024-01-30T15:48:19+00:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.9/site-packages/sklearn/__init__.py",
+          "build_requires": [
+            "setuptools",
+            "wheel",
+            "Cython>=0.29.33",
+            "scipy>=1.6.0"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [
+            "permissive_c"
+          ],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "1.26.3",
+            "pandas": "2.2.0",
+            "matplotlib": "3.8.2",
+            "pyparsing": "3.1.1",
+            "setuptools": "69.0.3",
+            "wheel": "0.42.0",
+            "cython": "3.0.8",
+            "scipy": "1.12.0"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): finished with status 'done'\nCollecting threadpoolctl>=2.0.0\n  Downloading threadpoolctl-3.7.0-py3-none-any.whl (26 kB)\nRequirement already satisfied: scipy>=1.6.0 in /workspace/.venvs/buggy/lib/python3.9/site-packages (from scikit-learn==1.5.dev0) (1.12.0)\nCollecting joblib>=1.2.0\n  Downloading joblib-1.5.3-py3-none-any.whl (309 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 309.1/309.1 kB 31.0 MB/s eta 0:00:00\nRequirement already satisfied: numpy>=1.19.5 in /workspace/.venvs/buggy/lib/python3.9/site-packages (from scikit-learn==1.5.dev0) (1.26.3)\nBuilding wheels for collected packages: scikit-learn\n  Building wheel for scikit-learn (pyproject.toml): started\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): finished with status 'done'\n  Created wheel for scikit-learn: filename=scikit_learn-1.5.dev0-cp39-cp39-linux_x86_64.whl size=12374826 sha256=3d4e8ef21e8bee0ddfbe33641985c3c287b477534b3ebed555d6e67de704ade4\n  Stored in directory: /tmp/pip-ephem-wheel-cache-ykv4_cxn/wheels/af/59/8d/0bbd819162f7fc2bc4949215064695a6020b025da2e0f21c03\nSuccessfully built scikit-learn\nInstalling collected packages: threadpoolctl, joblib, scikit-learn\nSuccessfully installed joblib-1.5.3 scikit-learn-1.5.dev0 threadpoolctl-3.7.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.0.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.9/site-packages/sklearn/__init__.py",
+          "build_requires": [
+            "setuptools",
+            "wheel",
+            "Cython>=0.29.33",
+            "scipy>=1.6.0"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [
+            "permissive_c"
+          ],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "1.26.3",
+            "pandas": "2.2.0",
+            "matplotlib": "3.8.2",
+            "pyparsing": "3.1.1",
+            "setuptools": "69.0.3",
+            "wheel": "0.42.0",
+            "cython": "3.0.8",
+            "scipy": "1.12.0"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): finished with status 'done'\nCollecting threadpoolctl>=2.0.0\n  Downloading threadpoolctl-3.7.0-py3-none-any.whl (26 kB)\nRequirement already satisfied: numpy>=1.19.5 in /workspace/.venvs/fixed/lib/python3.9/site-packages (from scikit-learn==1.5.dev0) (1.26.3)\nCollecting joblib>=1.2.0\n  Downloading joblib-1.5.3-py3-none-any.whl (309 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 309.1/309.1 kB 27.2 MB/s eta 0:00:00\nRequirement already satisfied: scipy>=1.6.0 in /workspace/.venvs/fixed/lib/python3.9/site-packages (from scikit-learn==1.5.dev0) (1.12.0)\nBuilding wheels for collected packages: scikit-learn\n  Building wheel for scikit-learn (pyproject.toml): started\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): still running...\n  Building wheel for scikit-learn (pyproject.toml): finished with status 'done'\n  Created wheel for scikit-learn: filename=scikit_learn-1.5.dev0-cp39-cp39-linux_x86_64.whl size=12374863 sha256=ce9de909a920ef16be06f4e4c3f57a17dffb7c6b32af20b1dce2bc8ed596dd2c\n  Stored in directory: /tmp/pip-ephem-wheel-cache-d1r14df5/wheels/c8/8c/63/2a046f36555c1481521e72b76d461fc0c95a7d1e5f91387f47\nSuccessfully built scikit-learn\nInstalling collected packages: threadpoolctl, joblib, scikit-learn\nSuccessfully installed joblib-1.5.3 scikit-learn-1.5.dev0 threadpoolctl-3.7.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.0.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 7,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the scikit-learn tree missing-values impurity correctness bug on the buggy commit and show the fix changes the numerical behavior so the added regression tests pass.",
+          "milestones": [
+            "buggy_test_fails [buggy] \u2014 Set up and verify the repro tests fail on the buggy revision (impurity correctness assertion). (2 steps, verify: steps_succeeded, test_ran, test_fails)",
+            "bug_observable_impurity_probe [buggy] \u2014 Demonstrate the reported numerical defect (NaN/negative/non-zero leaf impurities for single-sample leaves) on the buggy revision using the PR's input example(s). (2 steps, verify: steps_succeeded, test_ran)",
+            "fixed_test_passes [fixed] \u2014 Verify the repro tests pass on the fixed revision. (2 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "fixed_probe_clean_and_compare [fixed] \u2014 Show that the numerical impurity defect is gone on fixed (leaf impurity finite and ~0 for single-sample leaves) and that revisions differ. (2 steps, verify: steps_succeeded, probe_ran, probe_clean, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pip install -q -U pip setuptools wheel && python -I -m pip install -q cython>=0.29.33 numpy>=1.25 scipy>=1.6.0 pytest && python -I -m pip install -q -e .",
+        "purpose": "build",
+        "exit_code": 1,
+        "runtime_s": 368.93
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs sklearn.tree.tests.test_tree -k \"test_regression_tree_missing_values_toy or test_classification_tree_missing_values_toy\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 10.76
+      },
+      {
+        "verification": {
+          "milestone": "buggy_test_fails",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -I -m pip install -q -U pip setuptools wheel && py` exited 1: problem with pip.\n  ERROR: Failed building editable for scikit-learn\nerror: failed-wheel-build-for-install\n\n\u00d7 Failed to build installable wheels for some pyproject.toml based projects\n\u2570\u2500> scikit-learn; `python -I -m pytest --pyargs sklearn.tree.tests.test_tree -k \"test_regression_tr` exited 1: y::\u001b[1mtest_regression_tree_missing_values_toy\u001b[0m - assert False\n\u001b[31m================= \u001b[31m\u001b[1m1 failed\u001b[0m, \u001b[32m1 passed\u001b[0m, \u001b[33m442 deselected\u001b[0m\u001b[31m in 2.07s\u001b[0m\u001b[31m ==================\u001b[0m"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Re-establish an impurity numerical reproducer that fails on the buggy revision and passes on the fixed revision, bypassing the broken prior test-based milestone.",
+          "milestones": [
+            "buggy_setup_and_import_sanity [buggy] \u2014 Ensure the buggy revision virtualenv can import sklearn and run a minimal DecisionTree fit with NaNs without collection/build errors. (1 steps, verify: steps_succeeded, test_ran)",
+            "bug_observable_impurity_probe [buggy] \u2014 Demonstrate the impurity defect numerically on the buggy revision for the PR's input/output examples, especially single-sample leaf impurities and finite non-NaN criteria. (1 steps, verify: steps_succeeded, examples_reproduced, probe_ran, probe_shows_defect)",
+            "fixed_test_passes_on_added_regression_reproducer_examples [fixed] \u2014 Verify that the same impurity reproducer examples succeed on the fixed revision (leaf impurities non-negative and ~0 for single-sample leaves). (1 steps, verify: steps_succeeded, examples_reproduced, probe_ran, probe_clean)",
+            "revisions_differ_on_impurity [fixed] \u2014 Confirm that the buggy and fixed revisions produce different impurity-related numerical outputs for the paired reproducer examples. (1 steps, verify: steps_succeeded, probe_ran, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import sklearn; import numpy as np; print('sklearn', sklearn.__version__); from sklearn.tree import DecisionTreeRegressor; X=np.array([np.nan,1,2,3],dtype=float).reshape(-1,1); y=np.arange(4); DecisionTreeRegressor(random_state=0).fit(X,y); print('fit_ok')\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 2.23
+      },
+      {
+        "verification": {
+          "milestone": "buggy_setup_and_import_sanity",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.0,
+          5.0,
+          6.0,
+          0.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "bug_observable_impurity_probe",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/4 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 4 never evaluated \u2014 the preamble does not bind everything they need: X = np.array([np.nan, np.nan, 3, 4, 5, 6]).reshape(-1, 1); y = np.arange(6); tree = DecisionTreeRegressor(random_state=0).fit(X, y); leaves_idx = np.flatnonzero((tree.tree_.children_left == -1) & (tree.tree_.n_node_samples == 1)); X, y = datasets.load_iris(return_X_y=True); rng=np.random.RandomState(42); mask=rng.binomial(n=np.ones((1,4),dtype=np.int32), p=X[:,[2]]/8).astype(bool); X_missing[mask]=np.nan; X_train,_,y_train,_=train_test_split(X_missing,y,random_state=13); DecisionTreeClassifier(max_depth=3,max_features='sqrt',; RandomForestClassifier(n_estimators=4, random_state=1).fit(X_train, y_train) on iris with NaNs (mask from rng.binomial(n=np.array([1,1,1,1]).reshape(1,-1), p=(X['petal length (cm)']/8).values.reshape(-1,1))), train_test_split(random_state=13)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failed test-based impurity milestone with direct numerical probes that reliably reproduce the impurity defect (leaf impurities not ~0 and/or negative/NaN criteria) on buggy and confirm the fix on fixed.",
+          "milestones": [
+            "impurity_reproducer_probe_prebind [buggy] \u2014 Run a numerical reproducer probe on buggy and fixed that computes single-sample leaf impurities and checks for non-negativity/near-zero values, using the report\u2019s intended input structure. (1 steps, verify: steps_succeeded)",
+            "impurity_reproducer_probe_fixed [fixed] \u2014 Run the same numerical reproducer probe on the fixed revision and confirm leaf impurity is finite/non-negative and ~0 for single-sample leaves. (1 steps, verify: steps_succeeded)",
+            "impurity_reproducer_comparison [fixed] \u2014 Confirm buggy vs fixed revisions differ in impurity correctness metrics: buggy should show non-finite/negative or non-zero single-sample leaf impurities, while fixed should be clean. (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect, probe_clean, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "impurity_reproducer_v2",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(impurity_reproducer_v2) \u2014 Ensure the reproducer probe code runs and records impurity values for the report\u2019s targeted dataset constructions (regression toy, iris classification with NaNs, and a small random-forest training summary)."
+      },
+      {
+        "verification": {
+          "milestone": "impurity_reproducer_probe_prebind",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(impurity_reproducer_v2) \u2014 Ensure the reproducer probe code runs and records impurity values for the report\u2019s targeted dataset constructions (regression toy, iris classification with NaNs, and a small random-forest training summary). did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "impurity_reproducer_probe_prebind",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 2,
+          "detail": [
+            "[buggy] run_numerical_probe(impurity_reproducer_v2) \u2014 Ensure the reproducer probe code runs and records impurity values for the report\u2019s targeted dataset constructions (regression toy, iris classification with NaNs, and a small random-forest training summary). did not execute"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "impurity_reproducer_v2",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[fixed] run_numerical_probe(impurity_reproducer_v2) \u2014 Run identical impurity probe code to obtain the paired values for buggy vs fixed."
+      },
+      {
+        "verification": {
+          "milestone": "impurity_reproducer_probe_fixed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[fixed] run_numerical_probe(impurity_reproducer_v2) \u2014 Run identical impurity probe code to obtain the paired values for buggy vs fixed. did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failed test-based impurity probe with deterministic numerical probes that directly record leaf impurity values on buggy vs fixed, using the report\u2019s input constructions, and verify buggy shows the impurity defect while fixed is clean.",
+          "milestones": [
+            "impurity_reproducer_probe_buggy_v2 [buggy] \u2014 Run a numerical reproducer probe on the buggy revision that deterministically records leaf impurity values and checks they are non-finite/negative/non-zero for single-sample leaves. (2 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "impurity_reproducer_probe_fixed_v2 [fixed] \u2014 Run the same numerical reproducer probe on the fixed revision and confirm single-sample leaf impurity is finite, non-negative, and ~0. (1 steps, verify: steps_succeeded, probe_ran, probe_clean)",
+            "impurity_reproducer_compare_v2 [fixed] \u2014 Confirm that the probe outputs differ between buggy and fixed, establishing that the impurity defect is specifically corrected. (1 steps, verify: revisions_differ, probe_ran)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import sklearn, numpy as np; print('sklearn', sklearn.__version__); from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier;\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 2.2
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "impurity_reproducer_v2",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: ValueError: shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between arg 0 with shape (1, 150) and arg 1 with shape (1, 4)."
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "impurity_reproducer_probe_buggy_v2",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'impurity_reproducer_v2': probe raised: ValueError: shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between arg 0 with shape (1, 150) and arg 1 with shape (1, 4)."
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "impurity_reproducer_v2",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: ValueError: shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between arg 0 with shape (1, 150) and arg 1 with shape (1, 4)."
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "impurity_reproducer_probe_fixed_v2",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "probe 'impurity_reproducer_v2' is not clean on fixed: probe raised: ValueError: shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between arg 0 with shape (1, 150) and arg 1 with shape (1, 4)."
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs sklearn.tree.tests.test_tree -k test_regression_tree_missing_values_toy -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 4.71
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs sklearn.tree.tests.test_tree -k test_regression_tree_missing_values_toy -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 4.6
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_regression_tree_missing_values_toy",
+          "command": "python -I -m pytest --pyargs sklearn.tree.tests.test_tree -k test_regression_tree_missing_values_toy -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "sklearn",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_regression_tree_missing_values_toy",
+              "command": "python -I -m pytest --pyargs sklearn.tree.tests.test_tree -k test_regression_tree_missing_values_toy -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.0,
+          5.0,
+          6.0,
+          0.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.0,
+          5.0,
+          6.0,
+          0.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.0,
+          5.0,
+          6.0,
+          0.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.0,
+          5.0,
+          6.0,
+          0.0
+        ]
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 4,
+            "recorded": 4,
+            "error": null,
+            "could_not_evaluate": 3
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 4,
+            "recorded": 4,
+            "error": null,
+            "could_not_evaluate": 3
+          }
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "not_reproduced",
+        "examples": "0/1"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/1 reported example(s))"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 7,
+      "input_tokens": 19158,
+      "output_tokens": 16054,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.023899
+    }
+  }
+]

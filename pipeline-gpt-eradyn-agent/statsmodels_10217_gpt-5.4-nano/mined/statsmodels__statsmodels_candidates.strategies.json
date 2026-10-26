@@ -1,0 +1,89 @@
+{
+  "input": "pipeline-gpt-5.4-nano/statsmodels_10217_gpt-5.4-nano/mined/statsmodels__statsmodels_10217.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 9287,
+    "output_tokens": 3270,
+    "cost_usd": 0.005945,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10217,
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10217",
+      "buggy_commit": "92b4423ed77373eaf46cf63846e999c57be1a674",
+      "fixed_commit": "9cac821f4a7bfd6226590bc81a730aa7f6131cea",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 8552,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce statsmodels correctness bug from PR #10217 by running the added regression test `test_logit_loglikeobs_extreme_linpred` against the buggy commit (92b4423ed773) and then the fixed revision. The buggy revision overflows/underflows when computing log(CDF) for extreme linpred magnitudes, producing non-finite loglike values and RuntimeWarnings (treated as errors). The test should fail on the buggy revision and pass on the fixed one, with zero warnings and tight agreement to `scipy.special.log_expit` (rtol=1e-14).",
+        "needs_build": false,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "scipy",
+            "statsmodels"
+          ],
+          "system_packages": [],
+          "build_commands": [],
+          "pinned_because": [
+            "The defect is numerically dependent on NumPy build behavior for overflow/underflow and (optionally) integer handling; the provided reproduction uses the project's own test with an integer `endog` array and relies on NumPy behavior in `logaddexp`/dtype handling. Since no exact versions are documented in the evidence, do not assume a specific NumPy; instead install per the given nightly command to increase likelihood of matching the observed failure mode."
+          ]
+        },
+        "test_command": "python -m pytest statsmodels/discrete/tests/test_discrete.py -k test_logit_loglikeobs_extreme_linpred",
+        "reproducing_test": "test_logit_loglikeobs_extreme_linpred (added in statsmodels/discrete/tests/test_discrete.py)",
+        "success_criterion": "On buggy revision 92b4423ed773: `test_logit_loglikeobs_extreme_linpred` fails by raising an exception due to `RuntimeWarning` (e.g., overflow encountered in exp / log(0)) inside `warnings.simplefilter('error')`, and/or by producing non-finite outputs that violate `np.all(np.isfinite(...))` and `assert_allclose(..., rtol=1e-14)`. On fixed revision from PR #10217: the test passes\u2014`model.loglikeobs(params)` and `model.loglike(params)` produce finite arrays and match `scipy.special.log_expit(z)` with `rtol=1e-14`, with zero RuntimeWarnings.",
+        "numerical_probe": "The test computes Logit log-likelihood contributions using extreme logits via z = linspace(-1e4, 1e4, 50), with integer endog y=ones(n,dtype=int) and X=[ones,z], params=[0.0,1.0]. It then compares loglikeobs to log_expit(z). Buggy behavior is overflow/underflow in the internal exp/CDF computation leading to -inf values and RuntimeWarnings; the fix uses a stable log-CDF/log-lambda formulation (e.g., based on logaddexp and/or log1p-exp) and preserves complex-step inputs (though this specific test is real-only).",
+        "input_output_examples": [
+          {
+            "input": "Construct Logit model with n=50, z = np.linspace(-1e4, 1e4, n), X = np.column_stack([np.ones(n), z]), y = np.ones(n, dtype=int), params = np.array([0.0, 1.0]); call model.loglikeobs(params) and model.loglike(params).",
+            "buggy_output": "Some entries in loglikeobs/loglike become non-finite (e.g., -inf) and RuntimeWarnings occur (e.g., overflow in exp or divide-by-zero in log), which the test converts into an exception via warnings.simplefilter('error').",
+            "expected_output": "loglikeobs and loglike are finite for all elements, with loglikeobs agreeing with scipy.special.log_expit(z) under assert_allclose(loglikeobs, log_expit(z), rtol=1e-14) and loglike agreeing with loglikeobs.sum() under assert_allclose(loglike, loglikeobs.sum(), rtol=1e-14)."
+          }
+        ],
+        "risks": [
+          "This reproduction primarily targets the real-valued overflow/underflow bug in log(CDF)/logaddexp evaluation. The complex-step derivative failure mode described in the evidence may not be exercised by this particular test; it is covered by a different test (`TestGradLogit` via complex-step differentiation) and may require running the relevant gradient test(s) separately (risk of partial coverage).",
+          "Integer dtype behavior (y is integer) may be NumPy-build dependent. The evidence states that integer inputs can raise TypeError on some NumPy builds and that casting behavior was part of the fix; if your NumPy version does not reproduce the buggy dtype path, the warning/overflow failure may still reproduce, but the exact failure mode could differ (warning vs. exception vs. value mismatch).",
+          "The provided pip install command installs `statsmodels` from PyPI nightly wheels; ensure you are instead building/testing the specific git revisions (92b4423ed773 and the fixed revision). If you only install from PyPI nightly, you will not guarantee the buggy vs fixed code under test.",
+          "If the bug is fixed only for a particular code path guarded by optional imports or BLAS/LAPACK behavior, results could vary across platforms; the evidence indicates the failure is due to stable-log-lambda evaluation, so it should be consistent across platforms, but warnings-to-errors is the key gate."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "scipy.special.log_expit(z) and the internal identity loglike == loglikeobs.sum() asserted by the test",
+          "why": "The test explicitly checks finiteness and uses assert_allclose with rtol=1e-14 against scipy.special.log_expit(z), which is the reference for log(CDF) for Logit with y=1. It also checks that no RuntimeWarnings are emitted by treating warnings as errors."
+        },
+        "fails_on_buggy": "When run on commit 92b4423ed773, `warnings.simplefilter('error')` causes RuntimeWarnings from overflow/underflow during the log-CDF computation (for |z| up to 1e4) to be raised as an exception, or the computation yields -inf/non-finite values that fail `np.all(np.isfinite(loglikeobs))` / `np.all(np.isfinite(loglike))` and the tight `assert_allclose(..., rtol=1e-14)` comparison to `scipy.special.log_expit(z)`.",
+        "passes_on_fixed": "On the fixed revision from PR #10217 (stable log-CDF/log-lambda evaluation; correct dtype handling), the same test returns finite arrays and matches `scipy.special.log_expit(z)` with rtol=1e-14 and emits no RuntimeWarnings, so the test completes successfully."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3289,
+        "output_tokens": 1404,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002413
+      },
+      "miner_usage": {
+        "input_tokens": 5998,
+        "output_tokens": 1866,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0035320000000000004,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+diff --git a/pandas/tests/dtypes/test_inference.py b/pandas/tests/dtypes/test_inference.py
+index 830b1311470bf..16f3eb591bd5c 100644
+--- a/pandas/tests/dtypes/test_inference.py
++++ b/pandas/tests/dtypes/test_inference.py
+@@ -794,6 +794,51 @@ def test_convert_int_overflow(self, value):
+         result = lib.maybe_convert_objects(arr)
+         tm.assert_numpy_array_equal(arr, result)
+ 
++    @pytest.mark.parametrize("null", [None, np.nan])
++    @pytest.mark.parametrize(
++        "data",
++        [
++            [2**63, -1],
++            [-1, 2**63],
++            [np.uint8(1), -1],
++            [-1, np.uint8(1)],
++            [np.int8(1), np.uint8(2)],
++        ],
++    )
++    def test_convert_signed_unsigned_conflict_with_null(self, null, data):
++        # GH#66519 a None before either value used to hide the signed/unsigned
++        #  conflict, so these inferred float64 with a null present and object
++        #  without one. The conflict is flagged either by value range (2**63 vs
++        #  -1) or by numpy scalar type (np.uint8 vs np.int8), and neither was
++        #  checked once seen.null_ was set. np.nan never hid it, since it sets
++        #  seen.nan_ rather than seen.null_.
++        bare = np.array(data, dtype=object)
++        tm.assert_numpy_array_equal(lib.maybe_convert_objects(bare), bare)
++
++        for arr in [
++            np.array([null, *data], dtype=object),
++            # the null only has to come before one of the two
++            np.array([data[0], null, data[1]], dtype=object),
++        ]:
++            tm.assert_numpy_array_equal(lib.maybe_convert_objects(arr), arr)
++
++    @pytest.mark.parametrize("huge", [-(10**400), -(2**63) - 1, 2**64, 10**400])
++    @pytest.mark.parametrize("other", [1, None, np.nan, "x"])
++    @pytest.mark.parametrize("reverse", [False, True])
++    def test_convert_int_overflow_not_alone(self, huge, other, reverse):
++        # GH#66519 an integer too big for any numeric dtype gives object dtype
++        #  wherever it sits in the array. Values beyond the float64 range used
++        #  to raise OverflowError, and one following a null used to give float64.
++        value = [other, huge] if reverse else [huge, other]
++        arr = np.array(value, dtype=object)
++        for kwargs in [
++            {"convert_numeric": True},
++            {"convert_numeric": False, "convert_non_numeric": True},
++            {"convert_to_nullable_dtype": True},
++        ]:
++            result = lib.maybe_convert_objects(arr, **kwargs)
++            tm.assert_numpy_array_equal(result, arr)
++
+     @pytest.mark.parametrize(
+         "value, expected_value",
+         [
+diff --git a/pandas/tests/series/test_constructors.py b/pandas/tests/series/test_constructors.py
+index 53d90dc1c3ea9..aed4d6c7a2e1d 100644
+--- a/pandas/tests/series/test_constructors.py
++++ b/pandas/tests/series/test_constructors.py
+@@ -793,6 +793,31 @@ def test_constructor_signed_int_overflow_raises(self):
+         with pytest.raises(err, match=msg):
+             Series([1, 200, 923442], dtype="uint8")
+ 
++    @pytest.mark.parametrize("reverse", [False, True])
++    def test_constructor_int_above_float64_range(self, reverse):
++        # GH#66519 an int too big for any numeric dtype infers object dtype
++        #  wherever it sits. A list is inferred with convert_numeric=True and
++        #  used to raise OverflowError in either order; an object array stops at
++        #  the first integer, so it only raised with the big value first.
++        huge = 10**400
++        data = [1, huge] if reverse else [huge, 1]
++        arr = np.array(data, dtype=object)
++
++        assert Series(data).dtype == object
++        assert Index(data).dtype == object
++        assert Series(arr).dtype == object
++        assert Index(arr).dtype == object
++
++    @pytest.mark.parametrize("reverse", [False, True])
++    def test_constructor_uint64_int64_conflict_after_none(self, reverse):
++        # GH#66519 a None before either value used to hide the conflict,
++        #  giving a float64 that rounds 2**64 - 1 up to 2**64
++        data = [-1, 2**64 - 1] if reverse else [2**64 - 1, -1]
++
++        result = Series([None, *data])
++        assert result.dtype == object
++        assert result[1] == data[0]
++
+     @pytest.mark.parametrize(
+         "values",
+         [

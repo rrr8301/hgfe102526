@@ -1,0 +1,105 @@
+{
+  "input": "pipeline_no_historic/pandas_66652/mined/pandas-dev__pandas_66652.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 15539,
+    "output_tokens": 4544,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66652,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66652",
+      "buggy_commit": "d8659d45c49d09f2f207b002d172e1af1a7555a7",
+      "fixed_commit": "3ac4ba16373ec2d25839b49f425a26864e86f0a1",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5685,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the Week offset array-path overflow in pandas by building the buggy commit d8659d45c49d and running the three new tests in pandas/tests/tseries/offsets/test_week.py; on the buggy revision they should fail (wrapped values or missing OverflowError, and the 2**32 case behaves like Week(0)), and on the fixed revision (the PR head with checked_add/checked_mul and int64_t n) they should pass.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "pytest"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain (gcc or clang)",
+            "git"
+          ],
+          "build_commands": [
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy, python-dateutil, tzdata and Cython are documented in README.md without a version constraint; no era ceiling is recorded, so no pins are applied and the build uses whatever versions pip resolves at build time (unbounded, chosen here, not evidenced)",
+            "The Cython extension modules must be compiled because the defect lives in tslibs/offsets.pyx and the nogil _end_apply_index loop, so an editable build from the buggy commit is required; a stale build from another revision would not reproduce the transition"
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/tseries/offsets/test_week.py -k \"test_week_apply_array_lands_on_nat_sentinel or test_week_apply_array_out_of_bounds or test_week_apply_array_large_n\" -v",
+        "reproducing_test": "pandas/tests/tseries/offsets/test_week.py::test_week_apply_array_lands_on_nat_sentinel, pandas/tests/tseries/offsets/test_week.py::test_week_apply_array_out_of_bounds, pandas/tests/tseries/offsets/test_week.py::test_week_apply_array_large_n",
+        "success_criterion": "Transition: on the buggy revision d8659d45c49d the parametrized tests fail, because the array addition returns a wrapped or NaT-equal value instead of raising OverflowError('Overflow in int64 addition') (and test_week_apply_array_large_n returns the unshifted date for Week(2**32)); on the fixed revision the same tests pass, with OverflowError raised for the overflowing cases and Week(2**32) producing the shifted result.",
+        "numerical_probe": "DatetimeIndex([Timestamp(iNaT + 7*86400*10**9)]) + Week(-1) and DatetimeIndex([Timestamp.max]) + Week(1), comparing whether OverflowError is raised",
+        "input_output_examples": [
+          {
+            "input": "pd.DatetimeIndex([pd.Timestamp.max]) + pd.offsets.Week(1)",
+            "buggy_output": "wrapped value 1677-09-28 00:12:43.145224191 (silent wrap)",
+            "expected_output": "OverflowError: Overflow in int64 addition"
+          },
+          {
+            "input": "pd.date_range('2000-01-03', periods=1, unit='s') + pd.offsets.Week(2**32, weekday=0)",
+            "buggy_output": "2000-01-03 (equal to Week(0), n truncated to 32 bits)",
+            "expected_output": "2000-01-03 shifted by 2**32 weeks (not equal to input)"
+          }
+        ],
+        "risks": [
+          "The buggy commit must be built from source; running against a released or prebuilt pandas wheel will not reproduce the failure.",
+          "The test file imports iNaT from pandas._libs.tslibs and DatetimeIndex from pandas; if the buggy commit lacks these exports the module fails at import, which is a collection error rather than the intended assertion failure, so verify the import succeeds on the buggy revision.",
+          "Behavior depends on int64 overflow semantics and on the C-level truncation of n to 32 bits; this is platform-independent in principle but the 32-bit C int assumption is what makes Week(2**32) collapse, so run on a standard 64-bit Linux x86_64 build.",
+          "The large-n test body is partially cut off in the evidence, so its exact expected values are not fully confirmed; the assertion as shown in the diff is what is used.",
+          "No sanitizer or specific architecture is evidenced as required; if the defect only manifests under a particular compiler optimisation level (for example, undefined behaviour in signed overflow with -O2), the buggy build may not show the failure and this should be checked by inspecting the failing assertion output.",
+          "Unbounded dependency versions: NumPy and Cython have no documented or era constraint, so a very recent NumPy 2.x or Cython 3.x may fail to build the buggy commit for reasons unrelated to this defect; if the build fails, pin to versions contemporary with the commit and record the choice."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "pandas/tests/tseries/offsets/test_week.py assertions in the PR diff (OverflowError match and tm.assert_index_equal)",
+          "why": "Integer overflow and NaT-sentinel equality are exact checks; no numerical tolerance applies."
+        },
+        "fails_on_buggy": "On d8659d45c49d, dti + Week(...) does not raise OverflowError, so pytest.raises fails with 'DID NOT RAISE' for the sentinel and out-of-bounds tests; test_week_apply_array_large_n fails because the result equals the input date instead of the shifted date, so tm.assert_index_equal reports a mismatch.",
+        "passes_on_fixed": "On the fixed revision the checked_add path raises OverflowError with message 'Overflow in int64 addition' matching the regex, and the large-n result equals 946857600 + 2**32*7*86400 seconds, so all parametrized cases pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5101,
+        "output_tokens": 1965,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 10438,
+        "output_tokens": 2579,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

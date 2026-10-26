@@ -1,0 +1,368 @@
+{
+  "repo": "pandas-dev/pandas",
+  "pr_number": 66796,
+  "reference": "https://github.com/pandas-dev/pandas/pull/66796",
+  "buggy_commit": "14350fa162178a10d91ae90c46c4d6bc7dead1bc",
+  "fixed_commit": "e443dab23d03b409f5fac3a9279aba7849538ee9",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "numpy",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "readme:README.md"
+      },
+      {
+        "name": "python-dateutil",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md"
+      },
+      {
+        "name": "tzdata",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md (only required on Windows/Emscripten)"
+      },
+      {
+        "name": "cython",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md (needed for installation from sources)"
+      }
+    ],
+    "installation_commands": [
+      "pip install cython",
+      "pip install ."
+    ],
+    "build_commands": [
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: numpy \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: python-dateutil \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: tzdata \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: cython \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "numpy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "readme:README.md"
+      },
+      {
+        "package": "python-dateutil",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md"
+      },
+      {
+        "package": "tzdata",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md (only required on Windows/Emscripten)"
+      },
+      {
+        "package": "cython",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md (needed for installation from sources)"
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "pandas.Series.to_json",
+    "observed_behavior": "Serializing an object-dtype Series holding an unsigned numpy scalar above int64 max wraps the value to a negative number, e.g. '{\"0\":-9223372036854775808}'.",
+    "expected_behavior": "The exact unsigned value should be written as decimal digits, e.g. '{\"0\":9223372036854775808}'.",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "Series holds a numpy unsigned scalar (np.uint64 or np.ulonglong) in an object-dtype container",
+      "The unsigned value is greater than INT64_MAX (2**63 - 1)",
+      "The value is cast to int64 by the ujson encoder path instead of being routed to JT_BIGNUM",
+      "Control: the same value in a real dtype=\"uint64\" Series already serializes correctly, and a plain Python int in object dtype is also correct"
+    ],
+    "input_output_examples": [
+      {
+        "input": "pd.Series([np.uint64(2**63)], dtype=object).to_json()",
+        "buggy_output": "'{\"0\":-9223372036854775808}'",
+        "expected_output": "'{\"0\":9223372036854775808}'",
+        "value_kind": "string",
+        "source": "issue#66142 reproducer and PR#66796 before/after"
+      }
+    ],
+    "oracle_clues": [
+      "The issue states the expected output as '{\"0\":9223372036854775808}', compared as text",
+      "The uint64-dtype Series output '{\"0\":9223372036854775808}' is cited as the correct reference behaviour",
+      "The fix routes values above INT64_MAX to JT_BIGNUM, which writes the exact decimal digits; values that fit keep the JT_LONG path"
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": "object",
+    "precision": "exact decimal digits via JT_BIGNUM for unsigned scalars above INT64_MAX; uint8/uint16/uint32 unchanged via JT_LONG fast path",
+    "magnitude": "values above int64 max (2**63 = 9223372036854775808)",
+    "tolerance": null,
+    "category_specific_evidence": [
+      "Series([np.uint64(2**63)], dtype=object).to_json() returns '{\"0\":-9223372036854775808}' (wrapped negative) before fix",
+      "After fix the same call returns '{\"0\":9223372036854775808}'",
+      "Same input with dtype uint64 returns '{\"0\":9223372036854775808}' already correct",
+      "Mathematical property violated: a non-negative unsigned value above INT64_MAX is wrapped to a negative number (value 2**63 is encoded as -2**63, i.e. value minus 2**64 modulo wrap)",
+      "np.ulonglong (NPY_ULONGLONG, num=10) is a distinct type from np.uint64 (NPY_ULONG, num=8); issubclass(np.ulonglong, np.uint64) is False while issubclass(np.ulonglong, np.unsignedinteger) is True, so gating on uint64 spelling misses ulonglong",
+      "Real uint64 arrays were not affected because PyArray_GETITEM yields Python int which takes JT_BIGNUM path; plain Python int in object dtype also fine",
+      "test_int_max previously skipped uint64 max and used int64 max; changed to num = klass(np.iinfo(dtype).max) so uint64 max is round-tripped"
+    ],
+    "reproduction_risks": [
+      "Reproducer requires object-dtype container holding a NumPy unsigned scalar, not a Python int or uint64 array",
+      "np.ulonglong must be tested separately from np.uint64 on platforms where NPY_UINT64 aliases NPY_ULONG",
+      "Python-level test uses ujson_loads/ujson_dumps round trip through klass(...) to compare against the original value"
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "pip install cython",
+        "pip install ."
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.build_commands",
+      "value": [
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "numpy",
+      "source": "readme:README.md",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "python-dateutil",
+      "source": "readme:README.md",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "tzdata",
+      "source": "readme:README.md (only required on Windows/Emscripten)",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "cython",
+      "source": "readme:README.md (needed for installation from sources)",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "pandas.Series.to_json",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "Serializing an object-dtype Series holding an unsigned numpy scalar above int64 max wraps the value to a negative number, e.g. '{\"0\":-9223372036854775808}'.",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "The exact unsigned value should be written as decimal digits, e.g. '{\"0\":9223372036854775808}'.",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 4,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 1,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.dtype",
+      "value": "object",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.precision",
+      "value": "exact decimal digits via JT_BIGNUM for unsigned scalars above INT64_MAX; uint8/uint16/uint32 unchanged via JT_LONG fast path",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "values above int64 max (2**63 = 9223372036854775808)",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 7,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "readme:README.md",
+        "pr_body:PR#66796",
+        "issue:issue#66142",
+        "commit:commits",
+        "diff:pandas/_libs/src/vendored/ujson/python/objToJSON.c:1814-1838",
+        "pr_body:PR#66796",
+        "pr_body:PR#66796"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "pr_body:PR#66796",
+        "issue:issue#66142",
+        "issue:issue#66142",
+        "diff:doc/source/whatsnew/v3.1.0.rst:714-720",
+        "pr_body:PR#66796",
+        "issue:issue#66142",
+        "pr_body:PR#66796"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "pr_body:PR#66796",
+        "issue:issue#66142",
+        "issue:issue#66142",
+        "test_diff:pandas/tests/io/json/test_ujson.py:756-762",
+        "diff:doc/source/whatsnew/v3.1.0.rst:714-720",
+        "pr_body:PR#66796",
+        "pr_body:PR#66796"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          }
+        ],
+        "present": [
+          "environment.dependencies",
+          "environment.build_commands"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 1.0,
+        "required_total": 5,
+        "required_present": 5,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 10302,
+    "output_tokens": 2927,
+    "cache_read_tokens": 0,
+    "cost_usd": 0,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": []
+}

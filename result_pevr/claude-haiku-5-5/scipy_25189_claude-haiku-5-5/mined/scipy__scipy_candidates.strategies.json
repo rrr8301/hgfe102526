@@ -1,0 +1,119 @@
+{
+  "input": "pipeline-haiku-eradyn-inloop/scipy_25189_claude-haiku-5-5/mined/scipy__scipy_25189.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-23",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 20081,
+    "output_tokens": 7243,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 25189,
+      "reference": "https://github.com/scipy/scipy/pull/25189",
+      "buggy_commit": "af7b8de28652f5bb5335b0b42b9b562a6befcc53",
+      "fixed_commit": "5a594372ca5eac1f036be4547d2bd9284fcdf26f",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 8212,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce scipy PR #25189 by building scipy at buggy commit af7b8de28652 on Linux x86_64 with OpenBLAS, then run the developer's test_singular. The fix swaps the general LAPACK dgesv solve in scipy/interpolate/_rbfinterp_np.py for the symmetric dsysv. The expected transition is that test_singular fails on the buggy revision because no LinAlgError is raised (the solver returns finite but meaningless coefficients), and passes on the fixed revision because dsysv reports an exactly zero pivot and scipy raises LinAlgError matching 'Singular matrix'. The mechanism is inferred, not confirmed by the evidence: the 1.07e-302 coordinate gap underflows in the squared distance used by the default thin_plate_spline kernel, so the kernel rows of points 2 and 3 coincide and the augmented system is singular in floating point.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12 (chosen; not stated by the evidence)",
+          "pip_packages": [
+            "numpy==2.3.*",
+            "cython==3.0.*",
+            "pybind11 (latest release compatible with the chosen scipy build; unbounded, chosen by this plan)",
+            "pythran (latest release compatible with the chosen scipy build; unbounded, chosen by this plan)",
+            "meson-python",
+            "ninja",
+            "pytest",
+            "hypothesis",
+            "pooch",
+            "pyyaml (optional, only for show_config output; not needed for the test)"
+          ],
+          "system_packages": [
+            "gfortran",
+            "libopenblas-dev or openblas via pkg-config (OpenBLAS 0.3.2x-0.3.3x era)",
+            "pkg-config",
+            "git",
+            "a C/C++ compiler (gcc or clang)"
+          ],
+          "build_commands": [
+            "git clone https://github.com/scipy/scipy.git && cd scipy && git checkout af7b8de28652 && git submodule update --init --recursive",
+            "python3.12 -m venv .venv && . .venv/bin/activate",
+            "pip install -r requirements/build.txt",
+            "pip install 'numpy==2.3.*' 'cython==3.0.*' pytest hypothesis pooch meson-python ninja",
+            "pip install --no-build-isolation -e . -Csetup-args=-Dblas=openblas -Csetup-args=-Dlapack=openblas"
+          ],
+          "pinned_because": [
+            "numpy <=2.3: era ceiling at the PR date (2026-05-21), numerically relevant; the buggy LAPACK call path depends on the numpy/scipy pairing of that era",
+            "scipy <=1.15 era ceiling does not apply to building the dev revision itself; the reproduction builds from source at the buggy commit, so the scipy version is the checkout, not a pip release",
+            "cython 3.0.* : era ceiling (<=3.0) from the evidence; not numerically relevant, and may conflict with the build requirements of the dev revision, so it is a fallback if the build fails",
+            "pybind11 and pythran: unbounded in the evidence; chosen as latest compatible, and not expected to affect the RBF solver path"
+          ]
+        },
+        "test_command": "python -m pytest scipy/interpolate/tests/test_rbfinterp.py -k test_singular -v",
+        "reproducing_test": "scipy/interpolate/tests/test_rbfinterp.py::TestRBFInterpolator::test_singular (added in the PR diff; a method inside the test class)",
+        "success_criterion": "On the buggy revision af7b8de28652, test_singular FAILS: RBFInterpolator(points, values.reshape(-1,1)) returns without raising LinAlgError, so pytest.raises reports DID NOT RAISE. On the fixed revision, test_singular PASSES: the dsysv solve detects the singular system and raises LinAlgError whose message matches 'Singular matrix'.",
+        "numerical_probe": "Inspect the solve directly: build the RBF system for the four points [[2,0],[0,0],[0,1.0735703551645039e-302],[0.5,3]] with default kernel and degree, then check whether the kernel distance between the two near-identical points underflows to exactly zero and whether the resulting matrix has an exactly zero pivot.",
+        "input_output_examples": [
+          {
+            "input": "points = np.array([[0.0, 2.0],[0.0, 1.5],[0.0, 2.2250738585e-313],[0.0, 1.0],[0.0, 0.0],[1.0, 0.0]]); values = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.0]); rbf = RBFInterpolator(points, values); result = rbf(points)",
+            "buggy_output": "[-7.62804800e-01 -8.32581840e-02 3.81402400e-01 5.55111512e-17 3.81402400e-01 8.51087249e-01] (max error 0.7628047998293861, max |coeff| 1867743765476736.2)",
+            "expected_output": "[0. 0. 0. 0. 0. 1.]"
+          },
+          {
+            "input": "same points and values as above, rbf = interpolate.RBFInterpolator(points, values.reshape(-1, 1)); result = rbf(points).flatten()",
+            "buggy_output": "[ 8.0843341 3.76166312 -2.78582009 0.7696327 -2.78582009 1. ] (max error 8.08433409884193)",
+            "expected_output": "[0. 0. 0. 0. 0. 1.]"
+          }
+        ],
+        "risks": [
+          "The buggy-side failure is platform dependent: the issue reports say the reproducer changes from machine to machine. If dgesv on the target OpenBLAS already flags the pivot, test_singular may pass on the buggy revision and the transition would not occur. Record which machine reproduces it before trusting the result.",
+          "The test's failure mode is 'no exception' versus 'exception with the right message'. If the fixed revision raises a LinAlgError with different wording, the match='Singular matrix' check fails and the transition is lost. Check the exact message in the fixed source.",
+          "Subnormal handling matters: 2.2250738585e-313 is subnormal and the test's 1.0735703551645039e-302 is near the underflow edge. Builds with flush-to-zero or -ffast-math flags (not stated by the evidence, so null) can change which pivot is exactly zero. Keep default compiler flags.",
+          "The evidence reports the bug on macOS with Accelerate (3.13 report) and on Linux with OpenBLAS (3.9 and 3.14 reports). This plan uses Linux OpenBLAS. A transition seen only under Accelerate will not reproduce here; that is a platform risk, not a plan defect.",
+          "The expected behaviour is ambiguous across sources: the regression test expects a LinAlgError (singularity detection), while the hypothesis-style reproducer expects accurate interpolation with rtol/atol 1e-5. The graded transition is test_singular only; do not use the accuracy reproducer as the pass/fail signal.",
+          "The build pins (numpy 2.3, cython 3.0) are era inferences, not documented constraints for the dev revision. If the dev revision requires a newer Cython or numpy to build, the era pin must be relaxed and the reproduction should be re-verified.",
+          "The PR body is truncated and the scipy version is not stated, so the exact buggy revision's solver code must be read from the checkout rather than assumed."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "developer's test_singular in the PR diff (pytest.raises(LinAlgError, match='Singular matrix'))",
+          "why": "The graded check is exception-based: the test either raises the expected LinAlgError with the expected message or it does not. No numeric tolerance applies to this test."
+        },
+        "fails_on_buggy": "On af7b8de28652, the dgesv solve does not flag the singular system, so no LinAlgError is raised and pytest.raises reports DID NOT RAISE, which fails the test. The coefficients are finite but meaningless, which is why the accuracy symptoms appear elsewhere.",
+        "passes_on_fixed": "On the fixed revision the dsysv solve reports an exactly zero pivot (info>0), scipy raises LinAlgError with 'Singular matrix', and pytest.raises matches, so the test passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5684,
+        "output_tokens": 4647,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 14397,
+        "output_tokens": 2596,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

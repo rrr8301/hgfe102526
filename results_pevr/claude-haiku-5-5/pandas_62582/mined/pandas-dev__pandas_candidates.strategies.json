@@ -1,0 +1,114 @@
+{
+  "input": "pipeline_no_historic/pandas_62582/mined/pandas-dev__pandas_62582.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 20743,
+    "output_tokens": 6671,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 62582,
+      "reference": "https://github.com/pandas-dev/pandas/pull/62582",
+      "buggy_commit": "25607882c53f45c8a3eb9bdf17615e4db9f3abc8",
+      "fixed_commit": "21130b13c5dd97508eadb578a4fae3aa2a1e77b1",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7451,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas PR 62582 by building the buggy commit 25607882c53f from source (editable meson build with Cython), applying the developer's test_ints.py diff, and running the C-engine overflow tests. On the buggy revision the c-engine overflow tests fail because big integers come back as strings; on the fixed revision they pass. The test compares exact integers, so no numeric tolerance is involved. The environment (NumPy, python-dateutil, tzdata, Cython) has no documented version constraint in the evidence, so the versions chosen below are inferred from the pinned build requirements of the checked-out revision, not from documentation.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "a C/C++ compiler (gcc or clang)",
+            "git",
+            "ninja-build (only if meson requires it on this platform)"
+          ],
+          "build_commands": [
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy: no documented constraint in evidence, so use the version listed in pandas' pyproject.toml build-system/runtime requirements for this revision (era-inferred from the checked-out tree, not documented); it is numerically relevant only for the object-dtype construction path",
+            "Cython: no documented constraint; use the version pyproject.toml pins for the build backend at this revision, since the C parser .pyx must be regenerated from source",
+            "python-dateutil and tzdata: documented but not numerically relevant; left at the versions the pandas install resolves, not pinned",
+            "Python interpreter: not stated in evidence; choose a version the checked-out pyproject.toml declares as supported, and record it"
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/io/parser/common/test_ints.py -k 'int64_overflow or int64_uint64_range or outside_int64_uint64_range' -q -p no:cacheprovider",
+        "reproducing_test": "pandas/tests/io/parser/common/test_ints.py::test_int64_overflow (c engine param), test_int64_uint64_range, test_outside_int64_uint64_range, and the new test_outside_int64_uint64_range_follow_str, after applying the developer's test_ints.py diff to the buggy checkout",
+        "success_criterion": "Transition: on the buggy revision (25607882c53f with the test diff applied) test_int64_overflow[c] and test_outside_int64_uint64_range[c] (and test_int64_uint64_range[c]) FAIL because the C engine returns strings where the test expects Python integers or object values; on the fixed revision (the PR merge commit with the same diff) these same tests PASS. test_outside_int64_uint64_range_follow_str is expected to PASS on both revisions, since the string-column behaviour it guards is unchanged; it is a regression guard, not the transition. The python engine cases are xfail-marked by the diff and should not count toward the transition.",
+        "numerical_probe": "read_csv(StringIO('13007854817840017028824'), header=None, engine='c') should return int-valued object (exact Python int) on the fixed build and a str on the buggy build",
+        "input_output_examples": [
+          {
+            "input": "read_csv with engine='c' on a column containing 00013007854817840017028824 (ID column of test_int64_overflow)",
+            "buggy_output": "00013007854817840017028824 as a string",
+            "expected_output": "Python integer 13007854817840017028824 (exact)"
+          },
+          {
+            "input": "read_csv with engine='c' on a column containing 13007854817840017963235",
+            "buggy_output": "the value is returned as a string",
+            "expected_output": "Python integer 13007854817840017963235"
+          },
+          {
+            "input": "read_csv with engine='c' on input f\"{val}\\nabc\" where val = np.iinfo(np.uint64).max + 1",
+            "buggy_output": "string column with str(val) and 'abc' (passes on buggy as well)",
+            "expected_output": "DataFrame([str(val), 'abc']): column stays as strings with str(val)"
+          }
+        ],
+        "risks": [
+          "The buggy-to-fixed transition only exists in the C tokenizer/parser path; the pyarrow engine parses to float64 and is xfail-marked, and the python engine is also xfail-marked, so only the c engine carries the transition. If pyarrow is installed it will report xfail or skip, which is expected and not a failure.",
+          "Building the .pyx extensions requires a working C compiler and meson toolchain; on macOS arm64 or Windows the build may need extra setup, and the behaviour was not stated to be platform-specific, so the Linux x86_64 build is the safe choice.",
+          "The buggy revision's string expectations for in-range values (test_int64_uint64_range) are inferred from the diff comments, not from captured output; exact buggy output strings beyond the leading-zero example are not stated in the evidence.",
+          "Python version, NumPy version and Cython version are not stated as documented constraints; choices are era-inferred from the checked-out pyproject.toml and must be recorded. A mismatch with NumPy 2.x object construction could change exact object-dtype behaviour.",
+          "Editable build caches: after switching between buggy and fixed checkouts the meson rebuild must run, otherwise the stale extension will make the buggy and fixed results indistinguishable.",
+          "The PR body notes uncertainty about whether the behaviour change is desired; if the fixed revision differs from the PR merge in other ways, the transition may not hold."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "developer test diff in pandas/tests/io/parser/common/test_ints.py",
+          "why": "Integers are compared exactly via tm.assert_frame_equal; the expected values are Python ints (e.g. 13007854817840017028824), so no tolerance applies."
+        },
+        "fails_on_buggy": "test_int64_overflow[c] and test_outside_int64_uint64_range[c] fail on the buggy revision because the C engine returns the big integers as strings, while the test's expected DataFrame holds integer (object) values, so assert_frame_equal reports a dtype/value mismatch. test_outside_int64_uint64_range_follow_str does not fail on buggy, since buggy already returns a string column there.",
+        "passes_on_fixed": "On the fixed revision the C engine parses overflowing integers via PyLong_FromString in _try_pylong, so the c-engine integer expectations match exactly and all c-engine cases pass; the follow_str test passes on both revisions."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5729,
+        "output_tokens": 4085,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 15014,
+        "output_tokens": 2586,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

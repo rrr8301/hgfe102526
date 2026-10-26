@@ -1,0 +1,114 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 7a8375573efc2..e7748764ef27e 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -450,6 +450,7 @@ Timedelta
+ - Bug in :meth:`Series.sum` and :meth:`DataFrame.sum` on ``timedelta64`` data returning a rounded result for totals above 2\ :sup:`53` nanoseconds, and returning ``NaT`` instead of the exact total for a few representable values such as ``Timedelta.min`` (:issue:`66551`)
+ - Bug in :meth:`Series.sum` and :meth:`DataFrame.sum` on an overflowing ``timedelta64`` object where :meth:`Series.sum` raised a plain ``ValueError`` and :meth:`DataFrame.sum` silently returned a saturated result instead of raising :class:`OutOfBoundsTimedelta` (:issue:`43178`)
+ - Bug in ``Series.dt.seconds`` and ``Series.dt.microseconds`` with :class:`ArrowDtype` durations returning the ``Series.dt.components`` field values (e.g. 0-59 for seconds, or 0 for ``microseconds`` on a ``"ms"`` unit) instead of the totals within each day and second respectively, inconsistent with NumPy-backed timedeltas (:issue:`63283`, :issue:`63470`)
++- Bug in adding or subtracting a :class:`Timedelta` and a ``timedelta64`` :class:`numpy.ndarray` where an out-of-bounds result silently wrapped, and a result landing exactly on the ``NaT`` sentinel came back as a missing value, instead of raising :class:`OutOfBoundsTimedelta` as the equivalent :class:`Timedelta` and :class:`TimedeltaIndex` operations already did (:issue:`66552`)
+ - Bug in adding or subtracting two :class:`Timedelta` objects where a result landing exactly on the ``NaT`` sentinel returned ``NaT``, e.g. ``Timedelta.min - Timedelta(1, "ns")``, instead of raising :class:`OutOfBoundsTimedelta` as it already did one step further out (:issue:`66552`)
+ - Bug in dividing a :class:`Timedelta` by an integer, where the quotient was computed in ``float64`` and so was rounded once it exceeded ``2**53``; dividing ``Timedelta.min`` by ``1`` returned ``NaT`` and dividing ``Timedelta.max`` by ``1`` raised ``OverflowError`` instead of returning the original value (:issue:`66551`)
+ - Bug in multiplying a :class:`Series` of ``timedelta64`` by an integer or float, or dividing it by a float, where an overflowing result silently wrapped or saturated instead of raising :class:`OutOfBoundsTimedelta`; multiplying by ``inf`` now raises :class:`OutOfBoundsTimedelta` instead of returning ``NaT`` (:issue:`43178`)
+diff --git a/pandas/_libs/tslibs/timedeltas.pyx b/pandas/_libs/tslibs/timedeltas.pyx
+index 7e6027af7d494..65e4915736a33 100644
+--- a/pandas/_libs/tslibs/timedeltas.pyx
++++ b/pandas/_libs/tslibs/timedeltas.pyx
+@@ -65,7 +65,11 @@ from pandas._libs.tslibs.nattype cimport (
+ )
+ from pandas._libs.tslibs.np_datetime cimport (
+     NPY_DATETIMEUNIT,
++    NPY_FR_GENERIC,
++    NPY_FR_W,
+     NPY_FR_ns,
++    add_overflowsafe,
++    astype_overflowsafe,
+     cmp_dtstructs,
+     cmp_scalar,
+     convert_reso,
+@@ -932,9 +936,73 @@ def _op_unary_method(func, name):
+     return f
+ 
+ 
++cdef _addsub_timedelta64_array(
++    _Timedelta td, ndarray other, bint subtract, bint reverse
++):
++    """
++    Add or subtract a timedelta64 ndarray to/from a Timedelta.
++
++    Matching numpy, the operands are cast to the finer of the two units. Unlike
++    numpy, both that cast and the addition itself raise instead of wrapping,
++    and a sum landing on the NaT sentinel is rejected rather than passed off as
++    missing, matching what the scalar path already does (GH#66552).
++    """
++    cdef:
++        NPY_DATETIMEUNIT other_reso = get_unit_from_dtype(other.dtype)
++        NPY_DATETIMEUNIT reso = td._creso
++        ndarray i8other, i8result
++        int64_t value
++
++    if other_reso == NPY_FR_GENERIC:
++        # numpy reads a generic timedelta64 in the other operand's unit
++        other_reso = reso
++    elif other_reso < NPY_FR_W or other_reso > NPY_FR_ns:
++        # year/month, which numpy itself refuses to add to a time unit, and
++        #  sub-nanosecond units, which we have no reso for; leave both to numpy
++        m8 = td.to_timedelta64()
++        if not subtract:
++            return m8 + other
++        return (other - m8) if reverse else (m8 - other)
++
++    if reso < other_reso:
++        td = td._as_creso(other_reso, round_ok=True)
++        reso = other_reso
++    elif reso > other_reso:
++        other = astype_overflowsafe(
++            other, np.dtype(f"m8[{npy_unit_to_abbrev(reso)}]")
++        )
++
++    if not other.dtype.isnative:
++        # the view below would misread a byte-swapped buffer
++        other = other.astype(other.dtype.newbyteorder("="))
++
++    i8other = other.view("i8")
++    value = td._value
++    if subtract:
++        if reverse:
++            # other - td; td is never NaT, so negating its value is safe
++            value = -value
++        else:
++            # NPY_NAT negates to itself, so NaT still propagates
++            i8other = np.negative(i8other)
++
++    try:
++        i8result = add_overflowsafe(i8other, np.array(value, dtype="i8"))
++    except OverflowError as err:
++        raise OutOfBoundsTimedelta(
++            f"Out of bounds {npy_unit_to_attrname[reso]} timedelta"
++        ) from err
++
++    return i8result.view(f"m8[{npy_unit_to_abbrev(reso)}]")
++
++
+ def _binary_op_method_timedeltalike(op, name):
+     # define a binary operation that only works if the other argument is
+     # timedelta like or an array of timedeltalike
++    cdef:
++        bint subtract = name in ("__sub__", "__rsub__")
++        bint reverse = name == "__rsub__"
++
+     def f(self, other):
+         if other is NaT:
+             return NaT
+@@ -956,7 +1024,10 @@ def _binary_op_method_timedeltalike(op, name):
+                 item = cnp.PyArray_ToScalar(cnp.PyArray_DATA(other), other)
+                 return f(self, item)
+ 
+-            elif other.dtype.kind in "mM":
++            elif other.dtype.kind == "m":
++                return _addsub_timedelta64_array(self, other, subtract, reverse)
++            elif other.dtype.kind == "M":
++                # GH#66552 the datetime64 result path still wraps on overflow
+                 return op(self.to_timedelta64(), other)
+             elif other.dtype.kind == "O":
+                 return np.array([op(self, x) for x in other])

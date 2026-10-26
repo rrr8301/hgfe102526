@@ -1,0 +1,2085 @@
+[
+  {
+    "slug": "pandas_68315",
+    "bug_type": "special_value",
+    "image": "python:3.11",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/5 reported example(s))",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "flipped",
+    "examples_verdict": "not_reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import warnings\nimport numpy as np\nimport pandas as pd\nfrom pandas import Series, DataFrame\nfrom pandas.core.dtypes.cast import maybe_downcast_numeric\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\\\"float16\\\"), np.dtype(\\\"int64\\\")) with warnings.simplefilter(\\\"error\\\", RuntimeWarning)\", \"maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\\\"float16\\\"), np.dtype(\\\"int64\\\")) with warnings.simplefilter(\\\"error\\\", RuntimeWarning)\", [], \"np.array([1, 2], dtype=\\\"int64\\\")\"], [\"ser = pd.Series([1, 2], dtype=\\\"int64\\\"); ser.loc[2] = np.float16(3.0)\", \"np.float16(3.0)\", [\"ser = pd.Series([1, 2], dtype=\\\"int64\\\")\"], \"pd.Series([1, 2, 3], dtype=\\\"int64\\\") with no warning\"], [\"pd.Series([2.0**63]).convert_dtypes()\", \"pd.Series([2.0**63]).convert_dtypes()\", [], \"Float64\"], [\"pd.Series([1e30], dtype=\\\"float64\\\").convert_dtypes() (also [np.inf], [-np.inf])\", \"pd.Series([1e30], dtype=\\\"float64\\\").convert_dtypes() (also [np.inf], [-np.inf])\", [], \"ser.astype(\\\"Float64\\\") with tm.assert_produces_warning(None)\"], [\"pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()\", \"pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()\", [], \"ser.astype(\\\"Float64\\\")\"], [\"pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()\", \"pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()\", [], \"ser.astype(\\\"Int64\\\")\"], [\"pd.Series([1.0, 2.0], dtype=\\\"float16\\\").convert_dtypes() (also [1.5] and [np.inf] float16)\", \"pd.Series([1.0, 2.0], dtype=\\\"float16\\\").convert_dtypes() (also [1.5] and [np.inf] float16)\", [], \"[1.0,2.0]->Int64; [1.5]->Float64; [np.inf]->Float64, no warning\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "narrow_float_bounds_and_convert_dtypes": "import warnings\nimport numpy as np\nimport pandas as pd\nfrom pandas.core.dtypes.cast import maybe_downcast_numeric\n\n\ndef dtype_code(s):\n    d = s.dtype\n    if str(d) == \"Int64\":\n        return 1.0\n    if str(d) == \"Float64\":\n        return 2.0\n    if pd.api.types.is_integer_dtype(d):\n        return 3.0\n    if pd.api.types.is_float_dtype(d):\n        return 4.0\n    return 0.0\n\n\ndef rw_count(fn):\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter(\"always\")\n        out = fn()\n    n = sum(1 for x in w if issubclass(x.category, RuntimeWarning))\n    return out, float(n)\n\n\n# narrow float16 downcast against int64 bounds (int64 bounds cast to float16 overflow to inf)\nres, n = rw_count(lambda: maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")))\nprobe(\"downcast_f16_rw_count\", n)\nprobe(\"downcast_f16_result_is_integer\", 1.0 if np.issubdtype(np.asarray(res).dtype, np.integer) else 0.0)\n\n# convert_dtypes of out-of-int64-range (and boundary) floats\ncases = [\n    (\"2p63\", pd.Series([2.0 ** 63])),\n    (\"1e30\", pd.Series([1e30], dtype=\"float64\")),\n    (\"inf\", pd.Series([np.inf])),\n    (\"intmaxp1\", pd.Series([float(np.iinfo(np.dtype(int)).max + 1)])),\n    (\"intmin\", pd.Series([float(np.iinfo(np.dtype(int)).min)])),\n]\nfor label, series in cases:\n    out, n = rw_count(series.convert_dtypes)\n    probe(\"conv_%s_dtype_code\" % label, dtype_code(out))\n    probe(\"conv_%s_rw_count\" % label, n)\n\n# convert_dtypes of narrow float16 values (integral, fractional, non-finite)\nf16_cases = [\n    (\"f16_int\", pd.Series([1.0, 2.0], dtype=\"float16\")),\n    (\"f16_frac\", pd.Series([1.5], dtype=\"float16\")),\n    (\"f16_inf\", pd.Series([np.inf], dtype=\"float16\")),\n]\nfor label, series in f16_cases:\n    out, n = rw_count(series.convert_dtypes)\n    probe(\"conv_%s_dtype_code\" % label, dtype_code(out))\n    probe(\"conv_%s_rw_count\" % label, n)\n\n# setitem with expansion on an int64 series using a narrow float16 value\nser = pd.Series([1, 2], dtype=\"int64\")\n\n\ndef _set():\n    ser.loc[2] = np.float16(3.0)\n    return ser\n\n\n_, n = rw_count(_set)\nprobe(\"setitem_f16_rw_count\", n)\n",
+        "narrow_float_special_values": "import warnings\nimport numpy as np\nimport pandas as pd\nfrom pandas.core.dtypes.cast import maybe_downcast_numeric\n\ndef _count_runtime_warnings(fn):\n    with warnings.catch_warnings(record=True) as caught:\n        warnings.simplefilter(\"always\")\n        try:\n            fn()\n        except Exception:\n            pass\n    return float(sum(1 for w in caught if issubclass(w.category, RuntimeWarning)))\n\ndef _downcast_float16():\n    return maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\"))\n\ndef _setitem_float16():\n    ser = pd.Series([1, 2], dtype=\"int64\")\n    ser.loc[2] = np.float16(3.0)\n\ndef _convert_dtypes_float16():\n    return pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes()\n\ndef _kind(values):\n    res = pd.Series(values).convert_dtypes()\n    return 1.0 if str(res.dtype) == \"Int64\" else 0.0\n\nprobe(\"downcast_float16_runtime_warnings\", _count_runtime_warnings(_downcast_float16))\nprobe(\"setitem_float16_runtime_warnings\", _count_runtime_warnings(_setitem_float16))\nprobe(\"convert_dtypes_float16_runtime_warnings\", _count_runtime_warnings(_convert_dtypes_float16))\nprobe(\"kind_two_pow_63\", _kind([2.0 ** 63]))\nprobe(\"kind_1e30\", _kind([1e30]))\nprobe(\"kind_inf\", _kind([np.inf]))\nprobe(\"kind_intmax_plus_one\", _kind([float(np.iinfo(np.int64).max) + 1.0]))\nprobe(\"kind_in_range_1_2\", _kind([1.0, 2.0]))",
+        "described_examples": "import warnings\n\nimport numpy as np\nimport pandas as pd\n\nfrom pandas.core.dtypes.cast import maybe_downcast_numeric\n\n\n# Description 1: call maybe_downcast_numeric on a float16 array with a RuntimeWarning-as-error filter.\n_text1 = 'maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)'\n\ntry:\n    with warnings.catch_warnings():\n        warnings.simplefilter(\"error\", RuntimeWarning)\n        _out1 = maybe_downcast_numeric(\n            np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")\n        )\nexcept Exception as _err1:\n    probe_exception(_text1, _err1)\nelse:\n    probe(_text1, (str(_out1.dtype), np.asarray(_out1).tolist()))\n\n\n# Description 2: convert_dtypes on float16 Series, also with [1.5] and [np.inf].\n_text2 = 'pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)'\n\ntry:\n    _out2 = []\n    for _values in ([1.0, 2.0], [1.5], [np.inf]):\n        _s = pd.Series(_values, dtype=\"float16\").convert_dtypes()\n        _out2.append((str(_s.dtype), _s.tolist()))\n    _out2 = tuple(_out2)\nexcept Exception as _err2:\n    probe_exception(_text2, _err2)\nelse:\n    probe(_text2, _out2)"
+      },
+      "fixed": {
+        "narrow_float_special_values": "import warnings\nimport numpy as np\nimport pandas as pd\nfrom pandas.core.dtypes.cast import maybe_downcast_numeric\n\ndef _count_runtime_warnings(fn):\n    with warnings.catch_warnings(record=True) as caught:\n        warnings.simplefilter(\"always\")\n        try:\n            fn()\n        except Exception:\n            pass\n    return float(sum(1 for w in caught if issubclass(w.category, RuntimeWarning)))\n\ndef _downcast_float16():\n    return maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\"))\n\ndef _setitem_float16():\n    ser = pd.Series([1, 2], dtype=\"int64\")\n    ser.loc[2] = np.float16(3.0)\n\ndef _convert_dtypes_float16():\n    return pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes()\n\ndef _kind(values):\n    res = pd.Series(values).convert_dtypes()\n    return 1.0 if str(res.dtype) == \"Int64\" else 0.0\n\nprobe(\"downcast_float16_runtime_warnings\", _count_runtime_warnings(_downcast_float16))\nprobe(\"setitem_float16_runtime_warnings\", _count_runtime_warnings(_setitem_float16))\nprobe(\"convert_dtypes_float16_runtime_warnings\", _count_runtime_warnings(_convert_dtypes_float16))\nprobe(\"kind_two_pow_63\", _kind([2.0 ** 63]))\nprobe(\"kind_1e30\", _kind([1e30]))\nprobe(\"kind_inf\", _kind([np.inf]))\nprobe(\"kind_intmax_plus_one\", _kind([float(np.iinfo(np.int64).max) + 1.0]))\nprobe(\"kind_in_range_1_2\", _kind([1.0, 2.0]))",
+        "reported_examples": "import warnings\nimport numpy as np\nimport pandas as pd\nfrom pandas import Series, DataFrame\nfrom pandas.core.dtypes.cast import maybe_downcast_numeric\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\\\"float16\\\"), np.dtype(\\\"int64\\\")) with warnings.simplefilter(\\\"error\\\", RuntimeWarning)\", \"maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\\\"float16\\\"), np.dtype(\\\"int64\\\")) with warnings.simplefilter(\\\"error\\\", RuntimeWarning)\", [], \"np.array([1, 2], dtype=\\\"int64\\\")\"], [\"ser = pd.Series([1, 2], dtype=\\\"int64\\\"); ser.loc[2] = np.float16(3.0)\", \"np.float16(3.0)\", [\"ser = pd.Series([1, 2], dtype=\\\"int64\\\")\"], \"pd.Series([1, 2, 3], dtype=\\\"int64\\\") with no warning\"], [\"pd.Series([2.0**63]).convert_dtypes()\", \"pd.Series([2.0**63]).convert_dtypes()\", [], \"Float64\"], [\"pd.Series([1e30], dtype=\\\"float64\\\").convert_dtypes() (also [np.inf], [-np.inf])\", \"pd.Series([1e30], dtype=\\\"float64\\\").convert_dtypes() (also [np.inf], [-np.inf])\", [], \"ser.astype(\\\"Float64\\\") with tm.assert_produces_warning(None)\"], [\"pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()\", \"pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()\", [], \"ser.astype(\\\"Float64\\\")\"], [\"pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()\", \"pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()\", [], \"ser.astype(\\\"Int64\\\")\"], [\"pd.Series([1.0, 2.0], dtype=\\\"float16\\\").convert_dtypes() (also [1.5] and [np.inf] float16)\", \"pd.Series([1.0, 2.0], dtype=\\\"float16\\\").convert_dtypes() (also [1.5] and [np.inf] float16)\", [], \"[1.0,2.0]->Int64; [1.5]->Float64; [np.inf]->Float64, no warning\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import warnings\n\nimport numpy as np\nimport pandas as pd\n\nfrom pandas.core.dtypes.cast import maybe_downcast_numeric\n\n\n# Description 1: call maybe_downcast_numeric on a float16 array with a RuntimeWarning-as-error filter.\n_text1 = 'maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)'\n\ntry:\n    with warnings.catch_warnings():\n        warnings.simplefilter(\"error\", RuntimeWarning)\n        _out1 = maybe_downcast_numeric(\n            np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")\n        )\nexcept Exception as _err1:\n    probe_exception(_text1, _err1)\nelse:\n    probe(_text1, (str(_out1.dtype), np.asarray(_out1).tolist()))\n\n\n# Description 2: convert_dtypes on float16 Series, also with [1.5] and [np.inf].\n_text2 = 'pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)'\n\ntry:\n    _out2 = []\n    for _values in ([1.0, 2.0], [1.5], [np.inf]):\n        _s = pd.Series(_values, dtype=\"float16\").convert_dtypes()\n        _out2.append((str(_s.dtype), _s.tolist()))\n    _out2 = tuple(_out2)\nexcept Exception as _err2:\n    probe_exception(_text2, _err2)\nelse:\n    probe(_text2, _out2)"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/5 reported example(s))",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "flipped",
+      "examples_verdict": "not_reproduced",
+      "success_criterion": "The targeted tests error/fail on the buggy commit (spurious RuntimeWarning raised under warnings.simplefilter('error')/assert_produces_warning(None), and convert_dtypes returning saturating Int64 instead of Float64 for 1e30/inf/INT_MAX+1), and all pass once the cast.py fix is applied.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 1,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 1,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced Inf",
+                "IEEE FP exception: invalid"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)": {
+                "raised": "RuntimeWarning",
+                "message": "overflow encountered in cast",
+                "origin": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/core/dtypes/cast.py",
+                "in_repository": false
+              },
+              "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)": [
+                [
+                  "Int64",
+                  [
+                    1,
+                    2
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    1.5
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    "inf"
+                  ]
+                ]
+              ]
+            },
+            "fixed_values": {
+              "maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)": [
+                "int64",
+                [
+                  1,
+                  2
+                ]
+              ],
+              "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)": [
+                [
+                  "Int64",
+                  [
+                    1,
+                    2
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    1.5
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    "inf"
+                  ]
+                ]
+              ]
+            }
+          },
+          {
+            "label": "narrow_float_bounds_and_convert_dtypes",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=2.000e+00, tol=1.000e-09)"
+              ]
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "downcast_f16_rw_count": 2.0,
+              "downcast_f16_result_is_integer": 1.0,
+              "conv_2p63_dtype_code": 2.0,
+              "conv_2p63_rw_count": 2.0,
+              "conv_1e30_dtype_code": 2.0,
+              "conv_1e30_rw_count": 2.0,
+              "conv_inf_dtype_code": 2.0,
+              "conv_inf_rw_count": 2.0,
+              "conv_intmaxp1_dtype_code": 2.0,
+              "conv_intmaxp1_rw_count": 2.0,
+              "conv_intmin_dtype_code": 1.0,
+              "conv_intmin_rw_count": 0.0,
+              "conv_f16_int_dtype_code": 1.0,
+              "conv_f16_int_rw_count": 0.0,
+              "conv_f16_frac_dtype_code": 2.0,
+              "conv_f16_frac_rw_count": 0.0,
+              "conv_f16_inf_dtype_code": 2.0,
+              "conv_f16_inf_rw_count": 2.0,
+              "setitem_f16_rw_count": 2.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "narrow_float_special_values",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "IEEE FP exception: invalid",
+                "values do not match the reference (finite compare: abs_err=2.000e+00, tol=1.000e-06)"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "downcast_float16_runtime_warnings": 2.0,
+              "setitem_float16_runtime_warnings": 2.0,
+              "convert_dtypes_float16_runtime_warnings": 0.0,
+              "kind_two_pow_63": 0.0,
+              "kind_1e30": 0.0,
+              "kind_inf": 0.0,
+              "kind_intmax_plus_one": 0.0,
+              "kind_in_range_1_2": 1.0
+            },
+            "fixed_values": {
+              "downcast_float16_runtime_warnings": 0.0,
+              "setitem_float16_runtime_warnings": 0.0,
+              "convert_dtypes_float16_runtime_warnings": 0.0,
+              "kind_two_pow_63": 0.0,
+              "kind_1e30": 0.0,
+              "kind_inf": 0.0,
+              "kind_intmax_plus_one": 0.0,
+              "kind_in_range_1_2": 1.0
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "IEEE FP exception: invalid"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)": [
+                1,
+                2
+              ],
+              "ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0)": 3.0,
+              "pd.Series([2.0**63]).convert_dtypes()": [
+                9.223372036854776e+18
+              ],
+              "pd.Series([1e30], dtype=\"float64\").convert_dtypes() (also [np.inf], [-np.inf])": "__error__: NameError: name 'also' is not defined",
+              "pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()": [
+                9.223372036854776e+18
+              ],
+              "expected::pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()": [
+                1.0,
+                2.0
+              ],
+              "pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()": [
+                -9223372036854775808
+              ],
+              "expected::pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()": [
+                1,
+                2
+              ],
+              "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)": "__error__: SyntaxError: invalid syntax. Perhaps you forgot a comma? (<string>, line 1)"
+            },
+            "fixed_values": {
+              "maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)": [
+                1,
+                2
+              ],
+              "ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0)": 3.0,
+              "pd.Series([2.0**63]).convert_dtypes()": [
+                9.223372036854776e+18
+              ],
+              "pd.Series([1e30], dtype=\"float64\").convert_dtypes() (also [np.inf], [-np.inf])": "__error__: NameError: name 'also' is not defined",
+              "pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()": [
+                9.223372036854776e+18
+              ],
+              "expected::pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()": [
+                1.0,
+                2.0
+              ],
+              "pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()": [
+                -9223372036854775808
+              ],
+              "expected::pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()": [
+                1,
+                2
+              ],
+              "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)": "__error__: SyntaxError: invalid syntax. Perhaps you forgot a comma? (<string>, line 1)"
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)",
+            "expected_output": "np.array([1, 2], dtype=\"int64\")",
+            "expected_value": [
+              1,
+              2
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "spurious RuntimeWarning raised (int64 bounds cast down to float16 overflowed to inf)",
+            "outcome": "not_observed",
+            "revisions_differ": true,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)",
+              "observed": [
+                "int64",
+                [
+                  1,
+                  2
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0)",
+            "expected_output": "pd.Series([1, 2, 3], dtype=\"int64\") with no warning",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "spurious RuntimeWarning from floats_fit_integer_dtype's float16 overflow",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0)",
+              "observed": 3.0,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0)",
+              "observed": 3.0,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "pd.Series([2.0**63]).convert_dtypes()",
+            "expected_output": "Float64",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Int64 holding 9223372036854775807 (off-by-one; astype(int) saturates)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pd.Series([2.0**63]).convert_dtypes()",
+              "observed": [
+                9.223372036854776e+18
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Series([2.0**63]).convert_dtypes()",
+              "observed": [
+                9.223372036854776e+18
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "pd.Series([1e30], dtype=\"float64\").convert_dtypes() (also [np.inf], [-np.inf])",
+            "expected_output": "ser.astype(\"Float64\") with tm.assert_produces_warning(None)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "spurious RuntimeWarning before falling back; unguarded (arr.astype(int) == arr).all() falsely reports integral",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "pd.Series([1e30], dtype=\"float64\").convert_dtypes() (also [np.inf], [-np.inf])",
+              "observed": "__error__: NameError: name 'also' is not defined",
+              "evaluation_error": "NameError: name 'also' is not defined",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Series([1e30], dtype=\"float64\").convert_dtypes() (also [np.inf], [-np.inf])",
+              "observed": "__error__: NameError: name 'also' is not defined",
+              "evaluation_error": "NameError: name 'also' is not defined",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()",
+            "expected_output": "ser.astype(\"Float64\")",
+            "expected_value": [
+              1.0,
+              2.0
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "Int64 holding one less than the true value (float(INT_MAX+1) == INT_MAX after saturating cast)",
+            "outcome": "still_wrong",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()",
+              "observed": [
+                9.223372036854776e+18
+              ],
+              "evaluation_error": "",
+              "matches_expected": false,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()",
+              "observed": [
+                9.223372036854776e+18
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()",
+            "expected_output": "ser.astype(\"Int64\")",
+            "expected_value": [
+              1,
+              2
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "(unaffected; most negative float that fits)",
+            "outcome": "still_wrong",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()",
+              "observed": [
+                -9223372036854775808
+              ],
+              "evaluation_error": "",
+              "matches_expected": false,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()",
+              "observed": [
+                -9223372036854775808
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)",
+            "expected_output": "[1.0,2.0]->Int64; [1.5]->Float64; [np.inf]->Float64, no warning",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "spurious RuntimeWarning from floats_fit_integer_dtype's float16 overflow at convert_dtypes' own guard",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)",
+              "observed": [
+                [
+                  "Int64",
+                  [
+                    1,
+                    2
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    1.5
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    "inf"
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)",
+              "observed": [
+                [
+                  "Int64",
+                  [
+                    1,
+                    2
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    1.5
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    "inf"
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 5,
+            "n_failed": 4,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 3,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-09-14T15:28:51-07:00",
+        "fixed_commit_date": "2026-09-14T15:34:16-07:00",
+        "reproducing_test_present": true,
+        "build_detected": "meson.build|build-requires:cython|build-requires:meson-python|cython-source:pandas/_libs/hashtable.pyx",
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-09-14T15:34:16-07:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.2",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.49.0",
+              "meson-python": "0.21.1",
+              "meson": "1.12.0",
+              "wheel": "0.48.0",
+              "cython": "3.3.0",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==0+unknown) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==0+unknown) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==0+unknown) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-0+unknown-cp311-cp311-linux_x86_64.whl size=16139705 sha256=6cf4d1d08eaddd953d604124165d9683d43250172f56e4bc9fe7de9862a4bc68\n  Stored in directory: /tmp/pip-ephem-wheel-cache-ld8766an/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-0+unknown\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.2",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.49.0",
+              "meson-python": "0.21.1",
+              "meson": "1.12.0",
+              "wheel": "0.48.0",
+              "cython": "3.3.0",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==0+unknown) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==0+unknown) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==0+unknown) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-0+unknown-cp311-cp311-linux_x86_64.whl size=16139769 sha256=189328133f6297a8e8e94fc34d94ee82ecafb222d9e198fd80b56c39101eb971\n  Stored in directory: /tmp/pip-ephem-wheel-cache-_d59ksfm/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-0+unknown\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 1,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 1,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 4,
+        "verdict": "flipped",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced Inf",
+                "IEEE FP exception: invalid"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)": {
+                "raised": "RuntimeWarning",
+                "message": "overflow encountered in cast",
+                "origin": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/core/dtypes/cast.py",
+                "in_repository": false
+              },
+              "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)": [
+                [
+                  "Int64",
+                  [
+                    1,
+                    2
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    1.5
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    "inf"
+                  ]
+                ]
+              ]
+            },
+            "fixed_values": {
+              "maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)": [
+                "int64",
+                [
+                  1,
+                  2
+                ]
+              ],
+              "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)": [
+                [
+                  "Int64",
+                  [
+                    1,
+                    2
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    1.5
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    "inf"
+                  ]
+                ]
+              ]
+            }
+          },
+          {
+            "label": "narrow_float_bounds_and_convert_dtypes",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=2.000e+00, tol=1.000e-09)"
+              ]
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "downcast_f16_rw_count": 2.0,
+              "downcast_f16_result_is_integer": 1.0,
+              "conv_2p63_dtype_code": 2.0,
+              "conv_2p63_rw_count": 2.0,
+              "conv_1e30_dtype_code": 2.0,
+              "conv_1e30_rw_count": 2.0,
+              "conv_inf_dtype_code": 2.0,
+              "conv_inf_rw_count": 2.0,
+              "conv_intmaxp1_dtype_code": 2.0,
+              "conv_intmaxp1_rw_count": 2.0,
+              "conv_intmin_dtype_code": 1.0,
+              "conv_intmin_rw_count": 0.0,
+              "conv_f16_int_dtype_code": 1.0,
+              "conv_f16_int_rw_count": 0.0,
+              "conv_f16_frac_dtype_code": 2.0,
+              "conv_f16_frac_rw_count": 0.0,
+              "conv_f16_inf_dtype_code": 2.0,
+              "conv_f16_inf_rw_count": 2.0,
+              "setitem_f16_rw_count": 2.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "narrow_float_special_values",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "IEEE FP exception: invalid",
+                "values do not match the reference (finite compare: abs_err=2.000e+00, tol=1.000e-06)"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "downcast_float16_runtime_warnings": 2.0,
+              "setitem_float16_runtime_warnings": 2.0,
+              "convert_dtypes_float16_runtime_warnings": 0.0,
+              "kind_two_pow_63": 0.0,
+              "kind_1e30": 0.0,
+              "kind_inf": 0.0,
+              "kind_intmax_plus_one": 0.0,
+              "kind_in_range_1_2": 1.0
+            },
+            "fixed_values": {
+              "downcast_float16_runtime_warnings": 0.0,
+              "setitem_float16_runtime_warnings": 0.0,
+              "convert_dtypes_float16_runtime_warnings": 0.0,
+              "kind_two_pow_63": 0.0,
+              "kind_1e30": 0.0,
+              "kind_inf": 0.0,
+              "kind_intmax_plus_one": 0.0,
+              "kind_in_range_1_2": 1.0
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "IEEE FP exception: invalid"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)": [
+                1,
+                2
+              ],
+              "ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0)": 3.0,
+              "pd.Series([2.0**63]).convert_dtypes()": [
+                9.223372036854776e+18
+              ],
+              "pd.Series([1e30], dtype=\"float64\").convert_dtypes() (also [np.inf], [-np.inf])": "__error__: NameError: name 'also' is not defined",
+              "pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()": [
+                9.223372036854776e+18
+              ],
+              "expected::pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()": [
+                1.0,
+                2.0
+              ],
+              "pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()": [
+                -9223372036854775808
+              ],
+              "expected::pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()": [
+                1,
+                2
+              ],
+              "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)": "__error__: SyntaxError: invalid syntax. Perhaps you forgot a comma? (<string>, line 1)"
+            },
+            "fixed_values": {
+              "maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)": [
+                1,
+                2
+              ],
+              "ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0)": 3.0,
+              "pd.Series([2.0**63]).convert_dtypes()": [
+                9.223372036854776e+18
+              ],
+              "pd.Series([1e30], dtype=\"float64\").convert_dtypes() (also [np.inf], [-np.inf])": "__error__: NameError: name 'also' is not defined",
+              "pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()": [
+                9.223372036854776e+18
+              ],
+              "expected::pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()": [
+                1.0,
+                2.0
+              ],
+              "pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()": [
+                -9223372036854775808
+              ],
+              "expected::pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()": [
+                1,
+                2
+              ],
+              "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)": "__error__: SyntaxError: invalid syntax. Perhaps you forgot a comma? (<string>, line 1)"
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 7,
+        "n_judged": 5,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 2,
+        "n_contested": 2,
+        "unobserved": [
+          "maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)",
+          "pd.Series([1e30], dtype=\"float64\").convert_dtypes() (also [np.inf], [-np.inf])"
+        ],
+        "verdict": "not_reproduced",
+        "examples": [
+          {
+            "input": "maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)",
+            "expected_output": "np.array([1, 2], dtype=\"int64\")",
+            "expected_value": [
+              1,
+              2
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "spurious RuntimeWarning raised (int64 bounds cast down to float16 overflowed to inf)",
+            "outcome": "not_observed",
+            "revisions_differ": true,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning)",
+              "observed": [
+                "int64",
+                [
+                  1,
+                  2
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0)",
+            "expected_output": "pd.Series([1, 2, 3], dtype=\"int64\") with no warning",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "spurious RuntimeWarning from floats_fit_integer_dtype's float16 overflow",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0)",
+              "observed": 3.0,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0)",
+              "observed": 3.0,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "pd.Series([2.0**63]).convert_dtypes()",
+            "expected_output": "Float64",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Int64 holding 9223372036854775807 (off-by-one; astype(int) saturates)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pd.Series([2.0**63]).convert_dtypes()",
+              "observed": [
+                9.223372036854776e+18
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Series([2.0**63]).convert_dtypes()",
+              "observed": [
+                9.223372036854776e+18
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "pd.Series([1e30], dtype=\"float64\").convert_dtypes() (also [np.inf], [-np.inf])",
+            "expected_output": "ser.astype(\"Float64\") with tm.assert_produces_warning(None)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "spurious RuntimeWarning before falling back; unguarded (arr.astype(int) == arr).all() falsely reports integral",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "pd.Series([1e30], dtype=\"float64\").convert_dtypes() (also [np.inf], [-np.inf])",
+              "observed": "__error__: NameError: name 'also' is not defined",
+              "evaluation_error": "NameError: name 'also' is not defined",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Series([1e30], dtype=\"float64\").convert_dtypes() (also [np.inf], [-np.inf])",
+              "observed": "__error__: NameError: name 'also' is not defined",
+              "evaluation_error": "NameError: name 'also' is not defined",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()",
+            "expected_output": "ser.astype(\"Float64\")",
+            "expected_value": [
+              1.0,
+              2.0
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "Int64 holding one less than the true value (float(INT_MAX+1) == INT_MAX after saturating cast)",
+            "outcome": "still_wrong",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()",
+              "observed": [
+                9.223372036854776e+18
+              ],
+              "evaluation_error": "",
+              "matches_expected": false,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Series([float(np.iinfo(np.dtype(int)).max + 1)]).convert_dtypes()",
+              "observed": [
+                9.223372036854776e+18
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()",
+            "expected_output": "ser.astype(\"Int64\")",
+            "expected_value": [
+              1,
+              2
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "(unaffected; most negative float that fits)",
+            "outcome": "still_wrong",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()",
+              "observed": [
+                -9223372036854775808
+              ],
+              "evaluation_error": "",
+              "matches_expected": false,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Series([float(np.iinfo(np.dtype(int)).min)]).convert_dtypes()",
+              "observed": [
+                -9223372036854775808
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)",
+            "expected_output": "[1.0,2.0]->Int64; [1.5]->Float64; [np.inf]->Float64, no warning",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "spurious RuntimeWarning from floats_fit_integer_dtype's float16 overflow at convert_dtypes' own guard",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)",
+              "observed": [
+                [
+                  "Int64",
+                  [
+                    1,
+                    2
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    1.5
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    "inf"
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)",
+              "observed": [
+                [
+                  "Int64",
+                  [
+                    1,
+                    2
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    1.5
+                  ]
+                ],
+                [
+                  "Float64",
+                  [
+                    "inf"
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 5,
+          "n_failed": 4,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 3,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "The targeted tests error/fail on the buggy commit (spurious RuntimeWarning raised under warnings.simplefilter('error')/assert_produces_warning(None), and convert_dtypes returning saturating Int64 instead of Float64 for 1e30/inf/INT_MAX+1), and all pass once the cast.py fix is applied."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-09-14T15:28:51-07:00",
+      "fixed_commit_date": "2026-09-14T15:34:16-07:00",
+      "reproducing_test_present": true,
+      "build_detected": "meson.build|build-requires:cython|build-requires:meson-python|cython-source:pandas/_libs/hashtable.pyx",
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-09-14T15:34:16-07:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.2",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.49.0",
+            "meson-python": "0.21.1",
+            "meson": "1.12.0",
+            "wheel": "0.48.0",
+            "cython": "3.3.0",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==0+unknown) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==0+unknown) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==0+unknown) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-0+unknown-cp311-cp311-linux_x86_64.whl size=16139705 sha256=6cf4d1d08eaddd953d604124165d9683d43250172f56e4bc9fe7de9862a4bc68\n  Stored in directory: /tmp/pip-ephem-wheel-cache-ld8766an/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-0+unknown\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.2",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.49.0",
+            "meson-python": "0.21.1",
+            "meson": "1.12.0",
+            "wheel": "0.48.0",
+            "cython": "3.3.0",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==0+unknown) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==0+unknown) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==0+unknown) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-0+unknown-cp311-cp311-linux_x86_64.whl size=16139769 sha256=189328133f6297a8e8e94fc34d94ee82ecafb222d9e198fd80b56c39101eb971\n  Stored in directory: /tmp/pip-ephem-wheel-cache-_d59ksfm/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-0+unknown\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 7,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce GH#68315 on the buggy commit (spurious RuntimeWarning from narrow-float int64-bounds overflow and convert_dtypes saturating out-of-int64-range floats to Int64) and show the fixed commit emits no warning and falls back to Float64.",
+          "milestones": [
+            "buggy_defect_reproduced [buggy] \u2014 On the buggy build, the newly added tests fail, the reported examples show the buggy values, and a paired probe deviates from the correct (fixed) values. (4 steps, verify: steps_succeeded, test_fails, probe_ran, probe_shows_defect, examples_reproduced)",
+            "fixed_revision_diverges [fixed] \u2014 On the fixed build, the same tests pass, the probe matches the correct values, the reported examples show the expected values, and the observations differ from the buggy revision. (4 steps, verify: steps_succeeded, test_passes, probe_clean, examples_reproduced, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import pandas, numpy; print(pandas.__version__, pandas.__file__, numpy.__version__)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.51
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.dtypes.cast.test_downcast pandas.tests.series.indexing.test_setitem pandas.tests.series.methods.test_convert_dtypes -k 'downcast_float16_no_overflow_warning or downcast_do_round_out_of_range or setitem_enlarge_float16_no_overflow_warning or convert_dtypes_float_out_of_int64_range or convert_dtypes_float_one_past_max or convert_dtypes_float16_no_overflow_warning or convert_dtypes_int_out_of_range_pyarrow' --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 2.53
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "downcast_narrow_float_and_out_of_range_convert",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(downcast_narrow_float_and_out_of_range_convert) \u2014 Probe the special-value symptom (narrow-float int64-bound overflow warning + convert_dtypes out-of-int64-range fallback) on the buggy build, using the correct values as reference so the defect shows."
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "IEEE FP exception: invalid"
+        ],
+        "expected": null,
+        "observed": [
+          1.0,
+          2.0,
+          3.0,
+          9.223372036854776e+18,
+          9.223372036854776e+18,
+          1.0,
+          2.0,
+          -9.223372036854776e+18,
+          1.0,
+          2.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_defect_reproduced",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.dtypes.cast.tes` exited 1: methods/test_convert_dtypes.py::TestSeriesConvertDtypes::test_convert_dtypes_float16_no_overflow_warning[data2-Float64]\n=========== 7 failed, 3 passed, 1 skipped, 3557 deselected in 1.52s ============; [buggy] run_numerical_probe(downcast_narrow_float_and_out_of_range_convert) \u2014 Probe the special-value symptom (narrow-float int64-bound overflow warning + convert_dtypes out-of-int64-range fallback) on the buggy build, using the correct values as reference so the defect shows. did not execute"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/7 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 7 never evaluated \u2014 the preamble does not bind everything they need: maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning); ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0); pd.Series([2.0**63]).convert_dtypes()"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failed buggy milestone with a value-based measurement: show on the buggy build that the reported examples and a paired probe exhibit the spurious RuntimeWarning from narrow-float int64-bounds overflow and the saturating Int64 fallback for out-of-range floats, then confirm the fixed build emits no warning, falls back to Float64, and differs from buggy.",
+          "milestones": [
+            "buggy_defect_measured [buggy] \u2014 On the buggy build, the report's own examples evaluate to the reported buggy values and a paired numerical probe records the special-value defect (RuntimeWarning from float16 int64-bounds overflow and Int64 dtype for out-of-int64-range floats) with values that deviate from the correct reference. (2 steps, verify: steps_succeeded, probe_ran, probe_shows_defect, examples_reproduced)",
+            "fixed_revision_diverges [fixed] \u2014 On the fixed build the reproducing tests pass, the same probe matches the correct reference values (no RuntimeWarning; out-of-range floats fall back to Float64), the reported examples show the expected values, and the observations differ from the buggy revision. (3 steps, verify: steps_succeeded, test_passes, probe_ran, probe_clean, examples_reproduced, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "narrow_float_bounds_and_convert_dtypes",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "values do not match the reference (finite compare: abs_err=2.000e+00, tol=1.000e-09)"
+        ],
+        "expected": [
+          0,
+          1,
+          2,
+          0,
+          2,
+          0,
+          2,
+          0,
+          2,
+          0,
+          1,
+          0,
+          1,
+          0,
+          2,
+          0,
+          2,
+          0,
+          0
+        ],
+        "observed": [
+          2.0,
+          1.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0,
+          2.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "IEEE FP exception: invalid"
+        ],
+        "expected": null,
+        "observed": [
+          1.0,
+          2.0,
+          3.0,
+          9.223372036854776e+18,
+          9.223372036854776e+18,
+          1.0,
+          2.0,
+          -9.223372036854776e+18,
+          1.0,
+          2.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_defect_measured",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'narrow_float_bounds_and_convert_dtypes': values do not match the reference (finite compare: abs_err=2.000e+00, tol=1.000e-09)"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/7 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 7 never evaluated \u2014 the preamble does not bind everything they need: maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning); ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0); pd.Series([2.0**63]).convert_dtypes()"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Establish by paired value measurements that the buggy build emits spurious RuntimeWarnings from the narrow-float int64-bounds overflow path and returns saturating Int64 for out-of-int64-range floats, while the fixed build is warning-free and returns Float64 \u2014 corroborated by the report's own examples evaluated with a complete preamble.",
+          "milestones": [
+            "buggy_special_values_measured [buggy] \u2014 On the buggy build the reproducing-test selector fails, and a paired probe records the spurious RuntimeWarning counts (narrow-float int64-bounds path) and the saturating Int64 dtype codes for out-of-int64-range floats, deviating from the correct reference values. The report's own examples are evalua (3 steps, verify: steps_succeeded, test_fails, probe_ran, probe_shows_defect)",
+            "fixed_special_values_clean [fixed] \u2014 On the fixed build the reproducing tests pass, the SAME paired probe matches the correct reference values (no RuntimeWarning; out-of-range floats fall back to Float64; in-range floats give Int64), the report's examples evaluate to the expected values, and the observations differ from the buggy revis (3 steps, verify: steps_succeeded, test_passes, probe_ran, probe_clean, examples_reproduced, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.dtypes.cast.test_downcast pandas.tests.series.indexing.test_setitem pandas.tests.series.methods.test_convert_dtypes -k 'downcast_float16_no_overflow_warning or downcast_do_round_out_of_range or setitem_enlarge_float16_no_overflow_warning or convert_dtypes_float_out_of_int64_range or convert_dtypes_float_one_past_max or convert_dtypes_float16_no_overflow_warning or convert_dtypes_int_out_of_range_pyarrow' --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.75
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "narrow_float_special_values",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "IEEE FP exception: invalid",
+          "values do not match the reference (finite compare: abs_err=2.000e+00, tol=1.000e-09)"
+        ],
+        "expected": [
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          0,
+          0
+        ],
+        "observed": [
+          2.0,
+          1.0,
+          2.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "IEEE FP exception: invalid"
+        ],
+        "expected": null,
+        "observed": [
+          1.0,
+          2.0,
+          3.0,
+          9.223372036854776e+18,
+          9.223372036854776e+18,
+          1.0,
+          2.0,
+          -9.223372036854776e+18,
+          1.0,
+          2.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_special_values_measured",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.dtypes.cast.tes` exited 1: methods/test_convert_dtypes.py::TestSeriesConvertDtypes::test_convert_dtypes_float16_no_overflow_warning[data2-Float64]\n=========== 7 failed, 3 passed, 1 skipped, 3557 deselected in 0.90s ============"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'narrow_float_special_values': IEEE FP exception: invalid; values do not match the reference (finite compare: abs_err=2.000e+00, tol=1.000e-09)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Establish by paired value measurements that the buggy build emits spurious RuntimeWarnings from the narrow-float int64-bounds overflow path and returns Int64 for out-of-int64-range floats, while the fixed build is warning-free and returns Float64, corroborated by the report's own examples.",
+          "milestones": [
+            "buggy_special_values_measured [buggy] \u2014 On the buggy build the reproducing selector fails (7 failed / 3 passed), the shared paired probe records spurious RuntimeWarning counts from the narrow-float int64-bounds path plus Int64 dtype codes for out-of-int64-range floats (deviating from the correct [0,0,0,0,0,0,0,1] reference), and the repor (3 steps, verify: test_ran, test_fails, probe_ran, probe_shows_defect, examples_reproduced)",
+            "fixed_special_values_clean [fixed] \u2014 On the fixed build the reproducing tests pass, the SAME paired probe matches the correct reference (0 RuntimeWarnings from the narrow-float path; 2**63/1e30/inf/INT_MAX+1 all fall back to Float64; in-range [1.0,2.0] gives Int64), the report's examples evaluate to their expected values, and the obser (4 steps, verify: steps_succeeded, test_ran, test_passes, probe_ran, probe_clean, examples_reproduced, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.dtypes.cast.test_downcast pandas.tests.series.indexing.test_setitem pandas.tests.series.methods.test_convert_dtypes -k 'downcast_float16_no_overflow_warning or downcast_do_round_out_of_range or setitem_enlarge_float16_no_overflow_warning or convert_dtypes_float_out_of_int64_range or convert_dtypes_float_one_past_max or convert_dtypes_float16_no_overflow_warning or convert_dtypes_int_out_of_range_pyarrow' --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.76
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "narrow_float_special_values",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "IEEE FP exception: invalid",
+          "values do not match the reference (finite compare: abs_err=2.000e+00, tol=1.000e-06)"
+        ],
+        "expected": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1
+        ],
+        "observed": [
+          2.0,
+          2.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "IEEE FP exception: invalid"
+        ],
+        "expected": null,
+        "observed": [
+          1.0,
+          2.0,
+          3.0,
+          9.223372036854776e+18,
+          9.223372036854776e+18,
+          1.0,
+          2.0,
+          -9.223372036854776e+18,
+          1.0,
+          2.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_special_values_measured",
+          "verified": false,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'narrow_float_special_values': IEEE FP exception: invalid; values do not match the reference (finite compare: abs_err=2.000e+00, tol=1.000e-06)"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/7 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 7 never evaluated \u2014 the preamble does not bind everything they need: maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning); ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0); pd.Series([2.0**63]).convert_dtypes()"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "buggy_special_values_measured",
+          "revision": "buggy",
+          "failed": [
+            "examples_reproduced"
+          ],
+          "attempts": 2,
+          "detail": [
+            "0/7 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 7 never evaluated \u2014 the preamble does not bind everything they need: maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning); ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = np.float16(3.0); pd.Series([2.0**63]).convert_dtypes()"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -c \"import pandas, numpy; print(pandas.__version__, pandas.__file__, numpy.__version__)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.51
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -m pytest --pyargs pandas.tests.dtypes.cast.test_downcast pandas.tests.series.indexing.test_setitem pandas.tests.series.methods.test_convert_dtypes -k 'downcast_float16_no_overflow_warning or downcast_do_round_out_of_range or setitem_enlarge_float16_no_overflow_warning or convert_dtypes_float_out_of_int64_range or convert_dtypes_float_one_past_max or convert_dtypes_float16_no_overflow_warning or convert_dtypes_int_out_of_range_pyarrow' --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.44
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "narrow_float_special_values",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1
+        ],
+        "observed": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.0,
+          2.0,
+          3.0,
+          9.223372036854776e+18,
+          9.223372036854776e+18,
+          1.0,
+          2.0,
+          -9.223372036854776e+18,
+          1.0,
+          2.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "fixed_special_values_clean",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on fixed"
+            },
+            {
+              "check": "test_passes",
+              "passed": true,
+              "detail": "test pass on fixed (milestone required pass)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": true,
+              "detail": "every probe is clean on fixed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/7 mined example(s) reproduced (verdict not_reproduced, 2 still wrong on fixed); 3 never evaluated \u2014 the preamble does not bind everything they need: maybe_downcast_numeric(np.array([1.0, 2.0], dtype=\"float16\"), np.dtype(\"int64\")) with warnings.simplefilter(\"error\", RuntimeWarning); pd.Series([1e30], dtype=\"float64\").convert_dtypes() (also [np.inf], [-np.inf]); pd.Series([1.0, 2.0], dtype=\"float16\").convert_dtypes() (also [1.5] and [np.inf] float16)"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": true,
+              "detail": "the reproducing test goes FAIL -> PASS"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs pandas.tests.dtypes.cast.test_downcast -k test_downcast_float16_no_overflow_warning -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 0.94
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs pandas.tests.dtypes.cast.test_downcast -k test_downcast_float16_no_overflow_warning -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 0.88
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_downcast_float16_no_overflow_warning",
+          "command": "python -I -m pytest --pyargs pandas.tests.dtypes.cast.test_downcast -k test_downcast_float16_no_overflow_warning -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "pandas",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_downcast_float16_no_overflow_warning",
+              "command": "python -I -m pytest --pyargs pandas.tests.dtypes.cast.test_downcast -k test_downcast_float16_no_overflow_warning -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 5)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 5)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "IEEE FP exception: invalid"
+        ],
+        "expected": null,
+        "observed": [
+          1.0,
+          2.0,
+          3.0,
+          9.223372036854776e+18,
+          9.223372036854776e+18,
+          1.0,
+          2.0,
+          -9.223372036854776e+18,
+          1.0,
+          2.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.0,
+          2.0,
+          3.0,
+          9.223372036854776e+18,
+          9.223372036854776e+18,
+          1.0,
+          2.0,
+          -9.223372036854776e+18,
+          1.0,
+          2.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "IEEE FP exception: invalid"
+        ],
+        "expected": null,
+        "observed": [
+          1.0,
+          2.0,
+          3.0,
+          9.223372036854776e+18,
+          9.223372036854776e+18,
+          1.0,
+          2.0,
+          -9.223372036854776e+18,
+          1.0,
+          2.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.0,
+          2.0,
+          3.0,
+          9.223372036854776e+18,
+          9.223372036854776e+18,
+          1.0,
+          2.0,
+          -9.223372036854776e+18,
+          1.0,
+          2.0
+        ]
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 7,
+            "recorded": 7,
+            "error": null,
+            "could_not_evaluate": 3
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 7,
+            "recorded": 7,
+            "error": null,
+            "could_not_evaluate": 3
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced Inf",
+          "IEEE FP exception: invalid"
+        ],
+        "expected": null,
+        "observed": [
+          1.0,
+          2.0,
+          1.5,
+          "inf"
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced Inf"
+        ],
+        "expected": null,
+        "observed": [
+          1.0,
+          2.0,
+          1.0,
+          2.0,
+          1.5,
+          "inf"
+        ]
+      },
+      {
+        "described_examples": {
+          "n_described": 2,
+          "buggy": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "flipped",
+        "examples_verdict": "not_reproduced",
+        "examples": "0/5"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/5 reported example(s))"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "deepseek-v4-flash",
+      "calls": 7,
+      "input_tokens": 24203,
+      "output_tokens": 105834,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.15035
+    }
+  }
+]

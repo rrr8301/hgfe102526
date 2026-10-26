@@ -1,0 +1,110 @@
+{
+  "input": "pipeline_no_historic/pandas_68315/mined/pandas-dev__pandas_68315.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 19042,
+    "output_tokens": 5173,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 68315,
+      "reference": "https://github.com/pandas-dev/pandas/pull/68315",
+      "buggy_commit": "7d79fc4499441ace8aa7bb79c385b8cfb642383d",
+      "fixed_commit": "a77f7cd865b78bb728d410d946a5ec20e9d8511c",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5823,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#68315 in a pandas source checkout at the buggy commit 7d79fc449944 and confirm the four added tests fail there and pass at the fixed PR revision. The defect is an unguarded (arr.astype(int) == arr).all() integrality check that saturates out-of-int64-range floats, plus float16 bounds overflowing to inf and emitting a spurious RuntimeWarning. The transition is decided by the test assertions, so the build must be a real Cython build of the buggy commit with NumPy 2.x and a 64-bit platform.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.11",
+          "pip_packages": [
+            "numpy>=2.0,<3",
+            "python-dateutil",
+            "tzdata",
+            "cython",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "git",
+            "gcc or clang with C/C++ toolchain",
+            "make"
+          ],
+          "build_commands": [
+            "git checkout 7d79fc449944",
+            "python -m pip install cython numpy python-dateutil tzdata pytest hypothesis",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "python 3.11 is an era-inferred choice (no documented Python constraint in the evidence); pandas 3.x line requires a recent Python, so 3.11 is chosen and stated, not documented",
+            "numpy 2.x is an unbounded choice: the evidence gives no NumPy constraint, so the strategy picks NumPy 2 to match the 3.x-era pandas checkout and to reproduce float16 overflow semantics under NEP 50 promotion; this is a choice, not a documented constraint",
+            "python-dateutil, tzdata and cython are unbounded and numerically irrelevant; installed unpinned at the versions current for the checkout",
+            "no sanitiser or alternative backend is required; the defect is a plain logic/dtype issue in pandas.core.dtypes.cast"
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/dtypes/cast/test_downcast.py pandas/tests/series/methods/test_convert_dtypes.py pandas/tests/series/indexing/test_setitem.py -k 'float16_no_overflow_warning or out_of_int64_range or one_past_max' -q -p no:cacheprovider",
+        "reproducing_test": "pandas/tests/dtypes/cast/test_downcast.py::test_downcast_float16_no_overflow_warning, plus pandas/tests/series/methods/test_convert_dtypes.py::TestSeriesConvertDtypes::test_convert_dtypes_float_out_of_int64_range (params 1e30, inf, -inf), test_convert_dtypes_float_one_past_max, test_convert_dtypes_float16_no_overflow_warning, and pandas/tests/series/indexing/test_setitem.py::test_setitem_enlarge_float16_no_overflow_warning",
+        "success_criterion": "On the buggy revision 7d79fc449944 the selected tests fail: the float16 downcast test raises RuntimeWarning under simplefilter('error') because the int64 bounds overflow to inf in float16; the one_past_max test gets an Int64 result holding iinfo.max where Float64 is expected, failing assert_series_equal on dtype; the 1e30/inf tests fail on the spurious warning under assert_produces_warning(None). On the fixed revision the same selection passes with zero failures.",
+        "numerical_probe": "Compare pd.Series([float(np.iinfo(np.dtype(int)).max)+1]).convert_dtypes().dtype against Float64 on the buggy and fixed builds; buggy gives Int64 and fixed gives Float64.",
+        "input_output_examples": [
+          {
+            "input": "pd.Series([2.0**63]).convert_dtypes()",
+            "buggy_output": "Int64 holding 9223372036854775807",
+            "expected_output": "Float64 (no saturation to 9223372036854775807)"
+          },
+          {
+            "input": "float values 1e30 or inf passed to convert_dtypes",
+            "buggy_output": "spurious RuntimeWarning raised before correctly falling back to Float64",
+            "expected_output": "Float64 with no RuntimeWarning"
+          }
+        ],
+        "risks": [
+          "Platform dependence: the one_past_max test takes its bounds from np.iinfo(np.dtype(int)), i.e. the C long/int width. The defect only manifests as an off-by-one on 64-bit int platforms (Linux/macOS x86_64 or arm64, Windows with NumPy 2). On a 32-bit-int platform the boundaries differ and the test may not transition, so it cannot be assumed to reproduce there.",
+          "Warning-semantics dependence: the float16 and 1e30/inf tests rely on NumPy emitting 'overflow encountered in cast' as a RuntimeWarning and on tm.assert_produces_warning(None). NumPy 1.x promotion rules differ (value-based casting), so under NumPy 1.x the float16 overflow may not occur and the test may pass on the buggy revision. Use NumPy 2.x to match the NEP 50 behaviour the fix targets.",
+          "The float16 widening fix is described in the evidence but float32 behaviour is not stated, so no float32 test is planned; a float32 variant would be speculative.",
+          "Build risk: the editable Cython build must be done at the buggy commit; a stale compiled extension from another revision will give misleading results. Rebuild after checkout.",
+          "Test selection risk: the -k filter must match the four new tests; if the checkout lacks the TestSeriesConvertDtypes class name, adjust the selector rather than running the whole file, which could mask the transition.",
+          "The pyarrow test in the same file is skipped via importorskip and is not part of the transition; it is excluded from the selection."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "the developer's added tests in the PR diff, which compare dtype and values with assert_series_equal and assert_numpy_array_equal",
+          "why": "The defect is a dtype and integer-value error (Int64 holding iinfo.max versus Float64) plus a warning-presence check, so exact equality and warning absence are the correct oracles; no floating-point tolerance applies."
+        },
+        "fails_on_buggy": "On 7d79fc449944 the float16 downcast test raises RuntimeWarning under simplefilter('error') because the int64 bounds overflow to inf when cast to float16, so the warning escapes the catch block and the test errors. The one_past_max test sees an Int64 result with iinfo.max where assert_series_equal expects Float64, failing on dtype. The 1e30 and inf tests fail because assert_produces_warning(None) sees the spurious RuntimeWarning from the unguarded astype(int) comparison.",
+        "passes_on_fixed": "On the fixed PR revision floats_fit_integer_dtype with np.float64 bounds and the range guard before astype(int) return Float64 for out-of-range floats with no warning, and the float16 cases promote to float64 without overflow, so all selected tests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6064,
+        "output_tokens": 3331,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 12978,
+        "output_tokens": 1842,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/pandas_66227_claude-haiku-5-5/mined/pandas-dev__pandas_66227.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 16824,
+    "output_tokens": 6549,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66227,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66227",
+      "buggy_commit": "6850d49c8de29df8f048f7b90fcf897464fff0f4",
+      "fixed_commit": "263e401f367e5a9f537c9257675daa03a300fff3",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7310,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#43178 on pandas at buggy commit 6850d49c8de2 by building the in-tree Cython extensions and running the three new tests added by PR 66227. The overflow tests should fail on the buggy revision (no OutOfBoundsTimedelta raised, saturated result returned) and pass on the fixed one. The all-NaT DataFrame test is a regression guard that is expected to pass on both revisions. The Series all-NaT test should fail on buggy, because the scalar branch wrongly raises for skipna=False with NaT.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "cython",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "hypothesis",
+            "meson-python",
+            "meson",
+            "versioneer"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain (gcc or clang) for building pandas extensions"
+          ],
+          "build_commands": [
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "numpy 1.21.2 and pandas 1.3.2 are explicit constraints sourced only from issue#43178 (historical report), not from the README or a build file, and they cannot build the current tree, so they are not used as pins; the current NumPy version required by the repo's build configuration is used instead",
+            "overflow is an int64 integer property independent of platform or NumPy minor version, so no numerical pin is needed to expose the defect"
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/frame/test_reductions.py pandas/tests/series/test_reductions.py -k \"sum_timedelta64 or td64_sum_all_nat\" -q -p no:cacheprovider",
+        "reproducing_test": "pandas/tests/frame/test_reductions.py::test_sum_timedelta64_overflow_raises[axis-skipna] (axis in 0,1; skipna in True,False), pandas/tests/frame/test_reductions.py::test_sum_timedelta64_all_nat_skipna_false[axis], pandas/tests/series/test_reductions.py::test_td64_sum_all_nat_skipna_false",
+        "success_criterion": "On buggy 6850d49c8de2: test_sum_timedelta64_overflow_raises fails for all four parametrizations because df.sum does not raise pd.errors.OutOfBoundsTimedelta (it returns a saturated int64-max timedelta with a RuntimeWarning, which pytest may escalate to an error, but that is still not the expected exception). test_td64_sum_all_nat_skipna_false fails because Series.sum(skipna=False) raises on NaT inputs. test_sum_timedelta64_all_nat_skipna_false is expected to pass on buggy. On the fixed revision all of these pass: overflow raises OutOfBoundsTimedelta with message 'overflow in timedelta operation', and all-NaT skipna=False returns NaT with dtype m8[ns].",
+        "numerical_probe": "df = DataFrame of three columns or rows holding np.iinfo(np.int64).max // 2 as m8[ns]; the sum is 3 times that value, which exceeds int64 max",
+        "input_output_examples": [
+          {
+            "input": "x = pd.Series([pd.Timedelta(100000, \"days\"), pd.Timedelta(100000, \"days\")]); x.sum()",
+            "buggy_output": "ValueError raised (inconsistent with DataFrame behaviour)",
+            "expected_output": "OverflowError / OutOfBoundsTimedelta per the issue's request that all overflow errors be consistent"
+          },
+          {
+            "input": "x*2 where x = pd.Series([pd.Timedelta(100000, \"days\"), pd.Timedelta(100000, \"days\")])",
+            "buggy_output": "0   -13504 days +00:25:26.290448384\n1   -13504 days +00:25:26.290448384\ndtype: timedelta64[ns]",
+            "expected_output": "an overflow error is raised"
+          },
+          {
+            "input": "Series([NaT, NaT]).sum(skipna=False)",
+            "buggy_output": "wrongly raises a false overflow error",
+            "expected_output": "NaT"
+          }
+        ],
+        "risks": [
+          "The buggy/fixed transition is a DataFrame-reduction path (nanops._wrap_results ndarray branch). Groupby.sum and resample.sum still saturate silently after the fix, so they must not be used as reproducers.",
+          "The exact error message beyond 'overflow in timedelta operation' is not stated in the evidence, so match= depends on the fixed code's wording.",
+          "Exception type for the scalar Series path varies between ValueError and OverflowError in the issue; the new Series test only checks the NaT return, not the overflow type.",
+          "pandas' pytest configuration may escalate RuntimeWarning to an error. On buggy this changes the failure text but not the pass/fail outcome.",
+          "The Cython extensions must be rebuilt after checkout; a stale editable build can mask the fix and produce a false transition.",
+          "Platform: int64 overflow is platform-independent, so the defect should reproduce on x86_64 and aarch64 alike. No sanitiser or 32-bit build is evidenced, so none is assumed.",
+          "The NaT sentinel is iNaT = int64 min. Under skipna=False the masked positions can accumulate past int64 bounds; the fix exempts result_mask positions, so a naive guard would falsely raise on the all-NaT case. That is why the all-NaT tests are guards rather than reproducers.",
+          "The 1.21.2 and 1.3.2 pins come from an issue, not from a documented constraint for this revision, so they are not relied upon. If the current build fails against the installed NumPy, that is a build-environment problem, not the defect."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "pr_body and new test assertions in PR 66227",
+          "why": "The expected outcome is an exception type and message for the overflow path, and NaT with dtype m8[ns] for the skipna=False all-NaT path. Both are discrete, so no tolerance applies."
+        },
+        "fails_on_buggy": "The overflow tests call df.sum inside pytest.raises(OutOfBoundsTimedelta); on buggy the call returns a saturated int64-max timedelta with a RuntimeWarning and raises nothing, so pytest reports DID NOT RAISE. The Series all-NaT test asserts ser.sum(skipna=False) is pd.NaT; on buggy the scalar branch raises a false overflow error, so the test errors before the assertion.",
+        "passes_on_fixed": "With the guard overflow = np.abs(result) > lib.i8max in the ndarray branch of nanops._wrap_results, the overflow tests raise OutOfBoundsTimedelta with the expected message. The all-NaT DataFrame test gets NaT with dtype m8[ns] because result_mask positions are exempted. The scalar branch now includes result_mask, so the Series all-NaT test returns pd.NaT."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5980,
+        "output_tokens": 4267,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 10844,
+        "output_tokens": 2282,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

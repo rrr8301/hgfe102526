@@ -1,0 +1,1008 @@
+diff --git a/crates/burn-backend/src/backend/ops/qtensor.rs b/crates/burn-backend/src/backend/ops/qtensor.rs
+index 3f9095af5e9..16c0abbce8e 100644
+--- a/crates/burn-backend/src/backend/ops/qtensor.rs
++++ b/crates/burn-backend/src/backend/ops/qtensor.rs
+@@ -500,15 +500,26 @@ pub trait QTensorOps<B: Backend> {
+     fn q_matmul(lhs: TensorPrimitive<B>, rhs: TensorPrimitive<B>) -> TensorPrimitive<B> {
+         let mut propagation = QuantPropagation::Inhibit;
+         let mut scheme = QuantScheme::default();
+-        let mut dtype = None;
++
++        // Pick a target dtype for any dequantization. If either operand is already
++        // a Float tensor, take its dtype so a Float-QFloat (or QFloat-Float) pair
++        // ends up matching after dequantize and `float_matmul` doesn't see a
++        // dtype mismatch. Only when both operands are QFloat do we fall back to
++        // the device default.
++        let target_dtype: Option<FloatDType> = match (&lhs, &rhs) {
++            (TensorPrimitive::Float(t), _) | (_, TensorPrimitive::Float(t)) => {
++                Some(t.dtype().into())
++            }
++            _ => None,
++        };
+ 
+         let lhs = match lhs {
+             TensorPrimitive::Float(lhs) => lhs,
+             TensorPrimitive::QFloat(lhs) => {
+                 propagation = lhs.propagation();
+                 scheme = *lhs.scheme();
+-                let float_dtype = get_device_settings::<B>(&Self::q_device(&lhs)).float_dtype;
+-                dtype = Some(float_dtype);
++                let float_dtype = target_dtype
++                    .unwrap_or_else(|| get_device_settings::<B>(&Self::q_device(&lhs)).float_dtype);
+ 
+                 Self::dequantize(lhs, float_dtype)
+             }
+@@ -518,7 +529,7 @@ pub trait QTensorOps<B: Backend> {
+             TensorPrimitive::QFloat(rhs) => {
+                 propagation = rhs.propagation();
+                 scheme = *rhs.scheme();
+-                let float_dtype = dtype
++                let float_dtype = target_dtype
+                     .unwrap_or_else(|| get_device_settings::<B>(&Self::q_device(&rhs)).float_dtype);
+ 
+                 Self::dequantize(rhs, float_dtype)
+diff --git a/crates/burn-flex/benches/reduce_ops.rs b/crates/burn-flex/benches/reduce_ops.rs
+index 7bbb486431b..a33824e323e 100644
+--- a/crates/burn-flex/benches/reduce_ops.rs
++++ b/crates/burn-flex/benches/reduce_ops.rs
+@@ -7,7 +7,7 @@
+ 
+ use burn_flex::Flex;
+ use burn_ndarray::NdArray;
+-use burn_tensor::{Tensor, TensorData, backend::Backend};
++use burn_tensor::{FloatDType, Tensor, TensorData, backend::Backend};
+ use divan::{AllocProfiler, Bencher};
+ 
+ #[global_allocator]
+@@ -200,3 +200,82 @@ macro_rules! bench_backend {
+ 
+ bench_backend!(Flex, flex, "Flex");
+ bench_backend!(NdArray<f32>, ndarray, "NdArray");
++
++// ============================================================================
++// f16 mean benches (Flex only)
++//
++// These exercise the half-precision mean / mean_dim fast path. Each tensor
++// is cast to f16 once during setup so the bench measures only the reduction,
++// not the cast. Sizes mirror the f32 sum_dim / mean_dim groups so before/after
++// numbers can be compared apples-to-apples.
++// ============================================================================
++
++#[divan::bench_group(name = "Flex_f16")]
++mod flex_f16 {
++    use super::*;
++
++    type B = Flex;
++
++    fn make_f16_2d(rows: usize, cols: usize) -> Tensor<B, 2> {
++        make_tensor_2d::<B>(rows, cols).cast(FloatDType::F16)
++    }
++
++    fn make_f16_3d(d0: usize, d1: usize, d2: usize) -> Tensor<B, 3> {
++        make_tensor_3d::<B>(d0, d1, d2).cast(FloatDType::F16)
++    }
++
++    #[divan::bench_group(name = "mean")]
++    mod mean {
++        use super::*;
++
++        #[divan::bench]
++        fn _64k(bencher: Bencher) {
++            let t = make_f16_2d(256, 256);
++            bencher.bench(|| t.clone().mean());
++        }
++
++        #[divan::bench]
++        fn _1m(bencher: Bencher) {
++            let t = make_f16_2d(1024, 1024);
++            bencher.bench(|| t.clone().mean());
++        }
++    }
++
++    #[divan::bench_group(name = "mean_dim")]
++    mod mean_dim {
++        use super::*;
++
++        // Last-dim path (sum_rows_f32)
++        #[divan::bench]
++        fn _256x256_dim1(bencher: Bencher) {
++            let t = make_f16_2d(256, 256);
++            bencher.bench(|| t.clone().mean_dim(1));
++        }
++
++        #[divan::bench]
++        fn _1024x1024_dim1(bencher: Bencher) {
++            let t = make_f16_2d(1024, 1024);
++            bencher.bench(|| t.clone().mean_dim(1));
++        }
++
++        // First-dim path (scatter_add_f32)
++        #[divan::bench]
++        fn _256x256_dim0(bencher: Bencher) {
++            let t = make_f16_2d(256, 256);
++            bencher.bench(|| t.clone().mean_dim(0));
++        }
++
++        #[divan::bench]
++        fn _1024x1024_dim0(bencher: Bencher) {
++            let t = make_f16_2d(1024, 1024);
++            bencher.bench(|| t.clone().mean_dim(0));
++        }
++
++        // Middle-dim path (scatter_add_batched)
++        #[divan::bench]
++        fn _batch32_256x256_dim1(bencher: Bencher) {
++            let t = make_f16_3d(32, 256, 256);
++            bencher.bench(|| t.clone().mean_dim(1));
++        }
++    }
++}
+diff --git a/crates/burn-flex/src/ops/grid_sample.rs b/crates/burn-flex/src/ops/grid_sample.rs
+index 656b8b3ff75..51382d327af 100644
+--- a/crates/burn-flex/src/ops/grid_sample.rs
++++ b/crates/burn-flex/src/ops/grid_sample.rs
+@@ -1,14 +1,18 @@
+ //! Grid sampling operations for FlexTensor.
++//!
++//! Supported dtypes: f32, f64, f16, bf16. All dtypes share a single f64
++//! compute path. This is required for f16/bf16 correctness (so coordinate
++//! math, bilinear weights, and accumulated samples keep full precision) and
++//! incidentally gives f32 a small accuracy bump at the cost of extra casts.
+ 
+ use alloc::vec;
+ use alloc::vec::Vec;
+-use burn_backend::DType;
++use burn_backend::element::cast::ToElement;
+ use burn_backend::ops::{GridSampleOptions, GridSamplePaddingMode, InterpolateMode};
+-use burn_std::{Bytes, Shape};
++use burn_backend::{DType, Element};
++use burn_std::{Bytes, Shape, bf16, f16};
+ 
+-#[cfg(not(feature = "std"))]
+-#[allow(unused_imports)]
+-use num_traits::Float;
++use num_traits::{Float, NumCast};
+ 
+ use crate::{FlexTensor, Layout};
+ 
+@@ -31,135 +35,154 @@ pub fn grid_sample_2d(
+     let grid = grid.to_contiguous();
+ 
+     match tensor.dtype() {
+-        DType::F32 => grid_sample_2d_f32(tensor, grid, options),
+-        DType::F64 => grid_sample_2d_f64(tensor, grid, options),
++        DType::F32 => grid_sample_2d_impl::<f32>(tensor, grid, options),
++        DType::F64 => grid_sample_2d_impl::<f64>(tensor, grid, options),
++        DType::F16 => grid_sample_2d_impl::<f16>(tensor, grid, options),
++        DType::BF16 => grid_sample_2d_impl::<bf16>(tensor, grid, options),
+         _ => panic!("grid_sample_2d: unsupported dtype {:?}", tensor.dtype()),
+     }
+ }
+ 
+-macro_rules! grid_sample_2d_typed {
+-    ($name:ident, $elem:ty, $dtype:expr) => {
+-        fn $name(tensor: FlexTensor, grid: FlexTensor, options: GridSampleOptions) -> FlexTensor {
+-            let t_shape = tensor.layout().shape();
+-            let g_shape = grid.layout().shape();
+-
+-            assert_eq!(t_shape.num_dims(), 4, "grid_sample_2d: input must be 4D");
+-            assert_eq!(g_shape.num_dims(), 4, "grid_sample_2d: grid must be 4D");
+-            assert_eq!(g_shape[3], 2, "grid_sample_2d: grid last dim must be 2");
+-            assert_eq!(
+-                t_shape[0], g_shape[0],
+-                "grid_sample_2d: batch size mismatch"
+-            );
+-
+-            let batch_size = t_shape[0];
+-            let channels = t_shape[1];
+-            let h_in = t_shape[2];
+-            let w_in = t_shape[3];
+-            let h_out = g_shape[1];
+-            let w_out = g_shape[2];
+-
+-            let tensor_data: &[$elem] = tensor.storage();
+-            let grid_data: &[$elem] = grid.storage();
+-
+-            let out_shape = Shape::from(vec![batch_size, channels, h_out, w_out]);
+-            let out_len = batch_size * channels * h_out * w_out;
+-            let mut output: Vec<$elem> = vec![0.0; out_len];
+-
+-            let align = options.align_corners;
+-            let pad_mode = options.padding_mode;
+-
+-            let t_stride_n = channels * h_in * w_in;
+-            let t_stride_c = h_in * w_in;
+-            let t_stride_h = w_in;
+-
+-            let g_stride_n = h_out * w_out * 2;
+-            let g_stride_h = w_out * 2;
+-
+-            let o_stride_n = channels * h_out * w_out;
+-            let o_stride_c = h_out * w_out;
+-            let o_stride_h = w_out;
+-
+-            for b in 0..batch_size {
+-                for y in 0..h_out {
+-                    for x in 0..w_out {
+-                        let g_idx = b * g_stride_n + y * g_stride_h + x * 2;
+-                        let sample_x = grid_data[g_idx] as f64;
+-                        let sample_y = grid_data[g_idx + 1] as f64;
+-
+-                        let (px, py) = if align {
+-                            let px = (sample_x + 1.0) * ((w_in - 1) as f64) / 2.0;
+-                            let py = (sample_y + 1.0) * ((h_in - 1) as f64) / 2.0;
+-                            (px, py)
+-                        } else {
+-                            let px = (sample_x + 1.0) * (w_in as f64) / 2.0 - 0.5;
+-                            let py = (sample_y + 1.0) * (h_in as f64) / 2.0 - 0.5;
+-                            (px, py)
+-                        };
+-
+-                        let (px, py) = apply_padding(px, py, w_in, h_in, pad_mode, align);
+-
+-                        let read = |t_base: usize, xi: i64, yi: i64| -> f64 {
+-                            match pad_mode {
+-                                GridSamplePaddingMode::Zeros => {
+-                                    if xi >= 0 && xi < w_in as i64 && yi >= 0 && yi < h_in as i64 {
+-                                        tensor_data[t_base + yi as usize * t_stride_h + xi as usize]
+-                                            as f64
+-                                    } else {
+-                                        0.0
+-                                    }
+-                                }
+-                                GridSamplePaddingMode::Border
+-                                | GridSamplePaddingMode::Reflection => {
+-                                    let xi = xi.clamp(0, (w_in - 1) as i64) as usize;
+-                                    let yi = yi.clamp(0, (h_in - 1) as i64) as usize;
+-                                    tensor_data[t_base + yi * t_stride_h + xi] as f64
+-                                }
+-                            }
+-                        };
+-
+-                        for c in 0..channels {
+-                            let t_base = b * t_stride_n + c * t_stride_c;
+-                            let o_idx = b * o_stride_n + c * o_stride_c + y * o_stride_h + x;
++fn grid_sample_2d_impl<T>(
++    tensor: FlexTensor,
++    grid: FlexTensor,
++    options: GridSampleOptions,
++) -> FlexTensor
++where
++    T: Float + Element + bytemuck::Pod,
++{
++    let t_shape = tensor.layout().shape();
++    let g_shape = grid.layout().shape();
++
++    assert_eq!(t_shape.num_dims(), 4, "grid_sample_2d: input must be 4D");
++    assert_eq!(g_shape.num_dims(), 4, "grid_sample_2d: grid must be 4D");
++    assert_eq!(g_shape[3], 2, "grid_sample_2d: grid last dim must be 2");
++    assert_eq!(
++        t_shape[0], g_shape[0],
++        "grid_sample_2d: batch size mismatch"
++    );
++
++    let batch_size = t_shape[0];
++    let channels = t_shape[1];
++    let h_in = t_shape[2];
++    let w_in = t_shape[3];
++    let h_out = g_shape[1];
++    let w_out = g_shape[2];
++
++    let tensor_data: &[T] = tensor.storage();
++    let grid_data: &[T] = grid.storage();
++
++    let out_shape = Shape::from(vec![batch_size, channels, h_out, w_out]);
++    let out_len = batch_size * channels * h_out * w_out;
++    let mut output: Vec<T> = vec![T::zero(); out_len];
++
++    let align = options.align_corners;
++    let pad_mode = options.padding_mode;
++
++    let t_stride_n = channels * h_in * w_in;
++    let t_stride_c = h_in * w_in;
++    let t_stride_h = w_in;
++
++    let g_stride_n = h_out * w_out * 2;
++    let g_stride_h = w_out * 2;
++
++    let o_stride_n = channels * h_out * w_out;
++    let o_stride_c = h_out * w_out;
++    let o_stride_h = w_out;
++
++    // Low-precision types (f16/bf16) are widened to f64 for all arithmetic so
++    // that coordinate math, weights, and accumulated samples keep full precision.
++    //
++    // The from_f64 unwrap is unreachable for any well-formed input: bilinear
++    // is a convex combination of finite samples so the result stays bounded by
++    // the sample envelope. The `half` crate's `NumCast` impl for f16/bf16
++    // forwards through `to_f32` and maps non-finite inputs to `Some(inf/nan)`;
++    // `num_traits`'s f32/f64 impls do the same. The message-bearing panic is a
++    // diagnostic hatch for future dtypes where this invariant does not hold.
++    let to_f64 = |x: T| -> f64 { ToElement::to_f64(&x) };
++    let from_f64 = |x: f64| -> T {
++        <T as NumCast>::from(x).unwrap_or_else(|| {
++            panic!(
++                "grid_sample_2d: NumCast::from({x:?}) to {:?} returned None",
++                T::dtype()
++            )
++        })
++    };
+ 
+-                            let val = if matches!(options.mode, InterpolateMode::Nearest) {
+-                                let xi = px.round() as i64;
+-                                let yi = py.round() as i64;
+-                                read(t_base, xi, yi)
++    for b in 0..batch_size {
++        for y in 0..h_out {
++            for x in 0..w_out {
++                let g_idx = b * g_stride_n + y * g_stride_h + x * 2;
++                let sample_x = to_f64(grid_data[g_idx]);
++                let sample_y = to_f64(grid_data[g_idx + 1]);
++
++                let (px, py) = if align {
++                    let px = (sample_x + 1.0) * ((w_in - 1) as f64) / 2.0;
++                    let py = (sample_y + 1.0) * ((h_in - 1) as f64) / 2.0;
++                    (px, py)
++                } else {
++                    let px = (sample_x + 1.0) * (w_in as f64) / 2.0 - 0.5;
++                    let py = (sample_y + 1.0) * (h_in as f64) / 2.0 - 0.5;
++                    (px, py)
++                };
++
++                let (px, py) = apply_padding(px, py, w_in, h_in, pad_mode, align);
++
++                let read = |t_base: usize, xi: i64, yi: i64| -> f64 {
++                    match pad_mode {
++                        GridSamplePaddingMode::Zeros => {
++                            if xi >= 0 && xi < w_in as i64 && yi >= 0 && yi < h_in as i64 {
++                                to_f64(tensor_data[t_base + yi as usize * t_stride_h + xi as usize])
+                             } else {
+-                                // Bilinear
+-                                let x0 = px.floor() as i64;
+-                                let y0 = py.floor() as i64;
+-                                let x1 = x0 + 1;
+-                                let y1 = y0 + 1;
+-
+-                                let x_frac = px - px.floor();
+-                                let y_frac = py - py.floor();
+-
+-                                let w00 = (1.0 - x_frac) * (1.0 - y_frac);
+-                                let w01 = (1.0 - x_frac) * y_frac;
+-                                let w10 = x_frac * (1.0 - y_frac);
+-                                let w11 = x_frac * y_frac;
+-
+-                                read(t_base, x0, y0) * w00
+-                                    + read(t_base, x0, y1) * w01
+-                                    + read(t_base, x1, y0) * w10
+-                                    + read(t_base, x1, y1) * w11
+-                            };
+-
+-                            output[o_idx] = val as $elem;
++                                0.0
++                            }
++                        }
++                        GridSamplePaddingMode::Border | GridSamplePaddingMode::Reflection => {
++                            let xi = xi.clamp(0, (w_in - 1) as i64) as usize;
++                            let yi = yi.clamp(0, (h_in - 1) as i64) as usize;
++                            to_f64(tensor_data[t_base + yi * t_stride_h + xi])
+                         }
+                     }
++                };
++
++                for c in 0..channels {
++                    let t_base = b * t_stride_n + c * t_stride_c;
++                    let o_idx = b * o_stride_n + c * o_stride_c + y * o_stride_h + x;
++
++                    let val = if matches!(options.mode, InterpolateMode::Nearest) {
++                        let xi = px.round() as i64;
++                        let yi = py.round() as i64;
++                        read(t_base, xi, yi)
++                    } else {
++                        // Bilinear
++                        let x0 = px.floor() as i64;
++                        let y0 = py.floor() as i64;
++                        let x1 = x0 + 1;
++                        let y1 = y0 + 1;
++
++                        let x_frac = px - px.floor();
++                        let y_frac = py - py.floor();
++
++                        let w00 = (1.0 - x_frac) * (1.0 - y_frac);
++                        let w01 = (1.0 - x_frac) * y_frac;
++                        let w10 = x_frac * (1.0 - y_frac);
++                        let w11 = x_frac * y_frac;
++
++                        read(t_base, x0, y0) * w00
++                            + read(t_base, x0, y1) * w01
++                            + read(t_base, x1, y0) * w10
++                            + read(t_base, x1, y1) * w11
++                    };
++
++                    output[o_idx] = from_f64(val);
+                 }
+             }
+-
+-            let bytes = Bytes::from_elems(output);
+-            FlexTensor::new(bytes, Layout::contiguous(out_shape), $dtype)
+         }
+-    };
+-}
++    }
+ 
+-grid_sample_2d_typed!(grid_sample_2d_f32, f32, DType::F32);
+-grid_sample_2d_typed!(grid_sample_2d_f64, f64, DType::F64);
++    let bytes = Bytes::from_elems(output);
++    FlexTensor::new(bytes, Layout::contiguous(out_shape), T::dtype())
++}
+ 
+ fn apply_padding(
+     px: f64,
+diff --git a/crates/burn-flex/src/ops/int.rs b/crates/burn-flex/src/ops/int.rs
+index 90820529711..0b4e984a800 100644
+--- a/crates/burn-flex/src/ops/int.rs
++++ b/crates/burn-flex/src/ops/int.rs
+@@ -110,11 +110,6 @@ impl IntTensorOps<Flex> for Flex {
+         tensor: IntTensor<Flex>,
+         indices: IntTensor<Flex>,
+     ) -> IntTensor<Flex> {
+-        debug_assert_eq!(
+-            indices.dtype(),
+-            DType::I64,
+-            "int_gather: indices must be I64"
+-        );
+         match tensor.dtype() {
+             DType::I64 => crate::ops::gather_scatter::gather::<i64>(tensor, dim, indices),
+             DType::I32 => crate::ops::gather_scatter::gather::<i32>(tensor, dim, indices),
+@@ -134,11 +129,6 @@ impl IntTensorOps<Flex> for Flex {
+         indices: IntTensor<Flex>,
+         value: IntTensor<Flex>,
+     ) -> IntTensor<Flex> {
+-        debug_assert_eq!(
+-            indices.dtype(),
+-            DType::I64,
+-            "int_scatter_add: indices must be I64"
+-        );
+         debug_assert_eq!(
+             tensor.dtype(),
+             value.dtype(),
+@@ -174,11 +164,6 @@ impl IntTensorOps<Flex> for Flex {
+         dim: usize,
+         indices: IntTensor<Flex>,
+     ) -> IntTensor<Flex> {
+-        debug_assert_eq!(
+-            indices.dtype(),
+-            DType::I64,
+-            "int_select: indices must be I64"
+-        );
+         match tensor.dtype() {
+             DType::I64 => crate::ops::gather_scatter::select::<i64>(tensor, dim, indices),
+             DType::I32 => crate::ops::gather_scatter::select::<i32>(tensor, dim, indices),
+@@ -198,11 +183,6 @@ impl IntTensorOps<Flex> for Flex {
+         indices: IntTensor<Flex>,
+         value: IntTensor<Flex>,
+     ) -> IntTensor<Flex> {
+-        debug_assert_eq!(
+-            indices.dtype(),
+-            DType::I64,
+-            "int_select_add: indices must be I64"
+-        );
+         debug_assert_eq!(
+             tensor.dtype(),
+             value.dtype(),
+diff --git a/crates/burn-flex/src/ops/mod.rs b/crates/burn-flex/src/ops/mod.rs
+index f3fc7381eb4..35f754adf58 100644
+--- a/crates/burn-flex/src/ops/mod.rs
++++ b/crates/burn-flex/src/ops/mod.rs
+@@ -1,6 +1,10 @@
+ //! Backend operations implementations.
+ 
++use alloc::borrow::Cow;
+ use burn_backend::DType;
++use burn_std::{bf16, f16};
++
++use crate::FlexTensor;
+ 
+ /// The `DType` that matches `isize` on the current platform.
+ #[cfg(target_pointer_width = "64")]
+@@ -53,6 +57,37 @@ impl<T> SendMutPtr<T> {
+     }
+ }
+ 
++/// Read a float tensor's storage as f32 values, regardless of source dtype.
++/// Returns a borrowed slice for F32 (zero-copy) and an owned Vec for other
++/// float dtypes (F64, F16, BF16).
++///
++/// Returns elements in underlying buffer order. Callers needing logical
++/// iteration order must call `to_contiguous()` first.
++///
++/// # Panics
++/// Panics if the tensor's dtype is not one of F32, F64, F16, or BF16.
++pub(crate) fn float_storage_as_f32(tensor: &FlexTensor) -> Cow<'_, [f32]> {
++    match tensor.dtype() {
++        DType::F32 => Cow::Borrowed(tensor.storage::<f32>()),
++        DType::F64 => Cow::Owned(tensor.storage::<f64>().iter().map(|&x| x as f32).collect()),
++        DType::F16 => Cow::Owned(
++            tensor
++                .storage::<f16>()
++                .iter()
++                .map(|x| f32::from(*x))
++                .collect(),
++        ),
++        DType::BF16 => Cow::Owned(
++            tensor
++                .storage::<bf16>()
++                .iter()
++                .map(|x| f32::from(*x))
++                .collect(),
++        ),
++        other => panic!("float_storage_as_f32: unsupported dtype {:?}", other),
++    }
++}
++
+ pub mod activation;
+ pub mod attention;
+ pub mod binary;
+diff --git a/crates/burn-flex/src/ops/qtensor.rs b/crates/burn-flex/src/ops/qtensor.rs
+index fefce1a85b1..34e9fb85aac 100644
+--- a/crates/burn-flex/src/ops/qtensor.rs
++++ b/crates/burn-flex/src/ops/qtensor.rs
+@@ -1,6 +1,5 @@
+ //! Quantized tensor operations for the Flex backend.
+ 
+-use alloc::borrow::Cow;
+ use alloc::vec::Vec;
+ #[cfg(not(feature = "std"))]
+ #[allow(unused_imports)]
+@@ -16,32 +15,9 @@ use burn_backend::{
+ };
+ use burn_std::{Bytes, Shape, Slice, bf16, f16};
+ 
++use super::float_storage_as_f32;
+ use crate::{Flex, FlexQTensor, FlexTensor, Layout};
+ 
+-/// Read a contiguous float tensor's storage as f32 values, regardless of source dtype.
+-/// Returns a borrowed slice for F32 (zero-copy) and an owned Vec for other types.
+-fn float_storage_as_f32(tensor: &FlexTensor) -> Cow<'_, [f32]> {
+-    match tensor.dtype() {
+-        DType::F32 => Cow::Borrowed(tensor.storage::<f32>()),
+-        DType::F64 => Cow::Owned(tensor.storage::<f64>().iter().map(|&x| x as f32).collect()),
+-        DType::F16 => Cow::Owned(
+-            tensor
+-                .storage::<f16>()
+-                .iter()
+-                .map(|x| f32::from(*x))
+-                .collect(),
+-        ),
+-        DType::BF16 => Cow::Owned(
+-            tensor
+-                .storage::<bf16>()
+-                .iter()
+-                .map(|x| f32::from(*x))
+-                .collect(),
+-        ),
+-        other => panic!("float_storage_as_f32: unsupported dtype {:?}", other),
+-    }
+-}
+-
+ impl QTensorOps<Flex> for Flex {
+     fn q_from_data(data: TensorData, _device: &Device<Flex>) -> QuantizedTensor<Flex> {
+         let scheme = match data.dtype {
+@@ -147,9 +123,12 @@ impl QTensorOps<Flex> for Flex {
+         let tensor = tensor.to_contiguous();
+         let float_data = float_storage_as_f32(&tensor);
+ 
+-        // Extract and validate scales from the qparams tensor
++        // Extract and validate scales from the qparams tensor. The scales tensor
++        // shares its dtype with the float element type, which can be any of
++        // f32/f64/f16/bf16, so we normalise via float_storage_as_f32 instead of
++        // assuming f32 storage.
+         let scales_tensor = qparams.scales.to_contiguous();
+-        let scales_data: &[f32] = scales_tensor.storage();
++        let scales_data = float_storage_as_f32(&scales_tensor);
+         let scales: Vec<f32> = scales_data.iter().copied().map(validated_scale).collect();
+ 
+         let (a, b) = scheme.value.range();
+diff --git a/crates/burn-flex/src/ops/reduce.rs b/crates/burn-flex/src/ops/reduce.rs
+index ccfafa502b8..aa59b8b6a47 100644
+--- a/crates/burn-flex/src/ops/reduce.rs
++++ b/crates/burn-flex/src/ops/reduce.rs
+@@ -13,7 +13,7 @@ use burn_std::{Bytes, Shape, bf16, f16};
+ use crate::strided_index::StridedIter;
+ use crate::{FlexTensor, Layout};
+ 
+-use super::INDEX_DTYPE;
++use super::{INDEX_DTYPE, float_storage_as_f32};
+ 
+ /// Assert that a dimension size fits in `isize`, which is required for index-producing
+ /// operations (argmax, argmin, *_with_indices) that store dimension indices as `isize`.
+@@ -282,14 +282,21 @@ pub fn mean_dim(tensor: FlexTensor, dim: usize) -> FlexTensor {
+         "mean_dim: cannot take mean of empty dimension"
+     );
+     let dtype = tensor.dtype();
++
++    // Half-precision types fuse sum+divide in f32 to avoid overflow when the
++    // intermediate sum exceeds f16::MAX, so they don't go through sum_dim.
++    match dtype {
++        DType::F16 => return mean_dim_half::<f16>(&tensor, dim),
++        DType::BF16 => return mean_dim_half::<bf16>(&tensor, dim),
++        _ => {}
++    }
++
+     let sum_result = sum_dim(tensor, dim);
+ 
+     // Divide by dimension size
+     match dtype {
+         DType::F32 => scalar_div::<f32>(sum_result, dim_size as f32),
+         DType::F64 => scalar_div::<f64>(sum_result, dim_size as f64),
+-        DType::F16 => scalar_div_f16(sum_result, dim_size as f32),
+-        DType::BF16 => scalar_div_bf16(sum_result, dim_size as f32),
+         DType::I8 => {
+             let divisor = dim_size as i32;
+             let mut tensor = sum_result;
+@@ -754,6 +761,17 @@ fn reduce_dim_f32(tensor: &FlexTensor, dim: usize, op: ReduceOp) -> FlexTensor {
+     out_shape[dim] = 1;
+     let out_size: usize = out_shape.iter().product();
+ 
++    // Empty output: any zero-sized non-reduced dim means the result has no
++    // elements. Return early so the SIMD kernels and fallback loops never
++    // see `outer_size == 0` or `inner_size == 0`.
++    if out_size == 0 {
++        return FlexTensor::new(
++            Bytes::from_elems(Vec::<f32>::new()),
++            Layout::contiguous(Shape::from(out_shape)),
++            DType::F32,
++        );
++    }
++
+     let outer_size: usize = shape[..dim].iter().product();
+     let inner_size: usize = shape[dim + 1..].iter().product();
+ 
+@@ -836,10 +854,12 @@ fn reduce_dim_f32(tensor: &FlexTensor, dim: usize, op: ReduceOp) -> FlexTensor {
+         }
+         result
+     } else if tensor.is_contiguous() {
+-        // Contiguous: use flat index arithmetic (safe for any ndims)
++        // Contiguous: use flat index arithmetic (safe for any ndims).
++        // outer_size and inner_size are guaranteed positive by the out_size == 0
++        // early return above.
+         let mut result = Vec::with_capacity(out_size);
+-        for outer in 0..outer_size.max(1) {
+-            for inner in 0..inner_size.max(1) {
++        for outer in 0..outer_size {
++            for inner in 0..inner_size {
+                 let mut acc = init;
+                 for d in 0..dim_size {
+                     let idx = start_offset + outer * dim_size * inner_size + d * inner_size + inner;
+@@ -855,8 +875,8 @@ fn reduce_dim_f32(tensor: &FlexTensor, dim: usize, op: ReduceOp) -> FlexTensor {
+         let inner_stride: isize = if dim + 1 < ndims { strides[dim + 1] } else { 1 };
+ 
+         let mut result = Vec::with_capacity(out_size);
+-        for outer in 0..outer_size.max(1) {
+-            for inner in 0..inner_size.max(1) {
++        for outer in 0..outer_size {
++            for inner in 0..inner_size {
+                 let base = start_offset as isize
+                     + outer as isize * outer_stride
+                     + inner as isize * inner_stride;
+@@ -987,7 +1007,9 @@ fn reduce_last_dim_f32(
+         dim_size as isize
+     };
+ 
+-    let rows = outer_size.max(1);
++    // `outer_size > 0` is guaranteed by the out_size == 0 early return in
++    // `reduce_dim_f32`.
++    let rows = outer_size;
+ 
+     // Contiguous Sum: batch all rows in one kernel call to avoid per-row overhead.
+     #[cfg(feature = "simd")]
+@@ -1053,6 +1075,17 @@ where
+     out_shape[dim] = 1;
+     let out_size: usize = out_shape.iter().product();
+ 
++    // Empty output: any zero-sized non-reduced dim means the result has no
++    // elements. Returning early keeps the loops below from producing phantom
++    // outputs when `outer_size == 0` or `inner_size == 0`.
++    if out_size == 0 {
++        return FlexTensor::new(
++            Bytes::from_elems(Vec::<E>::new()),
++            Layout::contiguous(Shape::from(out_shape)),
++            tensor.dtype(),
++        );
++    }
++
+     let outer_size: usize = shape[..dim].iter().product();
+     let inner_size: usize = shape[dim + 1..].iter().product();
+ 
+@@ -1062,9 +1095,10 @@ where
+     let mut result: Vec<E> = Vec::with_capacity(out_size);
+ 
+     if tensor.is_contiguous() {
+-        // Contiguous: use flat index arithmetic (safe for any ndims)
+-        for outer in 0..outer_size.max(1) {
+-            for inner in 0..inner_size.max(1) {
++        // Contiguous: use flat index arithmetic (safe for any ndims).
++        // outer_size and inner_size are positive by the early return above.
++        for outer in 0..outer_size {
++            for inner in 0..inner_size {
+                 let mut acc = init;
+                 for d in 0..dim_size {
+                     let idx = start_offset + outer * dim_size * inner_size + d * inner_size + inner;
+@@ -1079,8 +1113,8 @@ where
+         let outer_stride: isize = if dim > 0 { strides[dim - 1] } else { 0 };
+         let inner_stride: isize = if dim + 1 < ndims { strides[dim + 1] } else { 1 };
+ 
+-        for outer in 0..outer_size.max(1) {
+-            for inner in 0..inner_size.max(1) {
++        for outer in 0..outer_size {
++            for inner in 0..inner_size {
+                 let base = start_offset as isize
+                     + outer as isize * outer_stride
+                     + inner as isize * inner_stride;
+@@ -1125,6 +1159,15 @@ where
+     out_shape[dim] = 1;
+     let out_size: usize = out_shape.iter().product();
+ 
++    // Empty output: skip the loop entirely for zero-sized non-reduced dims.
++    if out_size == 0 {
++        return FlexTensor::new(
++            Bytes::from_elems(Vec::<E>::new()),
++            Layout::contiguous(Shape::from(out_shape)),
++            tensor.dtype(),
++        );
++    }
++
+     let outer_size: usize = shape[..dim].iter().product();
+     let inner_size: usize = shape[dim + 1..].iter().product();
+ 
+@@ -1133,8 +1176,8 @@ where
+ 
+     let mut result: Vec<E> = Vec::with_capacity(out_size);
+ 
+-    for outer in 0..outer_size.max(1) {
+-        for inner in 0..inner_size.max(1) {
++    for outer in 0..outer_size {
++        for inner in 0..inner_size {
+             let mut acc = init;
+             for d in 0..dim_size {
+                 let idx = start_offset + outer * dim_size * inner_size + d * inner_size + inner;
+@@ -1185,6 +1228,15 @@ where
+     out_shape[dim] = 1;
+     let out_size: usize = out_shape.iter().product();
+ 
++    // Empty output: skip the loop entirely for zero-sized non-reduced dims.
++    if out_size == 0 {
++        return FlexTensor::new(
++            Bytes::from_elems(Vec::<E>::new()),
++            Layout::contiguous(Shape::from(out_shape)),
++            E::dtype(),
++        );
++    }
++
+     let outer_size: usize = shape[..dim].iter().product();
+     let inner_size: usize = shape[dim + 1..].iter().product();
+ 
+@@ -1193,8 +1245,8 @@ where
+ 
+     let mut result: Vec<E> = Vec::with_capacity(out_size);
+ 
+-    for outer in 0..outer_size.max(1) {
+-        for inner in 0..inner_size.max(1) {
++    for outer in 0..outer_size {
++        for inner in 0..inner_size {
+             let mut acc = init;
+             for d in 0..dim_size {
+                 let idx = start_offset + outer * dim_size * inner_size + d * inner_size + inner;
+@@ -1212,20 +1264,187 @@ where
+     )
+ }
+ 
++/// Sum along `dim` for an already-contiguous row-major f32 slice, producing
++/// one output per (outer, inner) position.
++///
++/// The caller owns the contiguity guarantee: `data.len()` must equal
++/// `outer_size * dim_size * inner_size` in logical row-major order. Dispatches
++/// to the same SIMD kernels `reduce_dim_f32` uses, but without the stride
++/// bookkeeping.
++fn sum_dim_contiguous_f32(
++    data: &[f32],
++    outer_size: usize,
++    dim_size: usize,
++    inner_size: usize,
++) -> Vec<f32> {
++    // Empty output: if any non-reduced dim has size 0, the result is empty.
++    // Returning early avoids indexing past an empty `data` slice in the SIMD
++    // kernels and keeps the output length in sync with the caller's out_shape.
++    if outer_size == 0 || inner_size == 0 {
++        return Vec::new();
++    }
++
++    // Last-dim: each output is the sum of a contiguous run of dim_size elements.
++    if inner_size == 1 {
++        let rows = outer_size;
++        #[cfg(feature = "simd")]
++        {
++            let mut result = vec![0.0f32; rows];
++            kernels::sum_rows_f32(data, &mut result, rows, dim_size);
++            return result;
++        }
++        #[cfg(not(feature = "simd"))]
++        {
++            return (0..rows)
++                .map(|i| data[i * dim_size..(i + 1) * dim_size].iter().sum())
++                .collect();
++        }
++    }
++
++    // First-dim (or equivalent: any collapsed-outer case): scatter-add dim_size
++    // rows of inner_size cols into a single inner_size accumulator.
++    if outer_size == 1 {
++        #[cfg(feature = "simd")]
++        {
++            let mut result = aligned::alloc_aligned_zeroed::<f32>(inner_size);
++            kernels::scatter_add_f32(data, &mut result, dim_size, inner_size, inner_size);
++            return aligned::to_vec(result);
++        }
++        #[cfg(not(feature = "simd"))]
++        {
++            let mut result = vec![0.0f32; inner_size];
++            for row in 0..dim_size {
++                let row_start = row * inner_size;
++                for c in 0..inner_size {
++                    result[c] += data[row_start + c];
++                }
++            }
++            return result;
++        }
++    }
++
++    // Middle-dim: batched scatter-add. For each outer batch, sum dim_size rows
++    // of inner_size cols into a per-batch accumulator.
++    let out_size = outer_size * inner_size;
++    #[cfg(feature = "simd")]
++    {
++        let mut result = aligned::alloc_aligned_zeroed::<f32>(out_size);
++        kernels::scatter_add_batched(
++            data,
++            &mut result,
++            outer_size,
++            dim_size,
++            inner_size,
++            dim_size * inner_size,
++            inner_size,
++        );
++        aligned::to_vec(result)
++    }
++    #[cfg(not(feature = "simd"))]
++    {
++        let mut result = vec![0.0f32; out_size];
++        for outer in 0..outer_size {
++            let out_base = outer * inner_size;
++            for d in 0..dim_size {
++                let in_base = outer * dim_size * inner_size + d * inner_size;
++                for c in 0..inner_size {
++                    result[out_base + c] += data[in_base + c];
++                }
++            }
++        }
++        result
++    }
++}
++
++/// Mean along a dimension for half-precision types, fusing sum and divide in f32.
++///
++/// A naive `sum_dim` + `scalar_div` implementation can overflow to +inf when the
++/// intermediate sum exceeds `f16::MAX` (65504), even if the final mean fits. This
++/// function keeps the entire reduction and division in f32 and only narrows to
++/// f16/bf16 on store via `E::from_elem`.
++fn mean_dim_half<E>(tensor: &FlexTensor, dim: usize) -> FlexTensor
++where
++    E: Element + bytemuck::Pod,
++{
++    let tensor = tensor.to_contiguous();
++    let shape = tensor.layout().shape();
++    let ndims = shape.num_dims();
++
++    assert!(
++        dim < ndims,
++        "dim {} out of bounds for {} dimensions",
++        dim,
++        ndims
++    );
++
++    let dim_size = shape[dim];
++    assert!(
++        dim_size > 0,
++        "mean_dim: cannot take mean of empty dimension"
++    );
++    let mut out_shape: Vec<usize> = shape.to_vec();
++    out_shape[dim] = 1;
++
++    let outer_size: usize = shape[..dim].iter().product();
++    let inner_size: usize = shape[dim + 1..].iter().product();
++
++    let data = float_storage_as_f32(&tensor);
++    let divisor = dim_size as f32;
++
++    let sums = sum_dim_contiguous_f32(&data, outer_size, dim_size, inner_size);
++    let result: Vec<E> = sums
++        .into_iter()
++        .map(|s| E::from_elem(s / divisor))
++        .collect();
++
++    let bytes = Bytes::from_elems(result);
++    FlexTensor::new(
++        bytes,
++        Layout::contiguous(Shape::from(out_shape)),
++        E::dtype(),
++    )
++}
++
++/// Scalar mean for half-precision types, fusing sum and divide in f32.
++/// Avoids f16 overflow when the total sum exceeds `f16::MAX`. Empty input
++/// produces NaN to match the f32/f64 path in `mean()`.
++fn mean_scalar_half<E>(tensor: &FlexTensor) -> FlexTensor
++where
++    E: Element + bytemuck::Pod,
++{
++    let tensor = tensor.to_contiguous();
++    let n = tensor.layout().num_elements();
++    let data = float_storage_as_f32(&tensor);
++    // Route through `sum_f32_contiguous` to pick up SIMD + rayon for the
++    // f32 reduction. The half-precision narrowing happens after the divide.
++    let acc = sum_f32_contiguous(&data);
++
++    let mean = acc / (n as f32);
++    let bytes = Bytes::from_elems(vec![E::from_elem(mean)]);
++    FlexTensor::new(bytes, Layout::contiguous(Shape::from(vec![1])), E::dtype())
++}
++
+ // ============================================================================
+ // Mean (all elements)
+ // ============================================================================
+ 
+ /// Mean of all elements, returning a scalar tensor.
+ pub fn mean(tensor: FlexTensor) -> FlexTensor {
++    let dtype = tensor.dtype();
++
++    // Half-precision types fuse sum+divide in f32 to avoid overflow when the
++    // total sum exceeds f16::MAX.
++    match dtype {
++        DType::F16 => return mean_scalar_half::<f16>(&tensor),
++        DType::BF16 => return mean_scalar_half::<bf16>(&tensor),
++        _ => {}
++    }
++
+     let n = tensor.layout().num_elements();
+     let sum_result = sum(tensor);
+-    let dtype = sum_result.dtype();
+     match dtype {
+         DType::F32 => scalar_div::<f32>(sum_result, n as f32),
+         DType::F64 => scalar_div::<f64>(sum_result, n as f64),
+-        DType::F16 => scalar_div_f16(sum_result, n as f32),
+-        DType::BF16 => scalar_div_bf16(sum_result, n as f32),
+         _ => panic!("mean: unsupported dtype {:?}", dtype),
+     }
+ }
+@@ -2023,22 +2242,6 @@ fn scalar_div<E: Element + bytemuck::Pod + core::ops::Div<Output = E> + Copy>(
+     tensor
+ }
+ 
+-fn scalar_div_f16(mut tensor: FlexTensor, divisor: f32) -> FlexTensor {
+-    let data: &mut [f16] = tensor.storage_mut();
+-    for x in data.iter_mut() {
+-        *x = f16::from_f32(x.to_f32() / divisor);
+-    }
+-    tensor
+-}
+-
+-fn scalar_div_bf16(mut tensor: FlexTensor, divisor: f32) -> FlexTensor {
+-    let data: &mut [bf16] = tensor.storage_mut();
+-    for x in data.iter_mut() {
+-        *x = bf16::from_f32(x.to_f32() / divisor);
+-    }
+-    tensor
+-}
+-
+ // ============================================================================
+ // Tests
+ // ============================================================================

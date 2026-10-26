@@ -1,0 +1,178 @@
+diff --git a/pandas/tests/dtypes/cast/test_downcast.py b/pandas/tests/dtypes/cast/test_downcast.py
+index fc21e2a5743b5..d31515265c353 100644
+--- a/pandas/tests/dtypes/cast/test_downcast.py
++++ b/pandas/tests/dtypes/cast/test_downcast.py
+@@ -1,9 +1,13 @@
+ import decimal
++import warnings
+ 
+ import numpy as np
+ import pytest
+ 
+-from pandas.core.dtypes.cast import maybe_downcast_to_dtype
++from pandas.core.dtypes.cast import (
++    maybe_downcast_numeric,
++    maybe_downcast_to_dtype,
++)
+ 
+ from pandas import (
+     Series,
+@@ -44,6 +48,85 @@ def test_downcast_conversion_empty(any_real_numpy_dtype):
+     tm.assert_numpy_array_equal(result, np.array([], dtype=np.int64))
+ 
+ 
++@pytest.mark.parametrize(
++    "value, dtype",
++    [
++        # float64(np.iinfo(np.int64).max) == 2**63, so the top edge needs a
++        #  strict inequality to be rejected.
++        (2.0**63, "int64"),
++        (-(2.0**63) - 2048, "int64"),
++        (2.0**64, "uint64"),
++        (-1.0, "uint64"),
++        (2.0**31, "int32"),
++        (np.inf, "int64"),
++        (-np.inf, "int64"),
++    ],
++)
++def test_downcast_float_out_of_integer_range(value, dtype):
++    # GH#66394 casting an out-of-range float to an integer dtype is undefined
++    #  behavior, so we must not downcast; previously on aarch64 the saturated
++    #  cast compared equal in float64 space and was silently kept.
++    arr = np.array([value])
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("error", RuntimeWarning)
++        result = maybe_downcast_numeric(arr, np.dtype(dtype))
++
++    tm.assert_numpy_array_equal(result, arr)
++
++
++@pytest.mark.parametrize(
++    "value, dtype",
++    [
++        # Not exactly representable as float64, but still in range and
++        #  round-tripping exactly.
++        (2.0**62, "int64"),
++        (2.0**63, "uint64"),
++        (2.0**31 - 1, "int32"),
++        (1.0, "int64"),
++    ],
++)
++def test_downcast_float_within_integer_range(value, dtype):
++    # GH#66394 the bounds check must not block downcasts that are exact
++    arr = np.array([value])
++
++    result = maybe_downcast_numeric(arr, np.dtype(dtype))
++
++    tm.assert_numpy_array_equal(result, np.array([value], dtype=dtype))
++
++
++@pytest.mark.parametrize("value", [2**63, 2**64, -(2**64), 2.0**64, np.inf])
++def test_downcast_object_out_of_integer_range(value):
++    # GH#66394 object entries that don't fit the target dtype previously raised
++    #  OverflowError out of the astype
++    arr = np.array([value], dtype=object)
++
++    result = maybe_downcast_numeric(arr, np.dtype("int64"))
++
++    tm.assert_numpy_array_equal(result, arr)
++
++
++def test_downcast_object_within_integer_range():
++    # GH#66394 in-range object entries still downcast
++    arr = np.array([1, 2], dtype=object)
++
++    result = maybe_downcast_numeric(arr, np.dtype("int64"))
++
++    tm.assert_numpy_array_equal(result, np.array([1, 2], dtype="int64"))
++
++
++def test_downcast_do_round_out_of_range():
++    # GH#66394 rounding can push a value out of range, so the bounds check
++    #  has to happen after rounding
++    arr = np.array([np.iinfo(np.int32).max + 0.6])
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("error", RuntimeWarning)
++        result = maybe_downcast_numeric(arr, np.dtype("int32"), do_round=True)
++
++    tm.assert_numpy_array_equal(result, arr)
++
++
+ @pytest.mark.parametrize(
+     "klass, nat",
+     [
+diff --git a/pandas/tests/frame/methods/test_combine.py b/pandas/tests/frame/methods/test_combine.py
+index f7631f3a2adda..c783e6d7dc033 100644
+--- a/pandas/tests/frame/methods/test_combine.py
++++ b/pandas/tests/frame/methods/test_combine.py
+@@ -61,3 +61,29 @@ def combiner(a, b):
+         result = df.combine(other, combiner)
+         expected = other.astype("float64")
+         tm.assert_frame_equal(result, expected)
++
++
++@pytest.mark.parametrize("value", [2**63, 2**64, -(2**64), 2.0**64, np.inf])
++def test_combine_object_result_not_castable_to_int(value):
++    # GH#66394 a func result that doesn't fit the common dtype must be left
++    #  alone rather than raising OverflowError out of maybe_downcast_numeric
++    df1 = pd.DataFrame({"a": [1, 2]})
++    df2 = pd.DataFrame({"a": [3, 4]})
++
++    result = df1.combine(
++        df2, lambda ser1, ser2: pd.Series([value, value], dtype=object)
++    )
++
++    expected = pd.DataFrame({"a": pd.Series([value, value], dtype=object)})
++    tm.assert_frame_equal(result, expected)
++
++
++def test_combine_object_result_castable_to_int():
++    # GH#66394 in-range results still downcast to the common dtype
++    df1 = pd.DataFrame({"a": [1, 2]})
++    df2 = pd.DataFrame({"a": [3, 4]})
++
++    result = df1.combine(df2, lambda ser1, ser2: pd.Series([5, 6], dtype=object))
++
++    expected = pd.DataFrame({"a": [5, 6]})
++    tm.assert_frame_equal(result, expected)
+diff --git a/pandas/tests/series/indexing/test_setitem.py b/pandas/tests/series/indexing/test_setitem.py
+index 196b00541ed26..e1e5557ec8fc6 100644
+--- a/pandas/tests/series/indexing/test_setitem.py
++++ b/pandas/tests/series/indexing/test_setitem.py
+@@ -4,6 +4,7 @@
+     datetime,
+ )
+ from decimal import Decimal
++import warnings
+ 
+ import numpy as np
+ import pytest
+@@ -1867,3 +1868,26 @@ def test_setitem_bool_dtype_with_boolean_indexer():
+     s1[condition] = s2[condition]
+     expected = Series([True, False, True], dtype=bool)
+     tm.assert_series_equal(s1, expected)
++
++
++@pytest.mark.parametrize("value", [2**63, np.inf, -np.inf])
++def test_setitem_enlarge_out_of_int64_range(value):
++    # GH#66394 the result must not be downcast back to int64; on aarch64 the
++    #  out-of-range cast saturated and 2**63 was silently stored as 2**63 - 1
++    ser = Series([1, 2], dtype="int64")
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("error", RuntimeWarning)
++        ser.loc[2] = value
++
++    expected = Series([1.0, 2.0, value], dtype="float64")
++    tm.assert_series_equal(ser, expected)
++
++
++def test_setitem_enlarge_within_int64_range():
++    # GH#66394 in-range values still downcast back to int64
++    ser = Series([1, 2], dtype="int64")
++    ser.loc[2] = 2**62
++
++    expected = Series([1, 2, 2**62], dtype="int64")
++    tm.assert_series_equal(ser, expected)

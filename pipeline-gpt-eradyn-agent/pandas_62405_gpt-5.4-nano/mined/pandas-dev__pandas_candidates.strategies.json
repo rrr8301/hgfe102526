@@ -1,0 +1,106 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_62405_gpt-5.4-nano/mined/pandas-dev__pandas_62405.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 13808,
+    "output_tokens": 2980,
+    "cost_usd": 0.006486,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 62405,
+      "reference": "https://github.com/pandas-dev/pandas/pull/62405",
+      "buggy_commit": "dab2f73b0b61052e2a3481cae0cbaec75c9ad244",
+      "fixed_commit": "4e92c631cd8248cb3e76223259a8cca3060d80ce",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 7361,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas numeric accuracy bug where low-variance inputs can lead to incorrect skew/kurtosis results in `nanops` due to using a fixed absolute tolerance. The reproduction succeeds when the added regression tests in `pandas/tests/test_nanops.py` fail on commit dab2f73b0b61 and pass on the fixed revision from PR #62405.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.13.9",
+          "pip_packages": [
+            "numpy==2.3.4",
+            "scipy==1.12.0",
+            "python-dateutil==2.9.0.post0",
+            "tzdata==2024.1",
+            "Cython==3.2.0b1",
+            "pytest"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip",
+            "pip install \"numpy==2.3.4\" \"scipy==1.12.0\" \"python-dateutil==2.9.0.post0\" \"tzdata==2024.1\" \"Cython==3.2.0b1\" pytest",
+            "python -m pip install cython",
+            "pip install .",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "Fix depends on floating-point epsilon computed from `np.finfo(m2.dtype).eps` and the exact low-variance regime; use the same pinned NumPy 2.3.4 and float behavior as in issue context.",
+            "The test uses SciPy as oracle (`pytest.importorskip('scipy.stats')` and compares `st.skew`/`st.kurtosis`); match SciPy 1.12.0 from issue#62946.",
+            "Cython pin is needed to install pandas from sources as described in the provided dependency context (even though numerical bug is in Python/C-ops).",
+            "Python 3.13.9 is taken directly from the provided environment context."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/test_nanops.py -k \"low_variance\"",
+        "reproducing_test": "pandas/tests/test_nanops.py::TestNans::test_low_variance (there are two: one under nanskew and one under nankurt; both are exercised by -k low_variance)",
+        "success_criterion": "On buggy revision dab2f73b0b61, `python -m pytest pandas/tests/test_nanops.py -k low_variance` fails because `nanops.nanskew` and/or `nanops.nankurt` do not match SciPy\u2019s `st.skew(..., bias=False)` / `st.kurtosis(..., bias=False)` for the provided low-variance arrays. On the fixed revision from PR #62405, the same test command passes because the tolerance is made data-magnitude-dependent (replacing the previous fixed absolute tolerance).",
+        "numerical_probe": "The test constructs `data = zeros((nobs,), float64)` and sets the first two values to `initial_data` where magnitudes are either ~1e-5 or ~1e-10; it then compares pandas `nanops.nanskew(data)` / `nanops.nankurt(data)` to SciPy `st.skew(data, bias=False)` / `st.kurtosis(data, bias=False)`. The bug appears in the low-variance scaling regime and is driven by tolerance handling (previously fixed tolerance ~1e-14; fixed uses tolerance based on `max_abs` and `np.finfo(m2.dtype).eps`).",
+        "input_output_examples": [
+          {
+            "input": "initial_data=[-2.05191341e-05,-4.10391103e-05], nobs=27 (as constructed in test_low_variance for kurt and skew)",
+            "buggy_output": "Assertion fails inside `tm.assert_almost_equal` between pandas `nanops.nanskew`/`nanops.nankurt` and SciPy result.",
+            "expected_output": "Assertion succeeds: pandas value matches SciPy `st.skew(..., bias=False)` / `st.kurtosis(..., bias=False)` within `tm.assert_almost_equal` tolerance."
+          },
+          {
+            "input": "initial_data=[-2.05191341e-10,-4.10391103e-10], nobs=27 (as constructed in test_low_variance for kurt and skew)",
+            "buggy_output": "Assertion fails inside `tm.assert_almost_equal` between pandas `nanops.nanskew`/`nanops.nankurt` and SciPy result (or produces NaN/incorrect result as described in issue context).",
+            "expected_output": "Assertion succeeds: pandas value matches SciPy `st.skew(..., bias=False)` / `st.kurtosis(..., bias=False)` within `tm.assert_almost_equal` tolerance."
+          }
+        ],
+        "risks": [
+          "This bug is explicitly low-variance / small-magnitude; if you change the exact `initial_data` values or `nobs` values, the failure may not transition.",
+          "The oracle is SciPy (`pytest.importorskip('scipy.stats')`). If SciPy is missing, tests will be skipped and you will not observe the failure; ensure `scipy==1.12.0` is installed.",
+          "Outcome may depend on floating-point behavior across architectures/BLAS settings; the environment pins NumPy/SciPy and uses float64 but the defect may still be platform-sensitive if it relies on particular vectorization/ufunc implementations.",
+          "You must install/build the buggy pandas revision (needs build) in editable mode or otherwise ensure the test imports the targeted code version."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": "scipy.stats skew/kurtosis with bias=False (used directly by the added tests).",
+          "why": "The provided test uses `tm.assert_almost_equal` with pandas test framework defaults; the exact numeric tolerance/criterion is determined by pandas\u2019 `tm.assert_almost_equal` implementation rather than being specified in the context."
+        },
+        "fails_on_buggy": "`python -m pytest pandas/tests/test_nanops.py -k low_variance` fails on dab2f73b0b61 because `nanops.nankurt` and/or `nanops.nanskew` for the low-variance constructed `data` do not match SciPy\u2019s `st.kurtosis(..., bias=False)` / `st.skew(..., bias=False)`. The underlying reason is the pre-fix use of a fixed absolute tolerance (described as `1e-14`) leading to incorrect zeroing/NaN behavior for very small variance scaling.",
+        "passes_on_fixed": "On the PR #62405 fixed revision, the same test(s) pass because pandas computes tolerance based on data magnitude (`max_abs` and `np.finfo(m2.dtype).eps`) and applies it to `_zero_out_fperr` for the relevant intermediate moments, restoring agreement with SciPy for the low-variance cases."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3465,
+        "output_tokens": 1434,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002485
+      },
+      "miner_usage": {
+        "input_tokens": 10343,
+        "output_tokens": 1546,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.004001,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

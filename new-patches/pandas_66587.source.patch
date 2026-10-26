@@ -1,0 +1,105 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 77bca8571e93e..f3a5d3b563822 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -597,6 +597,8 @@ Groupby/resample/rolling
+ - Bug in :meth:`.DataFrameGroupBy.idxmax`, :meth:`.DataFrameGroupBy.idxmin` (and :class:`Series` variants) with ``skipna=False`` returning incorrect results when the input contained no ``NA`` values (:issue:`56903`)
+ - Bug in :meth:`.DataFrameGroupBy.min` and :meth:`.DataFrameGroupBy.max` (and :class:`Series` variants) ignoring ``skipna=False`` for object, :class:`StringDtype`, :class:`IntervalDtype`, and other extension dtypes, returning a value where a missing value was expected (:issue:`18588`)
+ - Bug in :meth:`.DataFrameGroupBy.sum` and :meth:`.DataFrameGroupBy.prod` (and :class:`Series` variants) ignoring ``skipna=False`` for extension dtypes, and for object dtype with ``prod``, returning a value where a missing value was expected (:issue:`18588`)
++- Bug in :meth:`.DataFrameGroupBy.sum` and :meth:`.SeriesGroupBy.sum` on ``timedelta64`` data where a group total that left the representable range silently wrapped to an unrelated value, or landed on the ``NaT`` sentinel and came back as a missing value, instead of raising :class:`OutOfBoundsTimedelta` (:issue:`66551`)
++- Bug in :meth:`.DataFrameGroupBy.sum` and :meth:`.SeriesGroupBy.sum` with ``skipna=False`` returning ``NaT`` for a ``timedelta64`` group containing no missing values, when its running total happened to pass through the ``NaT`` sentinel (:issue:`66551`)
+ - Bug in :meth:`.GroupBy.any` and :meth:`.GroupBy.all` returning ``NaN`` with ``float64`` dtype for unobserved categorical groups on NumPy ``bool`` data instead of the boolean identity value with ``bool`` dtype (:issue:`65100`)
+ - Bug in :meth:`.GroupBy.quantile` returning incorrect results for groups containing a non-null ``NaN`` value (e.g. from a pyarrow or masked float array), and returning the Unix epoch instead of ``NaT`` for all-``NaT`` datetime-like groups on some platforms (:issue:`64330`)
+ - Bug in :meth:`.Resampler.agg` raising ``ValueError`` with a dict of aggregations when applied to a :meth:`DataFrame.groupby` with ``as_index=False`` (:issue:`52397`)
+diff --git a/pandas/_libs/groupby.pyx b/pandas/_libs/groupby.pyx
+index a433cf05baa1d..dd1e6734e7876 100644
+--- a/pandas/_libs/groupby.pyx
++++ b/pandas/_libs/groupby.pyx
+@@ -53,6 +53,12 @@ from pandas._libs.dtypes cimport (
+ )
+ from pandas._libs.missing cimport checknull
+ 
++from pandas._libs.tslibs.np_datetime import OutOfBoundsTimedelta
++
++
++cdef extern from "pandas/portable.h":
++    int checked_add(int64_t a, int64_t b, int64_t *res) noexcept nogil
++
+ 
+ cdef int64_t NPY_NAT = util.get_nat()
+ 
+@@ -731,6 +737,8 @@ def group_sum(
+         sum_t val, t, y, nan_val
+         sum_t[:, ::1] sumx, compensation
+         int64_t[:, ::1] nobs
++        int64_t[:, ::1] carry
++        uint8_t[:, ::1] na_result
+         Py_ssize_t len_values = len(values), len_labels = len(labels)
+         bint uses_mask = mask is not None
+         bint isna_entry, isna_result
+@@ -749,6 +757,10 @@ def group_sum(
+         sumx = np.full((<object>out).shape, initial, dtype=object)
+         # object code path does not use `compensation`
+ 
++    if sum_t is int64_t:
++        carry = np.zeros((<object>out).shape, dtype=np.int64)
++        na_result = np.zeros((<object>out).shape, dtype=np.uint8)
++
+     N, K = (<object>values).shape
+     if uses_mask:
+         nan_val = 0
+@@ -779,6 +791,16 @@ def group_sum(
+                 if not skipna:
+                     if uses_mask:
+                         isna_result = result_mask[lab, j]
++                    elif sum_t is int64_t and is_datetimelike:
++                        # GH#66551: track NA-ness explicitly rather than reading
++                        #  it back off sumx, which cannot tell a group holding a
++                        #  real NaT from one whose running total merely landed on
++                        #  NPY_NAT.  The latter must keep accumulating.
++                        isna_result = na_result[lab, j]
++                        if isna_entry:
++                            # marked after the read so this entry still falls
++                            #  through to set sumx to nan_val
++                            na_result[lab, j] = 1
+                     else:
+                         isna_result = _treat_as_na(sumx[lab, j], is_datetimelike)
+ 
+@@ -798,6 +820,17 @@ def group_sum(
+                             # i.e. we haven't added anything yet; avoid TypeError
+                             #  if e.g. val is a str and sumx[lab, j] is 0
+                             t = val
++                        elif sum_t is int64_t and is_datetimelike:
++                            # GH#66551: int64 addition is modular, so a wrapped
++                            #  intermediate does not corrupt the total; keep the
++                            #  wrapped value and track the net carry instead.  The
++                            #  total is representable iff the carry is back to zero
++                            #  at the end, which makes this independent of the
++                            #  order values arrive in.
++                            if checked_add(sumx[lab, j], val, &t):
++                                t = <int64_t>(<uint64_t>sumx[lab, j] +
++                                              <uint64_t>val)
++                                carry[lab, j] += 1 if val > 0 else -1
+                         else:
+                             t = sumx[lab, j] + val
+                         sumx[lab, j] = t
+@@ -836,6 +869,19 @@ def group_sum(
+                     else:
+                         sumx[lab, j] = nan_val
+ 
++    if sum_t is int64_t:
++        if is_datetimelike:
++            for i in range(ncounts):
++                for j in range(K):
++                    if na_result[i, j] or nobs[i, j] < min_count:
++                        # discarded downstream, so exempt from the bounds check
++                        continue
++                    # representable totals are (NPY_NAT, i8max]
++                    if carry[i, j] != 0 or sumx[i, j] == NPY_NAT:
++                        raise OutOfBoundsTimedelta(
++                            "overflow in timedelta operation"
++                        )
++
+     _check_below_mincount(
+         out, uses_mask, result_mask, ncounts, K, nobs, min_count, sumx
+     )

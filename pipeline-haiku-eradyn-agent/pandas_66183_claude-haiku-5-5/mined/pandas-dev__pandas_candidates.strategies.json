@@ -1,0 +1,108 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/pandas_66183_claude-haiku-5-5/mined/pandas-dev__pandas_66183.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 16977,
+    "output_tokens": 5686,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66183,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66183",
+      "buggy_commit": "da4c75bc72f9270c47671f9a7180e506d163ba19",
+      "fixed_commit": "06200bf22171aec8c91bc6941fa30a9945589510",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5935,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#64330 / PR#66183 by building pandas at the buggy commit da4c75bc72f9 with a Cython toolchain, installing pyarrow so the non-null-NaN test is not skipped, and running the three new tests in pandas/tests/groupby/methods/test_quantile.py. The non-null-NaN tests (pyarrow and masked FloatingArray) are the ones expected to transition on any platform; the all-NaT test only transitions on arm64 (where NaN to i8 gives 0 instead of iNaT), so it must be run on arm64 hardware to show a buggy failure.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "pyarrow",
+            "meson-python",
+            "meson",
+            "ninja",
+            "versioneer"
+          ],
+          "system_packages": [
+            "a C compiler toolchain (gcc or clang)",
+            "git"
+          ],
+          "build_commands": [
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "No version pins: NumPy, python-dateutil, tzdata and Cython have documented_constraint null and era_ceiling null, so their versions are unbounded. I chose current releases compatible with the buggy checkout's build backend and say so here rather than relying on documentation.",
+            "pyarrow is unpinned and added only because the non-null-NaN test calls pytest.importorskip('pyarrow'); without it the test is silently skipped rather than failing, which would give a false no-transition result.",
+            "meson-python, meson and ninja are assumed from the standard pandas build backend; they are not stated in the evidence and should be checked against the buggy revision's pyproject.toml."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/groupby/methods/test_quantile.py -k 'nonnull_nan or all_nat_group' -v -p no:cacheprovider",
+        "reproducing_test": "test_groupby_quantile_nonnull_nan_pyarrow, test_groupby_quantile_nonnull_nan_masked, test_groupby_quantile_all_nat_group",
+        "success_criterion": "On the buggy revision da4c75bc72f9, test_groupby_quantile_nonnull_nan_pyarrow and test_groupby_quantile_nonnull_nan_masked must FAIL because the non-null NaN is copied into the quickselect buffer and the grouped quantiles differ from the non-grouped Series.quantile values (non-monotonic). test_groupby_quantile_all_nat_group must FAIL on arm64 (NaN cast to i8 yields 1970-01-01 instead of NaT) and may PASS on x86-64 because NaN cast to i8 there equals INT64_MIN, which is NaT. On the fixed revision all three must PASS on both platforms.",
+        "numerical_probe": "Run the pyarrow case in isolation on the buggy build and print result.to_numpy() against pd.Series(arr).quantile(qs).to_numpy() to confirm the non-monotonic values before relying on the assertion.",
+        "input_output_examples": [
+          {
+            "input": "all-NaT datetime-like group in GroupBy.quantile",
+            "buggy_output": "1970-01-01 (Unix epoch, i.e. 0 as i8) on arm64",
+            "expected_output": "NaT (iNaT)"
+          }
+        ],
+        "risks": [
+          "The all-NaT defect is platform dependent: on x86-64 Linux or macOS the buggy build returns INT64_MIN, which equals NaT, so test_groupby_quantile_all_nat_group will not transition there. A real buggy failure needs arm64 (Apple Silicon or Graviton).",
+          "The non-null NaN defect is not guaranteed to fail for every buffer layout; the tests depend on the NaN landing in the quickselect path, so a buggy pass is possible if the data ordering does not disturb the selected quantiles.",
+          "If pyarrow is missing, test_groupby_quantile_nonnull_nan_pyarrow is skipped by importorskip, which reads as a pass and would hide a non-transition.",
+          "The FloatingArray test constructs a non-null NaN directly, so it depends on pandas masked-array handling of NaN with mask False; behaviour across pandas versions is not documented in the evidence.",
+          "Signed zero and subnormal values are not covered by any passage and are not exercised by these tests.",
+          "The tolerance used by tm.assert_series_equal and tm.assert_numpy_array_equal is not quantified in the evidence; the tests rely on library defaults.",
+          "The build requires a C compiler and Cython to regenerate groupby.pyx; a stale build artifact will mask the fix, so force a rebuild after checking out each revision.",
+          "Build-backend versions are unbounded per the era table and were not verified against the buggy commit's pyproject.toml."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "tm.assert_series_equal and tm.assert_numpy_array_equal defaults (not quantified in evidence)",
+          "reference_source": "non-grouped pandas Series.quantile on the same data, and the explicit expected Series in the test",
+          "why": "The expected values are small exact floats (1.0 to 5.0) and a NaT, so exact equality is expected in practice; the default tolerance is only a fallback."
+        },
+        "fails_on_buggy": "The pyarrow and masked tests see grouped quantile values that differ from the non-grouped or explicit expected values because the non-null NaN corrupts kth_smallest ordering, so the assert fails. The all-NaT test sees 1970-01-01 instead of NaT only on arm64; on x86 it sees NaT and passes.",
+        "passes_on_fixed": "All three tests pass on the fixed revision on both x86-64 and arm64, since the NaN is skipped in both the count and copy passes and all-NaT positions are mapped explicitly to iNaT."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5490,
+        "output_tokens": 3278,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 11487,
+        "output_tokens": 2408,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

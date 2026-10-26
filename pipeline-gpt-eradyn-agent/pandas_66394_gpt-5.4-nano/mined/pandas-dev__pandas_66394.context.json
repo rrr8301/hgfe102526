@@ -1,0 +1,371 @@
+{
+  "repo": "pandas-dev/pandas",
+  "pr_number": 66394,
+  "reference": "https://github.com/pandas-dev/pandas/pull/66394",
+  "buggy_commit": "389c06f9d7d9a5695552e2f152f7155fefcc3a69",
+  "fixed_commit": "76bac9e32eeee63f003ffecd431e8463a35e9b3c",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "NumPy",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "README.md: Dependencies list includes NumPy, but provides no minimum/max version constraints in the supplied passages."
+      },
+      {
+        "name": "python-dateutil",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md: Dependencies list includes python-dateutil, but no version constraints are given in the supplied passages."
+      },
+      {
+        "name": "tzdata",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md: tzdata is only required on Windows/Emscripten; no version constraints are given in the supplied passages."
+      },
+      {
+        "name": "Cython",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md (Installation from sources): 'To install pandas from source you need Cython ...' with install command 'pip install cython' and no version constraints."
+      }
+    ],
+    "installation_commands": [
+      "pip install cython",
+      "pip install .",
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "build_commands": [],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: NumPy \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: python-dateutil \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: tzdata \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: Cython \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "NumPy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "README.md: Dependencies list includes NumPy, but provides no minimum/max version constraints in the supplied passages."
+      },
+      {
+        "package": "python-dateutil",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md: Dependencies list includes python-dateutil, but no version constraints are given in the supplied passages."
+      },
+      {
+        "package": "tzdata",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md: tzdata is only required on Windows/Emscripten; no version constraints are given in the supplied passages."
+      },
+      {
+        "package": "Cython",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md (Installation from sources): 'To install pandas from source you need Cython ...' with install command 'pip install cython' and no version constraints."
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "pandas.core.dtypes.cast.maybe_downcast_numeric",
+    "observed_behavior": "When expanding a Series setitem into float64 and then attempting to downcast back to int64, assigning 2**63 corrupts the value on aarch64 (becoming 2**63 - 1), while x86_64 preserves it as 2**63. Both platforms also leak a NumPy RuntimeWarning: \"invalid value encountered in cast\". Additionally, an object-dtype path can raise OverflowError in DataFrame.combine when downcasting is attempted for very large Python ints (e.g. 2**64).",
+    "expected_behavior": "Before casting float->integer, bounds-check that all float values are finite and within the integer dtype range; if not, skip/don\u2019t downcast (i.e., keep the float result). Avoid the platform-dependent/undefined float->int cast, so the 2**63 case stays float64 (or otherwise does not get corrupted), and the RuntimeWarning leak disappears. For object-dtype inputs that don\u2019t fit the target integer dtype, don\u2019t let the OverflowError escape; instead, don\u2019t downcast.",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "Assigning a value just above the integer bound via setitem-with-expansion so that expansion concatenates to float64 and then infer_and_maybe_downcast calls maybe_downcast_numeric to downcast float->int",
+      "Platform-dependent behavior occurs on aarch64 specifically for the out-of-range float->int cast (platform-dependent cast behavior)",
+      "Object-dtype input path reachable with DataFrame.combine that attempts to downcast an object-dtype result containing Python ints too large for int64 (e.g. 2**64)"
+    ],
+    "input_output_examples": [
+      {
+        "input": "ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = 2**63",
+        "buggy_output": "On arm64: dtype int64 with values [1, 2, 9223372036854775807] (2**63 - 1) instead of representing 2**63; also leaked NumPy RuntimeWarning \"invalid value encountered in cast\"",
+        "expected_output": "Skip the downcast so the out-of-range value is not corrupted by float->int casting; instead keep the float64 result (and avoid the RuntimeWarning leak)",
+        "value_kind": "array",
+        "source": "pr_body:PR#66394; commit:commits; pr_body:PR#66394 (platform-dependent corruption and RuntimeWarning leak)"
+      },
+      {
+        "input": "df1.combine(df2, lambda s1, s2: pd.Series([2**64, 2**64], dtype=object))",
+        "buggy_output": "OverflowError: Python int too large to convert to C long",
+        "expected_output": "Don\u2019t downcast when the cast can\u2019t happen; don\u2019t let the error escape (i.e., keep the non-downcasted result)",
+        "value_kind": "exception",
+        "source": "pr_body:PR#66394 (object-dtype path OverflowError)"
+      }
+    ],
+    "oracle_clues": [
+      "The bug is described as setitem-with-expansion silently corrupting values above the integer bound (GH#66394).",
+      "On arm64, after setting ser.loc[2] = 2**63, the int64 value becomes 9223372036854775807 (2**63 - 1) instead of preserving 2**63.",
+      "The discrepancy is platform-dependent because an out-of-range float->int cast is undefined behavior; aarch64 saturates to int64 max while x86_64 wraps/keeps as described (x86_64 preserves value).",
+      "Both platforms leaked a NumPy RuntimeWarning: \"invalid value encountered in cast\"; the fix avoids the out-of-range astype by bounds-checking.",
+      "Expected fix behavior: bounds-check float values against the target dtype range with a strict upper bound (float(int(iinfo.max)+1)) and skip the downcast if any value is out of range or non-finite; for (OverflowError, ValueError) during casting, return the original result rather than letting the error escape."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": "int64",
+    "precision": null,
+    "magnitude": "values at/above the integer bound around 2**63 (e.g., 2**63 and 2**63 - 1)",
+    "tolerance": "rtol=0",
+    "category_specific_evidence": [
+      "Mathematical/formula property violated: losslessness check compares in float64 space where 2**63 and 2**63 - 1 are indistinguishable, so an out-of-range float->int cast is treated as lossless (platform-dependent results).",
+      "Concrete violating values: 2**63 assigned via setitem-with-expansion to an int64 Series.",
+      "Concrete demonstrating values and corruption: arm64 stores 2**63 as 9223372036854775807 (i.e., 2**63 - 1) instead of preserving 2**63; x86_64 preserves the value.",
+      "Test coverage of numerical inequality/range behavior: out-of-range float-to-integer downcast must not happen for values including 2**63 (int64) and 2**64 (uint64), and must keep the original array (tm.assert_numpy_array_equal(result, arr)).",
+      "The range-check requires finiteness and within integer bounds and uses strict upper inequality based on upper = float(int(iinfo.max) + 1) (i.e., values < upper, not <=).",
+      "The cast warning context: both platforms leaked a numpy RuntimeWarning \"invalid value encountered in cast\" for the corrupted cast scenario; corrected behavior is intended to avoid this by skipping out-of-range downcasts."
+    ],
+    "reproduction_risks": [
+      "Must account for platform-dependent float->int cast behavior for out-of-range values (platform-specific undefined behavior, e.g., aarch64 saturation vs x86 wrapping/other behavior).",
+      "Must reproduce the exact float64 precision ambiguity where 2**63 and 2**63 - 1 round to the same double, otherwise the losslessness check may not incorrectly pass.",
+      "Must ensure reproduction uses setitem-with-expansion path (float64 expansion then attempted downcast back to int64) rather than a direct cast.",
+      "Must account for RuntimeWarning behavior: the failing scenario leaks numpy RuntimeWarning \"invalid value encountered in cast\" on both platforms, so warning handling may affect the observed outcome."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "pip install cython",
+        "pip install .",
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "NumPy",
+      "source": "README.md: Dependencies list includes NumPy, but provides no minimum/max version constraints in the supplied passages.",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "python-dateutil",
+      "source": "README.md: Dependencies list includes python-dateutil, but no version constraints are given in the supplied passages.",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "tzdata",
+      "source": "README.md: tzdata is only required on Windows/Emscripten; no version constraints are given in the supplied passages.",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "Cython",
+      "source": "README.md (Installation from sources): 'To install pandas from source you need Cython ...' with install command 'pip install cython' and no version constraints.",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "pandas.core.dtypes.cast.maybe_downcast_numeric",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "When expanding a Series setitem into float64 and then attempting to downcast back to int64, assigning 2**63 corrupts the value on aarch64 (becoming 2**63 - 1), while x86_64 preserves it as 2**63. Both platforms also leak a NumPy RuntimeWarning: \"invalid value encountered in cast\". Additionally, an object-dtype path can raise OverflowError in DataFrame.combine when downcasting is attempted for very large Python ints (e.g. 2**64).",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "Before casting float->integer, bounds-check that all float values are finite and within the integer dtype range; if not, skip/don\u2019t downcast (i.e., keep the float result). Avoid the platform-dependent/undefined float->int cast, so the 2**63 case stays float64 (or otherwise does not get corrupted), and the RuntimeWarning leak disappears. For object-dtype inputs that don\u2019t fit the target integer dtype, don\u2019t let the OverflowError escape; instead, don\u2019t downcast.",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 3,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 5,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 2,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_characteristics.dtype",
+      "value": "int64",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "values at/above the integer bound around 2**63 (e.g., 2**63 and 2**63 - 1)",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_characteristics.tolerance",
+      "value": "rtol=0",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 6,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 4,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "readme:README.md",
+        "pr_body:PR#66394",
+        "diff:pandas/core/dtypes/cast.py:349-369",
+        "commit:commits",
+        "pr_body:PR#66394",
+        "pr_body:PR#66394",
+        "readme:README.md"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "pr_body:PR#66394",
+        "commit:commits",
+        "diff:pandas/core/dtypes/cast.py:349-369",
+        "pr_body:PR#66394",
+        "pr_body:PR#66394",
+        "pr_body:PR#66394",
+        "diff:pandas/core/dtypes/cast.py:273-295",
+        "pr_body:PR#66394"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "pr_body:PR#66394",
+        "test_diff:pandas/tests/dtypes/cast/test_downcast.py:48-132",
+        "diff:pandas/core/dtypes/cast.py:273-295",
+        "commit:commits",
+        "test_diff:pandas/tests/dtypes/cast/test_downcast.py:1-13",
+        "test_diff:pandas/tests/dtypes/cast/test_downcast.py:48-132",
+        "test_diff:pandas/tests/series/indexing/test_setitem.py:1868-1893",
+        "pr_body:PR#66394"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          },
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          }
+        ],
+        "present": [
+          "environment.dependencies"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 1.0,
+        "required_total": 5,
+        "required_present": 5,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 7310,
+    "output_tokens": 1849,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.0037730000000000003,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": []
+}

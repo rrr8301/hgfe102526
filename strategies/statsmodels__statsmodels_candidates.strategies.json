@@ -1,0 +1,1422 @@
+{
+  "input": "workspace/new-mine/statsmodels__statsmodels_candidates.json",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "n_strategies": 18,
+  "usage_totals": {
+    "input_tokens": 71193,
+    "output_tokens": 57669,
+    "cache_read_tokens": 2176,
+    "cache_write_tokens": 0,
+    "cost_usd": 0.107479,
+    "llm_calls": 18,
+    "peak_calls": 0,
+    "n_costed": 18,
+    "n_strategies": 18,
+    "cost_usd_per_strategy": 0.005971
+  },
+  "strategies": [
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10232",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10232,
+      "buggy_commit": "e7f76fec5421daa85e697bb2afbbe1cd220fd65f",
+      "fixed_commit": "3beaeeb147df215616297de655a57f2508df19af",
+      "is_numerical_bug": true,
+      "bug_type": "correctness",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce GH-9556 / PR#10232: fast_linbin in statsmodels/nonparametric/linbin.pyx is wrong at buggy commit e7f76fec. Its loop test `if li_i > 1 and li_i < M` drops observations in the first two bins and its `li == M-1`/`li > M` branches write gcnts[M] one past the end, so bin counts do not sum to nobs and KDEUnivariate.fit(fft=True, cut=0) integrates to 5/6 (~0.833) or aborts with a malloc checksum error. Build the Cython extension, add the PR's new tests, and observe failures.",
+        "input_output_examples": [
+          {
+            "input": "fast_linbin(np.array([0.0, 0.3, 1.0]), 0.0, 1.0, 5)",
+            "buggy_output": "counts do not sum to nobs=3; the li==M-1 observation is split onto gcnts[M] out of bounds and observations in the first two bins are dropped",
+            "expected_output": "[1.0, 0.8, 0.2, 0.0, 1.0]",
+            "source": "test"
+          },
+          {
+            "input": "fast_linbin(rs.standard_normal(200), x.min(), x.max(), 512) with np.random.RandomState(12345)",
+            "buggy_output": "counts.shape == (512,) but counts.sum() != 200, so the first moment is not preserved",
+            "expected_output": "counts.shape == (512,); counts.sum() == 200; counts @ grid == x.sum()",
+            "source": "test"
+          },
+          {
+            "input": "fast_linbin(np.array([-1.0, 0.5, 2.0]), 0.0, 1.0, 5)",
+            "buggy_output": "out-of-range observations are not dropped and out-of-bounds handling writes gcnts[M]",
+            "expected_output": "[0.0, 0.0, 1.0, 0.0, 0.0]",
+            "source": "test"
+          },
+          {
+            "input": "fast_linbin(np.array([-1.0, 0.5, 2.0]), 0.0, 1.0, 5, trunc=0)",
+            "buggy_output": "gcnts[M] is incremented out of bounds instead of moving the outside observations to the end points",
+            "expected_output": "[1.0, 0.0, 1.0, 0.0, 1.0]",
+            "source": "test"
+          },
+          {
+            "input": "KDE([24.0, 43.0, 27.0, 15.0, 37.0, 8.82]); kde.fit(fft=True, cut=0); integral = np.sum(0.5*(density[1:]+density[:-1])*np.diff(support))",
+            "buggy_output": "density integral = 5/6 (~0.833) because the FFT path wrote past the bin counts and dropped the smallest observation; issue reports a malloc 'Incorrect checksum for freed object' abort",
+            "expected_output": "integral == 1.0 (atol=0.01)",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Use CPython 3.11-3.13 (evidence targets 3.13/3.14; 3.9 dropped); ensure a working C compiler, Cython, and meson available.",
+          "python -m pip install -r requirements.txt",
+          "python -m pip install -r requirements-dev.txt",
+          "Ensure numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, cython>=3.0.13, meson-python>=0.18.0, pytest>=8.4.1, formulaic>=1.1.0 are installed.",
+          "Note: requirements-dev.txt pins cython>=3.0.10 and setuptools_scm~=9.0 while pyproject/extracted facts give cython>=3.0.13, setuptools_scm>=9.2.0 - resolve before building."
+        ],
+        "build_steps": [
+          "Confirm buggy revision: git rev-parse HEAD should be e7f76fec5421daa85e697bb2afbbe1cd220fd65f.",
+          "python -m pip install --no-build-isolation --editable .",
+          "Verify the Cython extension compiled: python -c \"from statsmodels.nonparametric.linbin import fast_linbin; print(fast_linbin.__doc__)\"",
+          "Sanity-check out-of-bounds behavior triggers: python -c \"import numpy as np; from statsmodels.nonparametric.linbin import fast_linbin; print(fast_linbin(np.array([0.0,0.3,1.0]),0.0,1.0,5))\""
+        ],
+        "reproduction_steps": [
+          "Check out / stay at buggy commit e7f76fec5421daa85e697bb2afbbe1cd220fd65f (fix 3beaeeb is NOT applied).",
+          "Append the PR's new tests to statsmodels/nonparametric/tests/test_kde.py: `from statsmodels.nonparametric.linbin import fast_linbin` plus test_fast_linbin_boundary_observations and test_kde_fft_cut_zero (see PR diff; both are new in this PR).",
+          "Confirm the pre-existing test_fit_self is present in the same file (it is unchanged context in the diff).",
+          "Run the three tests together with the selector from the evidence.",
+          "Observe test_fast_linbin_boundary_observations failing: counts[0:2] dropped and/or counts not summing to nobs (or a malloc/abort from the gcnts[M] write on some builds).",
+          "Observe test_kde_fft_cut_zero failing: the trapezoid integral of kde.density over kde.support is ~0.833 instead of 1.0 (atol=0.01).",
+          "Optionally rerun with `python -X dev` / ASAN-like checks to surface the one-past-the-end gcnts[512] += 5.7e-14 write."
+        ],
+        "test_command": "pytest statsmodels/nonparametric/tests/test_kde.py::test_fast_linbin_boundary_observations statsmodels/nonparametric/tests/test_kde.py::test_kde_fft_cut_zero statsmodels/nonparametric/tests/test_kde.py::test_fit_self",
+        "test_selector": "statsmodels/nonparametric/tests/test_kde.py::test_fast_linbin_boundary_observations statsmodels/nonparametric/tests/test_kde.py::test_kde_fft_cut_zero statsmodels/nonparametric/tests/test_kde.py::test_fit_self",
+        "expected_buggy_behavior": "fast_linbin writes gcnts[M] out of bounds for observations in the last bin (li == M-1) and drops observations in the first two bins, so bin counts do not sum to nobs (e.g. 4.99999999999994 vs 6); fast_linbin(np.array([0.0,0.3,1.0]),0,1,5) fails the [1.0,0.8,0.2,0.0,1.0] assertion, the 200-sample count sum/moment assertions fail, and KDE([24,43,27,15,37,8.82]).fit(fft=True, cut=0) integrates to ~5/6 (~0.833), or aborts with 'malloc: Incorrect checksum for freed object'. test_fit_self still passes.",
+        "expected_fixed_behavior": "With the corrected fast_linbin (li_i >= M-1 branch, a <= X[i] <= b guard), all three tests pass: counts equal [1.0,0.8,0.2,0.0,1.0] for the 3-point case; the 200-sample counts sum to 200 and preserve the first moment; out-of-range points are dropped (trunc=1) or moved to end points (trunc=0) giving [0.0,0.0,1.0,0.0,0.0] and [1.0,0.0,1.0,0.0,1.0]; and the cut=0 FFT KDE density integrates to 1.0 within atol=0.01.",
+        "success_criterion": "On the buggy commit e7f76fec, the selected pytest run FAILS on test_fast_linbin_boundary_observations and test_kde_fft_cut_zero (counts mismatch / non-unit integral or crash), while test_fit_self passes; both failing tests would pass once the linbin.pyx fix from PR#10232 is applied.",
+        "risks_or_ambiguities": [
+          "The two reproducing tests do NOT exist at the buggy commit; they are introduced by the PR diff, so they must be added verbatim to test_kde.py first - otherwise pytest errors with 'no tests ran' / collection errors.",
+          "The extension module linbin is Cython-compiled; an editable meson build is required. A stale wheel or missing rebuild can mask the bug entirely.",
+          "On CPython 3.12+ (or with free-threading/extra allocator checks) the gcnts[M] write may raise a hard abort ('malloc: Incorrect checksum for freed object') rather than a clean assertion failure; that still counts as reproduction but the failure mode differs.",
+          "Exact tolerance/assertion details for the 200-sample case depend on the added test text; the evidence gives shape (512,), sum 200 and moment equality via np.testing.assert_allclose.",
+          "Dependency version conflicts noted in evidence (cython>=3.0.10 vs >=3.0.13; setuptools_scm~=9.0 vs >=9.2.0); numpy>=2.0 is required and older numpy may change results.",
+          "The bad commit may be due to pre-release setup.py vs meson backend; if `pip install -e .` fails, fall back to `python -m pip install --no-build-isolation .` then reinstall editable."
+        ],
+        "confidence": 0.72
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 4179,
+        "output_tokens": 2572,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.005234
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10230",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10230,
+      "buggy_commit": "e5a2af4cbf14576f14c5d3a9ad2b263fc35b10a9",
+      "fixed_commit": "e7f76fec5421daa85e697bb2afbbe1cd220fd65f",
+      "is_numerical_bug": true,
+      "bug_type": "correctness",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "The bug is a wrong seasonal-factor index in statsmodels/tsa/holtwinters/model.py::_predict: the line `s[nobs + m - 1 :] = [s[(nobs - 1) + j % m] for j in range(h + 1 + 1)]` starts filling forecast seasonal factors at the slot holding the last in-sample factor s[T], overwriting it with s[T-m]. Forecasts at horizons h = m, 2m, ... therefore use the previous season's factor (yhat = l_T + s_{T-m}) instead of the final one (yhat = l_T + s_T). Reproduction = build the buggy checkout, backport only the PR's test hunks, run the holtwinters forecast tests and watch them fail numerically.",
+        "input_output_examples": [
+          {
+            "input": "test_hw_seasonal_buggy (statsmodels/tsa/holtwinters/tests/test_holtwinters.py): seasonal Holt-Winters forecast array index 3 (and 7), i.e. the forecast at the seasonal horizon h = m",
+            "buggy_output": "47.751384 (the value produced by the buggy _predict, using s[T-m] instead of s[T])",
+            "expected_output": "47.913736",
+            "source": "test"
+          },
+          {
+            "input": "test_seasonal_forecast_uses_final_season (GH 9538): m=4, nobs=32, y=10+0.1*arange(32)+tile([1,-1,2,-2],8)+0.3*N(0,1) (RandomState 12345), trend in {None,'add'}, seasonal in {'add','mul'}, seasonal_periods=4, init='known', initial_level=10.0, initial_trend=0.1 (add only), initial_seasonal=[0.9,-1.1,2.2,-2.0] (add) / [1.09,0.91,1.19,0.81] (mul), smoothing_level=0.3, smoothing_trend=0.1 (add only), smoothing_seasonal=0.4, optimized=False, h=2*m+1=9",
+            "buggy_output": "fcast at steps h=m (4) and h=2m (8) uses season[(step-1)%m] taken from s[T-m]; assert_allclose(fcast, expected, rtol=1e-12) fails at step 4 and step 8",
+            "expected_output": "expected[step-1] = (level + step*slope) + season[(step-1)%m] (additive) or (level + step*slope) * season[(step-1)%m] (multiplicative), with season = np.asarray(res.season)[-m:]; assert_allclose(fcast, expected, rtol=1e-12) passes",
+            "source": "test"
+          },
+          {
+            "input": "issue#9538 minimal example: y=[1.0,3.0,2.0], trend=None, seasonal='add', initialization_method='known', initial_level=0, initial_seasonal=[1.1,3.1,2.1], smoothing_level=0.5, smoothing_seasonal=0.5, optimized=False, forecast at h=m=3",
+            "buggy_output": "yhat = l_T + s_{T-m} (forecast jumps back a season; the issue's asserts fail)",
+            "expected_output": "yhat = l_T + s_T; 'The asserts should all pass in the example above.'",
+            "source": "issue"
+          }
+        ],
+        "environment_setup": [
+          "Python 3.13/3.14 (CI no longer tests 3.9); numpy>=2.0.0 is the build floor; on Linux/macOS a working C compiler is required.",
+          "Install runtime deps: cython>=3.0.13, numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, packaging>=21.3, formulaic>=1.1.0, matplotlib>=3, polars>=1.0.0, pyarrow>=14.0.0 (requirements.txt).",
+          "Install dev/build deps: meson-python>=0.18.0, meson >= 1.9.0 (required by meson.build), ninja, setuptools_scm>=9.2.0, pytest>=8.4.1 (requirements-dev.txt).",
+          "Ensure -lm/OpenBLAS are available for the compiled extension modules; X-13ARIMA-SEATS is not needed for the holtwinters tests.",
+          "Optional: unset/avoid pytest-randomly, pytest-xdist and pytest-run-parallel for deterministic ordering while reproducing, though the forecast tests are order-independent."
+        ],
+        "build_steps": [
+          "python -m pip install -r requirements.txt",
+          "python -m pip install -r requirements-dev.txt",
+          "python -m pip install --no-build-isolation --editable .",
+          "Sanity check the build: python -c \"import statsmodels; from statsmodels.tsa.holtwinters import ExponentialSmoothing; from statsmodels.tsa.exponential_smoothing.ets import ETSModel\""
+        ],
+        "reproduction_steps": [
+          "Verify the buggy revision is checked out: git rev-parse HEAD must be e5a2af4cbf14576f14c5d3a9ad2b263fc35b10a9; do NOT apply the fix commit e7f76fec5421daa85e697bb2afbbe1cd220fd65f.",
+          "Confirm the bug is present in the source: grep -n 'nobs + m - 1 :' statsmodels/tsa/holtwinters/model.py must show `s[nobs + m - 1 :] = [s[(nobs - 1) + j % m] for j in range(h + 1 + 1)]`.",
+          "Backport ONLY the test hunks of PR #10230 into statsmodels/tsa/holtwinters/tests/test_holtwinters.py: add `from statsmodels.tsa.exponential_smoothing.ets import ETSModel`, change the two occurrences of 47.751384 to 47.913736 in test_hw_seasonal_buggy, and append test_seasonal_forecast_uses_final_season (parametrized trend=[None,'add'] x seasonal=['add','mul']).",
+          "Do NOT modify statsmodels/tsa/holtwinters/model.py; the source must remain buggy for the failure to appear.",
+          "Run the reproducing selector: python -m pytest statsmodels/tsa/holtwinters/tests/test_holtwinters.py::test_seasonal_forecast_uses_final_season; observe AssertionError for trend=None and trend='add' (seasonal='add') at forecast step h=m=4 and h=2m=8.",
+          "Run the second witness: python -m pytest statsmodels/tsa/holtwinters/tests/test_holtwinters.py::test_hw_seasonal_buggy; observe the forecast array mismatching at index 3 (and 7): 47.751384 != 47.913736.",
+          "Optional standalone cross-check of issue#9538: fit ExponentialSmoothing(np.array([1.0,3.0,2.0]), trend=None, seasonal='add', seasonal_periods=3, initialization_method='known', initial_level=0, initial_seasonal=[1.1,3.1,2.1]).fit(smoothing_level=0.5, smoothing_seasonal=0.5, optimized=False) and compare res.forecast(3)[-1] to level[-1] + season[-1]."
+        ],
+        "test_command": "python -m pytest statsmodels/tsa/holtwinters/tests/test_holtwinters.py::test_seasonal_forecast_uses_final_season statsmodels/tsa/holtwinters/tests/test_holtwinters.py::test_hw_seasonal_buggy",
+        "test_selector": "statsmodels/tsa/holtwinters/tests/test_holtwinters.py::test_seasonal_forecast_uses_final_season",
+        "expected_buggy_behavior": "pytest exits non-zero. test_seasonal_forecast_uses_final_season raises AssertionError: assert_allclose(fcast, expected, rtol=1e-12) mismatches at forecast steps h=m=4 and h=2m=8 because _predict fills the seasonal array starting at index nobs+m-1, overwriting s[T] with s[T-m]. For seasonal='add' the ETSModel cross-check (res.fittedvalues and fcast vs ets_res.forecast) also fails. test_hw_seasonal_buggy fails with forecast[3]=47.751384 != 47.913736.",
+        "expected_fixed_behavior": "With the fixed source line `s[nobs + m :] = [s[nobs + j % m] for j in range(h + 1)]`, the just-computed final in-sample factor s[T] is retained, so yhat = l_T + s_T at h = m. test_hw_seasonal_buggy returns 47.913736 at indices 3 and 7, and test_seasonal_forecast_uses_final_season passes for all four parametrizations (rtol=1e-12) as well as the additive ETSModel cross-check (rtol=1e-10).",
+        "success_criterion": "On the buggy commit e5a2af4cbf14576f14c5d3a9ad2b263fc35b10a9 with only the PR's test hunks applied, the reproducing tests FAIL: test_hw_seasonal_buggy reports 47.751384 vs expected 47.913736 at the seasonal horizons, and test_seasonal_forecast_uses_final_season reports an assert_allclose mismatch at steps h=m and h=2m. After applying the model.py fix, both tests pass.",
+        "risks_or_ambiguities": [
+          "test_seasonal_forecast_uses_final_season is ADDED by the PR; it does not exist at the buggy commit. Running the selector without backporting the test hunks yields a collection error ('no tests ran'), not a real failure, so the test diff must be applied while leaving model.py buggy.",
+          "On the untouched buggy checkout, test_hw_seasonal_buggy PASSES because it encodes the buggy value 47.751384; it only becomes a failing witness after updating the two expected values to 47.913736 as the PR does.",
+          "The evidence gives no verbatim numeric expected forecast values for the parametrized test (only the symbolic formula and rtol=1e-12); the only concrete numbers available are 47.751384 (buggy) and 47.913736 (correct).",
+          "The full setup of test_hw_seasonal_buggy (dataset, seasonal_periods, smoothing parameters) is not included in the diff; real numbers come only from test_diff lines 746-756 and pr_body PR#10230, and the rest must be read from the test file itself.",
+          "The issue#9538 minimal example has no explicit numeric expected values in the evidence; only the symbolic yhat = l_T + s_T expectation is stated.",
+          "statsmodels is built with meson-python/Cython; if the editable build fails or compiled extensions are missing, imports of statsmodels.tsa.holtwinters and ETSModel may fail and mask the numerical failure.",
+          "Dependency pin conflicts: requirements-dev.txt says cython>=3.0.10,<4 and setuptools_scm~=9.0 while the CI matrix at the commit pins cython>=3.0.13 and setuptools_scm>=9.2.0; meson_version >= 1.9.0 is required by meson.build but not pinned in the extracted dev requirements.",
+          "pytest-randomly / pytest-run-parallel / pytest-xdist are installed in CI and may reorder or parallelize tests; use -p no:randomly or run the single selector for a deterministic reproduction."
+        ],
+        "confidence": 0.8
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 4842,
+        "output_tokens": 5596,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.009519
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10229",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10229,
+      "buggy_commit": "522283ef64247f8d465b766684f01631c34b1561",
+      "fixed_commit": "a0e465d212006e3de3af37958444d1f3b2d85ccb",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "At the buggy commit, Probit's loglikeobs is log(clip(cdf(z), FLOAT_EPS, 1)), which is flat at log(eps) ~= -36.04 for q*XB below ~-8 and -inf below ~-38; the score uses the clipped cdf in the inverse Mills ratio (score ~0 where it should grow like |z|) and the hessian computes pdf/cdf = 0/0 = nan. The PR adds two tests. Reproduction: apply only the PR's test hunk and run them; they must fail.",
+        "input_output_examples": [
+          {
+            "input": "test_probit_loglikeobs_extreme_linpred: sm.Probit(y, X) with n=50, z=np.linspace(-1e4, 1e4), X=np.column_stack([np.ones(n), z]), y=np.ones(n, dtype=int), params=np.array([0.0, 1.0]); then model.loglikeobs/loglike/score_obs/hessian(params)",
+            "buggy_output": "loglikeobs flat at log(FLOAT_EPS) = -36.04 for z below about -8 and -inf below about -38; score ~0 (pdf underflows) where the true value grows like |z|; hessian nan via 0/0 = pdf/cdf below about z = -38",
+            "expected_output": "all finite: loglikeobs == stats.norm.logcdf(z) (rtol=1e-14); loglike == loglikeobs.sum() (rtol=1e-14); score_obs == mills[:, None] * X with mills = exp(stats.norm.logpdf(z) - stats.norm.logcdf(z)) (rtol=1e-12); hessian finite",
+            "source": "test"
+          },
+          {
+            "input": "test_probit_extreme_observation_fit: n=300, rng=np.random.default_rng(1), x=rng.standard_normal(n), y=(1.5*x+rng.standard_normal(n)>0).astype(int), x=append(x,40.0), y=append(y,0), X=[ones,x], q=2*y-1, params=[0.0,1.5]; assert z.min() < -50",
+            "buggy_output": "clipped loglike and score far from the exact values; unclipped hessian nan; bfgs stopped at a spurious optimum with nan standard errors; newton/bfgs do not match the exact-loglikelihood optimum",
+            "expected_output": "model.loglike(params)==stats.norm.logcdf(z).sum() (rtol=1e-12); model.score(params)==X.T @ (q*mills) (rtol=1e-12) and matches approx_fprime_cs (rtol=1e-8); hessian matches approx_hess (rtol=1e-4); newton and bfgs converge with res.params ~ ref.x (rtol=1e-4), res.llf == -ref.fun (rtol=1e-8), finite bse",
+            "source": "test"
+          },
+          {
+            "input": "Issue #10228: Probit fit with one extreme, misclassified observation driving q*XB to -60 at reasonable params (reported bfgs run)",
+            "buggy_output": "bfgs stopped at a spurious optimum: params [-0.036, 1.72], llf = -155.1, bse = [nan, nan]; reported llf -155.934 where the exact value is -1924.9",
+            "expected_output": "convergence to the exact-loglikelihood optimum with finite standard errors (no nan bse)",
+            "source": "issue"
+          }
+        ],
+        "environment_setup": [
+          "Python 3.13 (CI target cp313); repository checked out at buggy commit 522283ef64247f8d465b766684f01631c34b1561; verify with git rev-parse HEAD.",
+          "System packages: C compiler (gcc/clang) and git; statsmodels C and Cython extensions must compile.",
+          "Runtime deps: python -m pip install -r requirements.txt (numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, cython>=3.0.13, packaging>=21.3).",
+          "Dev deps: python -m pip install -r requirements-dev.txt (pytest>=8.4.1, meson-python>=0.18.0, meson, ninja, cython>=3.0.10,<4, setuptools_scm~=9.0).",
+          "Optional env var FORCE_COLOR=3 as in CI; no external service is needed for these two tests."
+        ],
+        "build_steps": [
+          "python -m pip install --no-build-isolation --editable . (meson-python/ninja build of C and Cython extensions; requires cython, numpy, meson-python preinstalled).",
+          "Fallback: python -m pip install . if the editable build is unavailable.",
+          "Sanity check: python -c \"import statsmodels; print(statsmodels.__version__)\" and confirm statsmodels.discrete.discrete_model imports."
+        ],
+        "reproduction_steps": [
+          "Confirm you are on the buggy revision: git rev-parse HEAD must equal 522283ef64247f8d465b766684f01631c34b1561.",
+          "Do NOT apply the statsmodels/discrete/discrete_model.py hunk from PR #10229; only the test-only change is needed.",
+          "Append test_probit_loglikeobs_extreme_linpred and test_probit_extreme_observation_fit from the PR test diff into statsmodels/discrete/tests/test_discrete.py, after test_logit_loglikeobs_extreme_linpred.",
+          "Verify the new functions' imports resolve: from scipy import optimize, stats and from statsmodels.tools.numdiff import approx_fprime_cs, approx_hess.",
+          "Run the selector below with the built extension; both tests must fail on the buggy code.",
+          "Optional manual probe: construct sm.Probit(y, X) with z=np.linspace(-1e4, 1e4), params=[0.0, 1.0] and print model.loglikeobs(params) and model.hessian(params) to see the flat -36.04 plateau and nan hessian."
+        ],
+        "test_command": "pytest statsmodels/discrete/tests/test_discrete.py::test_probit_loglikeobs_extreme_linpred statsmodels/discrete/tests/test_discrete.py::test_probit_extreme_observation_fit",
+        "test_selector": "statsmodels/discrete/tests/test_discrete.py::test_probit_loglikeobs_extreme_linpred statsmodels/discrete/tests/test_discrete.py::test_probit_extreme_observation_fit",
+        "expected_buggy_behavior": "Both tests fail at 522283ef: loglikeobs is pinned at log(FLOAT_EPS) = -36.04 and -inf below about -38 instead of stats.norm.logcdf(z), score is ~0 and hessian is nan (0/0 = pdf/cdf), so the finite checks and rtol=1e-14/1e-12 comparisons fail; the fit test mismatches scipy logcdf/score and approx_hess, and bfgs gives a spurious optimum with nan bse.",
+        "expected_fixed_behavior": "Both tests pass: loglikeobs == stats.norm.logcdf(z) (rtol=1e-14), loglike == loglikeobs.sum(), score_obs == mills[:, None] * X (rtol=1e-12), hessian finite; the fit test matches stats.norm.logcdf(z).sum() (rtol=1e-12), approx_fprime_cs (rtol=1e-8) and approx_hess (rtol=1e-4), with newton and bfgs converging to ref.x (rtol=1e-4), res.llf == -ref.fun (rtol=1e-8) and finite bse.",
+        "success_criterion": "On the buggy commit, after adding only the PR's two test functions (no source fix), pytest exits non-zero with both test_probit_loglikeobs_extreme_linpred and test_probit_extreme_observation_fit failing on the finiteness/rtol assertions; the same tests pass once the discrete_model.py log-space fix is applied.",
+        "risks_or_ambiguities": [
+          "The two tests are introduced by the PR and do not exist at the buggy commit; without applying the test-only hunk pytest reports 'no tests ran', which is not the desired failure.",
+          "test_probit_loglikeobs_extreme_linpred uses warnings.catch_warnings() with simplefilter('error'), so any numpy/scipy warning (divide-by-zero, underflow) also raises, adding a failure mode beyond the asserts.",
+          "Dependency pins conflict: requirements-dev.txt needs cython>=3.0.10,<4 while CI pins cython>=3.0.13; meson.build enforces Cython>=3.0.10, so use a 3.0.13+ Cython to be safe.",
+          "The issue-reported optimizer numbers (params [-0.036, 1.72], llf = -155.1, bse = [nan, nan]) can vary with scipy/optimizer versions; the test assertions are the authoritative success signal.",
+          "Build requires compiling C extensions; --no-build-isolation needs cython, numpy and meson-python installed beforehand, otherwise the editable install fails.",
+          "The buggy plateau value log(FLOAT_EPS) = -36.04 is implied by the mined evidence; the exact FLOAT_EPS constant in discrete_model.py was not quoted verbatim."
+        ],
+        "confidence": 0.72
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 4541,
+        "output_tokens": 4890,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.008455
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10217",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10217,
+      "buggy_commit": "92b4423ed77373eaf46cf63846e999c57be1a674",
+      "fixed_commit": "9cac821f4a7bfd6226590bc81a730aa7f6131cea",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce gh-3923 / PR#10217: Logit.loglikeobs (and loglike) overflow for extreme linear predictors. In binary Logit, loglikeobs is computed as log(cdf(q*linpred)); for large negative linpred the exp inside the cdf overflows to inf, the cdf underflows to 0, and log(0) returns -inf with a RuntimeWarning. The reproducing test test_logit_loglikeobs_extreme_linpred uses warnings.simplefilter('error') and asserts finite loglikeobs/loglike matching scipy.special.log_expit(z), so it fails on the buggy commit.",
+        "input_output_examples": [
+          {
+            "input": "n=50; z=np.linspace(-1e4,1e4,50); X=np.column_stack([np.ones(n), z]); y=np.ones(n, dtype=int); params=np.array([0.0,1.0]); model=sm.Logit(y,X); with warnings.simplefilter('error'): model.loglikeobs(params)",
+            "buggy_output": "RuntimeWarning raised as error: 'overflow encountered in exp' from np.log(self.cdf(q*linpred)); loglikeobs contains -inf entries (e.g. log(cdf(-1e4)) = log(0) = -inf)",
+            "expected_output": "No warning; np.all(np.isfinite(loglikeobs)) is True and assert_allclose(loglikeobs, scipy.special.log_expit(z), rtol=1e-14) passes",
+            "source": "test"
+          },
+          {
+            "input": "Same model: model.loglike(params) with y=np.ones(50,dtype=int), X=[ones,z], params=[0.0,1.0], |linpred| up to 1e4",
+            "buggy_output": "Non-finite: loglike is -inf because -inf entries from log(cdf(q*linpred)) are summed",
+            "expected_output": "np.all(np.isfinite(loglike)) is True and assert_allclose(loglike, loglikeobs.sum(), rtol=1e-14) passes",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Use Python (CPython 3.11/3.12/3.13); a C compiler (cc) and Cython >=3.0.13,<4 are required to build extension modules.",
+          "Install runtime deps: numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, formulaic>=1.1.0, packaging>=21.3, matplotlib>=3, joblib, colorama.",
+          "Install build deps: meson-python>=0.18.0, meson>=1.9.0, ninja, setuptools_scm>=9.2.0 (meson.build errors if Cython < 3.0.10).",
+          "Install test deps: pytest>=8.4.1,<10, pytest-xdist, pytest-randomly, pytest-run-parallel, coverage[toml], jinja2.",
+          "System: libm (-lm) linked for C code; BLAS/LAPACK provided via scipy's cython_blas (check blas_int/ILP64 in meson.build)."
+        ],
+        "build_steps": [
+          "git checkout 92b4423ed77373eaf46cf63846e999c57be1a674 (buggy commit) and confirm clean tree.",
+          "python -m pip install -r requirements.txt",
+          "python -m pip install -r requirements-dev.txt",
+          "python -m pip install --no-build-isolation --editable .  # meson-python editable build of C/Cython extensions",
+          "python -c \"import statsmodels; from statsmodels.discrete.discrete_model import Logit; print(statsmodels.__version__)\" to sanity-check the build imports."
+        ],
+        "reproduction_steps": [
+          "The reproducing test does not exist at the buggy commit; append the test_logit_loglikeobs_extreme_linpred function from the PR diff to statsmodels/discrete/tests/test_discrete.py (ensure `import warnings` and `from numpy.testing import assert_allclose` are imported at module top).",
+          "Confirm the buggy source line in statsmodels/discrete/discrete_model.py: Logit.loglikeobs uses np.log(self.cdf(q*linpred)) (around lines 2732-2740) rather than -_log_1pexp(z)/-np.logaddexp(0,-z).",
+          "Run the selector: pytest statsmodels/discrete/tests/test_discrete.py::test_logit_loglikeobs_extreme_linpred",
+          "Observe failure: with warnings.simplefilter('error') the RuntimeWarning 'overflow encountered in exp' is raised (test errors) and/or assertions on finiteness / log_expit agreement fail.",
+          "Optional manual probe: build the same model and call loglikeobs under warnings.simplefilter('error') to see -inf entries and the overflow warning directly."
+        ],
+        "test_command": "pytest statsmodels/discrete/tests/test_discrete.py::test_logit_loglikeobs_extreme_linpred",
+        "test_selector": "-k \"test_logit_loglikeobs_extreme_linpred\"",
+        "expected_buggy_behavior": "exp inside the cdf overflows to inf for large |z|, cdf underflows to 0, and log(0) yields -inf loglikeobs/loglike. With warnings.simplefilter('error') the RuntimeWarning 'overflow encountered in exp' becomes an exception, so the test fails; the np.isfinite and assert_allclose(..., log_expit(z), rtol=1e-14) assertions also fail.",
+        "expected_fixed_behavior": "With the stable -_log_1pexp(z) (i.e. -np.logaddexp(0, -q*linpred)) formulation, loglikeobs/loglike are finite, no RuntimeWarnings are emitted, loglikeobs matches scipy.special.log_expit(z) to rtol=1e-14, and loglike equals loglikeobs.sum() to rtol=1e-14.",
+        "success_criterion": "On the buggy commit, `pytest statsmodels/discrete/tests/test_discrete.py::test_logit_loglikeobs_extreme_linpred` FAILS (RuntimeWarning raised as error from overflow in exp and/or non-finite loglikeobs values); on the fixed commit the same test PASSES.",
+        "risks_or_ambiguities": [
+          "The test is introduced by the fix commit and is absent at the buggy revision, so it must be copied in manually; a wrong copy could alter the failure mode.",
+          "scipy.special.log_expit requires scipy>=1.13; older scipy will fail at import, masking the numerical bug.",
+          "Cython/meson version mismatches (cython>=3.0.10,<4 vs resolved >=3.0.13) can break the editable build before any test runs.",
+          "Whether the failure surfaces as a RuntimeWarning error vs a finiteness assertion depends on numpy warning configuration in conftest/pytest settings.",
+          "Only evidence indicates |linpred| up to 1e4; exact overflow threshold is platform/libm dependent, but the test fixes z to linspace(-1e4,1e4,50).",
+          "No explicit correct numeric values per element are quoted in the evidence beyond matching log_expit(z); representative expected value for z=-1e4 is approximately -1e4."
+        ],
+        "confidence": 0.82
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3537,
+        "output_tokens": 2438,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.004776
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10214",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10214,
+      "buggy_commit": "50ef1a666ad5e0dbaeaa8e019a967d4cc0ef6207",
+      "fixed_commit": "7216b142d2b39bf203bf9408c8c19726d93dabe5",
+      "is_numerical_bug": true,
+      "bug_type": "convergence",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "On buggy commit 50ef1a666ad5e0dbaeaa8e019a967d4cc0ef6207, DynamicFactorMQ.fit_em builds its mle_retvals Bunch without a 'converged' entry, so callers cannot distinguish genuine tolerance convergence from maxiter termination or a log-likelihood-decrease revert (which decrements i, making iter < maxiter look like early convergence). The new tests test_em_convergence_flag (parametrized (1, False), (500, True)) and test_em_convergence_flag_after_revert reference res.mle_retvals.converged and must fail on this commit.",
+        "input_output_examples": [
+          {
+            "input": "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)",
+            "buggy_output": "res.mle_retvals has no 'converged' entry; res.mle_retvals.converged raises AttributeError (Bunch key missing). ConvergenceWarning 'maximum number of iterations' is emitted.",
+            "expected_output": "res.mle_retvals.converged is False",
+            "source": "test"
+          },
+          {
+            "input": "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)",
+            "buggy_output": "res.mle_retvals has no 'converged' entry, so genuine tolerance convergence is not exposed as a boolean; res.mle_retvals.converged raises AttributeError.",
+            "expected_output": "res.mle_retvals.converged is True",
+            "source": "test"
+          },
+          {
+            "input": "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)",
+            "buggy_output": "EstimationWarning 'Log-likelihood decreased'; revert decrements i so res.mle_retvals.iter < 10; no converged flag, so iter < maxiter suggests convergence.",
+            "expected_output": "res.mle_retvals.iter < 10 and res.mle_retvals.converged is False",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Use a supported CPython (e.g. 3.11/3.12/3.13); Python 3.9 testing was dropped in this release line, CI targets 3.13/3.14 including free-threaded 3.14t.",
+          "Ensure a C compiler, meson and ninja are available (libm via cc.find_library('m') in meson.build); build backend is meson-python>=0.18.0.",
+          "python -m pip install -r requirements.txt",
+          "python -m pip install -r requirements-dev.txt (pins cython>=3.0.13, pytest>=8.4.1, numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6)",
+          "Confirm core deps: numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, Cython>=3.0.13, setuptools_scm>=9.2.0, packaging>=21.3."
+        ],
+        "build_steps": [
+          "git checkout 50ef1a666ad5e0dbaeaa8e019a967d4cc0ef6207 (buggy commit; fix not applied).",
+          "python -m pip install --no-build-isolation --editable . (meson-python editable build compiles the Cython/C extensions).",
+          "Sanity check the build: python -c \"import statsmodels; from statsmodels.tsa.statespace import dynamic_factor_mq; print(dynamic_factor_mq.__name__)\".",
+          "Apply ONLY the test-file portion of the PR diff to statsmodels/tsa/statespace/tests/test_dynamic_factor_mq.py so the new tests exist at this revision."
+        ],
+        "reproduction_steps": [
+          "Leave statsmodels/tsa/statespace/dynamic_factor_mq.py untouched (buggy revision).",
+          "Add the import line 'from statsmodels.tools.sm_exceptions import ConvergenceWarning, EstimationWarning' to the test module.",
+          "Add helper _get_small_em_model() (rng=np.random.default_rng(0), nobs=30, k_endog=2, factor=cumsum(standard_normal)*0.3, endog=factor[:,None]*uniform(0.6,1.4,k_endog), plus standard_normal((nobs,k_endog))*0.5; DynamicFactorMQ(endog, factors=1, factor_orders=1, idiosyncratic_ar1=False)).",
+          "Add test_em_convergence_flag parametrized over (maxiter, converged) = [(1, False), (500, True)]: fit_em(maxiter, tolerance=1e-6, disp=False); for the (1, False) case expect pytest.warns(ConvergenceWarning, match='maximum number of iterations'); assert res.mle_retvals.converged is converged.",
+          "Add test_em_convergence_flag_after_revert(monkeypatch): wrap mod._em_iteration to force an llf decrease at iteration 2; with pytest.warns(EstimationWarning, match='Log-likelihood decreased') call fit_em(maxiter=10, tolerance=1e-10, disp=False); assert res.mle_retvals.iter < 10 and res.mle_retvals.converged is False.",
+          "Run the two tests and observe the failure caused by the missing 'converged' key in the mle_retvals Bunch.",
+          "Optionally verify directly in a REPL that 'converged' not in res.mle_retvals for a fitted EM model at this commit."
+        ],
+        "test_command": "pytest statsmodels/tsa/statespace/tests/test_dynamic_factor_mq.py::test_em_convergence_flag statsmodels/tsa/statespace/tests/test_dynamic_factor_mq.py::test_em_convergence_flag_after_revert",
+        "test_selector": "statsmodels/tsa/statespace/tests/test_dynamic_factor_mq.py::test_em_convergence_flag statsmodels/tsa/statespace/tests/test_dynamic_factor_mq.py::test_em_convergence_flag_after_revert",
+        "expected_buggy_behavior": "Both tests error/fail on the buggy commit because fit_em never puts 'converged' into mle_retvals: res.mle_retvals.converged raises AttributeError (Bunch has no such key) for the (1, False) and (500, True) cases, and likewise after the forced revert the assertions on res.mle_retvals.converged cannot be satisfied. The warning-only signals (ConvergenceWarning 'maximum number of iterations', EstimationWarning 'Log-likelihood decreased') still occur as expected.",
+        "expected_fixed_behavior": "After the fix, mle_retvals includes converged = bool(not terminate and delta <= tolerance), so test_em_convergence_flag passes with converged False for maxiter=1 (ConvergenceWarning emitted) and True for maxiter=500, and test_em_convergence_flag_after_revert passes with res.mle_retvals.iter < 10 and converged False. Existing 'iter' and warning behavior is unchanged.",
+        "success_criterion": "Running the two selected tests on the buggy commit fails (AttributeError/assertion failure due to the missing res.mle_retvals.converged entry), and the same tests pass once the fix (converged = bool(not terminate and delta <= tolerance)) is applied.",
+        "risks_or_ambiguities": [
+          "The two tests are NEW in the PR; the buggy commit's test file does not contain them, so the test portion of the diff must be applied (or the tests pasted in) before running the selector, otherwise pytest reports 'no tests ran' rather than the bug failure.",
+          "ConvergenceWarning may be raised via pytest.warns: the exact warning category may be statsmodels' ConvergenceWarning subclass; if the match string or category differs, the (1, False) case may fail for the wrong reason.",
+          "The maxiter=500 -> converged True case depends on the EM fit actually reaching tolerance=1e-6 on this seed/platform; if it does not, the True assertion could fail for numerical rather than the intended reason.",
+          "The assertion uses identity ('is False'/'is True'), so the fixed code must return a Python bool (bool(...)), not numpy.bool_; a numpy bool would fail the test.",
+          "Environment ambiguity: requirements-dev.txt pins cython>=3.0.10,<4 and setuptools_scm~=9.0 while the mined resolved pins are cython>=3.0.13 and setuptools_scm>=9.2.0; prefer CI workflow commands over README.",
+          "No explicit Python version is pinned for this checkout; Python 3.9 testing was dropped, so use a modern CPython (3.11-3.13) to avoid unrelated build/import failures.",
+          "The monkeypatched _em_iteration signature may differ slightly across revisions (params0, init, mstep_method); confirm against the buggy file before running the revert test."
+        ],
+        "confidence": 0.78
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 4035,
+        "output_tokens": 2712,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.005357
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10106",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10106,
+      "buggy_commit": "1e750ab0e99cb444bf2d15134598909c11f47a63",
+      "fixed_commit": "b4737886f1f3e4d3291279e21490bd52ecae1e71",
+      "is_numerical_bug": true,
+      "bug_type": "accuracy",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "At buggy commit 1e750ab0e99cb444bf2d15134598909c11f47a63, tools.matrix_rank(method=\"qr\") uses unpivoted scipy.linalg.qr(m, mode=\"r\"), so R's diagonal follows column order and the tolerance is keyed to the first (not largest) diagonal element. The rank estimate therefore varies with column permutation. Reproduce by adding the PR's test_matrix_rank_column_order to test_tools.py (without the tools.py fix) and observing test_matrix_rank_column_order[qr] fail while [ip]/[svd] pass.",
+        "input_output_examples": [
+          {
+            "input": "tools.matrix_rank(exog[:, list(cols)], method=\"qr\") for cols in itertools.permutations(range(3)), where x = 1e3 * np.arange(1.0, 41.0) / 7.0 and exog = np.column_stack((np.ones(40), x, 2.0 * x))",
+            "buggy_output": "assert_equal(rank, 2, err_msg=f\"column order {cols}\") fails for some column order cols: rank differs from 2 (err_msg prints \"column order (0, 1, 2)\" etc.)",
+            "expected_output": "2",
+            "source": "test"
+          },
+          {
+            "input": "tools.matrix_rank(exog[:, list(cols)], method=method) for each cols permutation of the 3-column exog, for method in [\"ip\", \"qr\", \"svd\"]",
+            "buggy_output": "method=\"qr\" returns a rank that depends on column order (count of R diagonal elements above tol keyed to the leading diagonal element); other methods return 2",
+            "expected_output": "2 for every column order and every method",
+            "source": "pr"
+          }
+        ],
+        "environment_setup": [
+          "Clone/checkout statsmodels at buggy commit 1e750ab0e99cb444bf2d15134598909c11f47a63; confirm with git rev-parse HEAD.",
+          "Install a C compiler (gcc/clang) and git; statsmodels builds C and Cython extension modules.",
+          "Create a Python virtualenv (CI evidence pins CIBW_BUILD cp313-*; any supported CPython >=3.11 that satisfies numpy>=2.0.0/scipy>=1.13 is acceptable).",
+          "pip install -r requirements-dev.txt (or the pinned deps: numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, cython>=3.0.13, meson-python>=0.18.0, setuptools_scm>=9.2.0, pytest>=8.4.1, pytest-randomly, pytest-xdist).",
+          "meson.build errors if Cython < 3.0.10; extracted CI pins cython >= 3.0.13, so install Cython in that range."
+        ],
+        "build_steps": [
+          "python -m pip install -r requirements-dev.txt",
+          "python -m pip install -e . (meson-python backend invokes meson/ninja to compile the C/Cython extensions)",
+          "python -m pip list (confirm numpy>=2.0.0, scipy>=1.13, cython>=3.0.13, pytest>=8.4.1)",
+          "python -c \"import statsmodels; print(statsmodels.__version__, statsmodels.__file__)\" to verify the editable build imports from the checkout."
+        ],
+        "reproduction_steps": [
+          "Confirm the buggy code is present: inspect statsmodels/tools/tools.py around lines 516-526 and verify matrix_rank's qr branch calls scipy.linalg.qr(m, mode=\"r\") WITHOUT pivoting=True.",
+          "Confirm the reproducing test is absent at this revision: grep -n test_matrix_rank_column_order statsmodels/tools/tests/test_tools.py (expected: no match, since the test was introduced by PR #10106).",
+          "Apply ONLY the test-side change from the PR diff: add 'import itertools' at the top of statsmodels/tools/tests/test_tools.py and insert the parametrized test_matrix_rank_column_order(method) after test_estimable, using x = 1e3 * np.arange(1.0, 41.0) / 7.0, exog = np.column_stack((np.ones(40), x, 2.0 * x)), and assert_equal(tools.matrix_rank(exog[:, list(cols)], method=method), 2, err_msg=f\"column order {cols}\") over itertools.permutations(range(exog.shape[1])). Do NOT modify statsmodels/tools/tools.py.",
+          "Optionally print the per-permutation ranks directly, e.g. python -c with the same x/exog loop printing (cols, tools.matrix_rank(exog[:, list(cols)], method='qr')) for all six permutations, to see which column order produces a rank != 2.",
+          "Run the parametrized test: python -m pytest statsmodels/tools/tests/test_tools.py -k test_matrix_rank_column_order -v and observe test_matrix_rank_column_order[qr] failing with an AssertionError naming the offending column order, while [ip] and [svd] pass."
+        ],
+        "test_command": "python -m pytest statsmodels/tools/tests/test_tools.py -k test_matrix_rank_column_order",
+        "test_selector": "statsmodels/tools/tests/test_tools.py::test_matrix_rank_column_order",
+        "expected_buggy_behavior": "test_matrix_rank_column_order[qr] FAILS with AssertionError showing 'column order (i, j, k)' because the unpivoted QR's R diagonal is ordered by column order, not magnitude, and tol is keyed to the first diagonal element, so matrix_rank does not return 2 for every permutation. The [ip] and [svd] parametrizations pass.",
+        "expected_fixed_behavior": "With scipy.linalg.qr(m, mode=\"r\", pivoting=True) the R diagonal is ordered by decreasing magnitude and tol stays keyed to the largest diagonal element, so matrix_rank returns 2 for every column permutation and for all three methods (ip, qr, svd); test_matrix_rank_column_order passes for all parametrizations.",
+        "success_criterion": "Running `python -m pytest statsmodels/tools/tests/test_tools.py -k test_matrix_rank_column_order` on the buggy commit (with only the test added) exits non-zero with test_matrix_rank_column_order[qr] failing on the assert_equal(rank, 2, err_msg=f\"column order {cols}\") assertion, and the same test would pass once tools.py uses pivoting=True.",
+        "risks_or_ambiguities": [
+          "The reproducing test does not exist at the buggy commit (it was introduced by PR #10106), so it must be added manually; the tools.py fix must NOT be applied, otherwise the test would pass and reproduction would be lost.",
+          "Evidence does not state which specific permutation(s) yield rank != 2, nor the numeric buggy rank value; the exact failing column order is only observable at runtime and may vary with LAPACK/scipy.",
+          "Failure depends on scipy version and LAPACK QR implementation; scipy>=1.13 is pinned but no exact scipy version is given, so the tolerance behavior could differ slightly across environments.",
+          "Python version is ambiguous: CI pins cp313-* for the emscripten job while INSTALL docs list older minimums; any environment satisfying numpy>=2.0.0 and scipy>=1.13 should reproduce it.",
+          "requirements-dev.txt (cython>=3.0.10,<4, setuptools_scm~=9.0) conflicts with extracted CI pins (cython>=3.0.13, setuptools_scm>=9.2.0); either range should build.",
+          "pytest-randomly/pytest-xdist plugins are in requirements-dev.txt and shuffle/parallelize collection; the -k selector plus explicit node id keeps the run deterministic.",
+          "statsmodels must be built/installed (meson-python + C/Cython extensions); running the test from a source tree without a completed build will fail at import rather than on the rank assertion."
+        ],
+        "confidence": 0.75
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3566,
+        "output_tokens": 2918,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.005423
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10088",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10088,
+      "buggy_commit": "ebb9a026ae0543fafb08fdb8a0463fe1851f7359",
+      "fixed_commit": "9062763c827da686a9b3117cffd2418d016a11e9",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce GH-9653: OLS.condition_number divides by a non-positive smallest eigenvalue. At buggy commit ebb9a026, statsmodels/regression/linear_model.py computes `return np.sqrt(eigvals[0] / eigvals[-1])` without guarding eigvals[-1] <= 0. The PR adds test_condition_number_nonpositive_eigval to statsmodels/regression/tests/test_regression.py, which forces res._cache['eigenvals'][-1] to 0.0 and -1e-12 and asserts res.condition_number == np.inf. Add that test hunk (it does not exist at the buggy commit) and run it to observe the failure.",
+        "input_output_examples": [
+          {
+            "input": "rs = np.random.RandomState(323218); y = rs.standard_normal(100); x = rs.standard_normal((100,1)) + rs.standard_normal((100,5)); res = OLS(y, x).fit(); eigvals = res.eigenvals.copy(); eigvals[-1] = 0.0; res._cache['eigenvals'] = eigvals; res.condition_number",
+            "buggy_output": "np.sqrt(eigvals[0] / 0.0) -> RuntimeWarning 'divide by zero encountered in scalar divide'; returns inf (so assert == np.inf may pass unless warnings are errors)",
+            "expected_output": "res.condition_number == np.inf (explicitly returned by the eigvals[-1] > 0 guard, no divide-by-zero warning)",
+            "source": "test"
+          },
+          {
+            "input": "same OLS fit (RandomState(323218)); eigvals = res.eigenvals.copy(); eigvals[-1] = -1e-12; res._cache['eigenvals'] = eigvals; res.condition_number",
+            "buggy_output": "np.sqrt(eigvals[0] / -1e-12) -> large negative radicand, RuntimeWarning 'invalid value encountered in sqrt', returns nan",
+            "expected_output": "res.condition_number == np.inf",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Use CPython 3.13 (evidence: CIWB_BUILD cp313-*; no other Python pin stated) in a clean virtualenv.",
+          "Install a C compiler and libm (meson.build: cc = meson.get_compiler('c'), cc.find_library('m')); ninja and meson-python are needed for the meson-python backend.",
+          "pip install 'cython>=3.0.13' 'setuptools_scm>=9.2.0' 'meson-python>=0.18.0' 'meson>=1.9.0' ninja (meson.build enforces Cython >=3.0.10 and meson_version >=1.9.0).",
+          "pip install 'numpy>=2.0.0' 'scipy>=1.13' 'pandas>=1.4' 'patsy>=0.5.6' 'formulaic>=1.1.0' 'packaging>=21.3' 'pytest>=8.4.1,<10' pytest-randomly pytest-run-parallel pytest-xdist pytest-cov.",
+          "pip install -r requirements-dev.txt (CI/install-doc path; note setuptools_scm~=9.0 in that file vs >=9.2.0 pin resolution)."
+        ],
+        "build_steps": [
+          "git checkout ebb9a026ae0543fafb08fdb8a0463fe1851f7359 (verify with git rev-parse HEAD; this is the buggy revision).",
+          "python -m pip install -r requirements-dev.txt",
+          "python -m pip install -e . (or: python -m pip install . -v) - meson-python + ninja compiles the C/Cython extensions; -lm must be found.",
+          "python -c \"import statsmodels; print(statsmodels.__version__)\" to confirm the build imports before running tests."
+        ],
+        "reproduction_steps": [
+          "Confirm the checked-out revision is ebb9a026ae0543fafb08fdb8a0463fe1851f7359 and that statsmodels/regression/linear_model.py still contains the unguarded 'return np.sqrt(eigvals[0] / eigvals[-1])' (eigvals[-1] not checked for positivity).",
+          "Confirm statsmodels/regression/tests/test_regression.py at this revision has test_condition_number but NOT test_condition_number_nonpositive_eigval (the test is introduced by the PR).",
+          "Apply only the test hunk from the PR diff: insert test_condition_number_nonpositive_eigval after test_condition_number (around line 1678) in statsmodels/regression/tests/test_regression.py; do not touch linear_model.py.",
+          "Sanity-check the standalone trigger: python -c \"import numpy as np; from statsmodels.regression.linear_model import OLS; rs=np.random.RandomState(323218); y=rs.standard_normal(100); x=rs.standard_normal((100,1))+rs.standard_normal((100,5)); res=OLS(y,x).fit(); ev=res.eigenvals.copy(); ev[-1]=-1e-12; res._cache['eigenvals']=ev; print(res.condition_number)\" -> observe nan plus 'invalid value encountered in sqrt'; repeat with ev[-1]=0.0 -> observe 'divide by zero encountered in scalar divide' and inf.",
+          "Run the reproduction test and observe the failure: pytest statsmodels/regression/tests/test_regression.py::test_condition_number_nonpositive_eigval (add -W error::RuntimeWarning if the default filterwarnings config does not already turn warnings into errors).",
+          "Capture the traceback/assertion and the emitted RuntimeWarning text as the failing evidence for the buggy revision."
+        ],
+        "test_command": "pytest statsmodels/regression/tests/test_regression.py::test_condition_number_nonpositive_eigval",
+        "test_selector": "statsmodels/regression/tests/test_regression.py::test_condition_number_nonpositive_eigval",
+        "expected_buggy_behavior": "With eigvals[-1] = -1e-12 the unguarded np.sqrt(eigvals[0] / eigvals[-1]) takes the square root of a negative number, emitting 'RuntimeWarning: invalid value encountered in sqrt' and returning nan, so 'assert res.condition_number == np.inf' fails (AssertionError). With eigvals[-1] = 0.0 the code emits 'RuntimeWarning: divide by zero encountered in scalar divide' and returns inf, which fails the test if warnings are errors and only coincidentally satisfies the == np.inf assertion otherwise. GH-9653 also reports the same divide-by-zero propagating into linear_harvey_collier ('Divide by zero error').",
+        "expected_fixed_behavior": "condition_number checks eigvals[-1] > 0 and returns np.inf explicitly when the smallest eigenvalue is non-positive, otherwise np.sqrt(eigvals[0] / eigvals[-1]); both loop iterations (0.0 and -1e-12) yield res.condition_number == np.inf, no divide-by-zero/invalid-value warnings are raised, and test_condition_number_nonpositive_eigval passes.",
+        "success_criterion": "pytest statsmodels/regression/tests/test_regression.py::test_condition_number_nonpositive_eigval FAILS on buggy revision ebb9a026ae0543fafb08fdb8a0463fe1851f7359 (AssertionError nan == inf and/or divide-by-zero RuntimeWarning) and PASSES once the eigvals[-1] > 0 guard from the fixed commit 9062763c827da686a9b3117cffd2418d016a11e9 is applied; no other tests in test_regression.py are required to change.",
+        "risks_or_ambiguities": [
+          "The reproducing test is introduced by the PR and does NOT exist at the buggy commit, so the test hunk must be applied manually; leaving it out means pytest reports 'no tests ran' rather than a failure.",
+          "With eigvals[-1] = 0.0, numpy returns +inf with only a RuntimeWarning, so that iteration may pass the == np.inf assert unless the project's pytest filterwarnings turns warnings into errors; the deterministic failure is the -1e-12 iteration (nan == inf). Confirm the repo's filterwarnings config before claiming which iteration fails first.",
+          "The test deletes res._cache['condition_number'] and writes res._cache['eigenvals']; verify the buggy property caches under exactly those keys, otherwise a KeyError (not the numerical failure) could occur.",
+          "res.eigenvals is sorted descending, so eigvals[-1] is the smallest eigenvalue as assumed; if the local implementation differs, the forced index may not hit the denominator.",
+          "No Python runtime version is pinned in the evidence (only cp313-* in the Pyodide CI and unpinned setup-python elsewhere); the build also needs Cython >=3.0.10/>=3.0.13 and meson >=1.9.0 or meson-python will abort the build.",
+          "Running the full file can be affected by pytest-randomly / pytest-run-parallel / xdist plugins; use the exact single-node selector (optionally -p no:randomly -p no:xdist) for a stable reproduction.",
+          "The issue text mentions linear_harvey_collier raising 'Divide by zero error', but no concrete inputs are given for that path, so only the two test-encoded eigenvalue examples are used here."
+        ],
+        "confidence": 0.75
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3618,
+        "output_tokens": 4729,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.007836
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10017",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10017,
+      "buggy_commit": "da83c3b8e37fb382b06f8534534b9be88f42c7a4",
+      "fixed_commit": "2edccacdb602db748963e36766d57f722968a69e",
+      "is_numerical_bug": true,
+      "bug_type": "accuracy",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the statsmodels acf() confidence-interval / Ljung-Box q-statistic bug at da83c3b8: when x contains NaNs and missing=\"drop\" or \"conservative\", _stattools.py used varacf = 1.0/len(x) instead of 1.0/nobs (non-missing count), so confint half-widths and q-statistics were wrong (confint half-width at lag 1: 0.098000 vs 0.138590; qstat at lag 1: 0.795745 vs 0.400857; ratio exactly sqrt(200/400)=0.7071). Build the C/Cython extensions with meson-python, then run the four newly added/enabled tests in statsmodels/tsa/tests/test_stattools.py; all four must FAIL on this commit and would PASS once varacf uses nobs.",
+        "input_output_examples": [
+          {
+            "input": "acf(x, nlags=40, qstat=True, alpha=0.05, missing=\"drop\", fft=False) with NaNs in x; PR body: confint half-width at lag 1",
+            "buggy_output": "confint half-width at lag 1 = 0.098000 (varacf = 1.0/len(x), NaNs counted)",
+            "expected_output": "confint half-width at lag 1 = 0.138590 (varacf = 1.0/nobs, non-missing count)",
+            "source": "pr"
+          },
+          {
+            "input": "acf(x, nlags=40, qstat=True, alpha=0.05, missing=\"drop\", fft=False) with NaNs in x; PR body: Ljung-Box q-statistic at lag 1",
+            "buggy_output": "qstat at lag 1 = 0.795745 (nobs = len(x) including NaNs)",
+            "expected_output": "qstat at lag 1 = 0.400857 (nobs = number of non-missing values)",
+            "source": "pr"
+          },
+          {
+            "input": "test_qstat_drop: assert_almost_equal(self.res_drop[2][:40], self.qstat, DECIMAL_3)",
+            "buggy_output": "AssertionError: res_drop q-statistics (first 40 lags) mismatch Stata reference self.qstat from results_corrgram.csv Q1",
+            "expected_output": "res_drop[2][:40] equal to self.qstat to 3 decimals (test passes)",
+            "source": "test"
+          },
+          {
+            "input": "test_qstat_conservative: assert_almost_equal(self.res_conservative[2][:40], self.qstat, DECIMAL_3)",
+            "buggy_output": "AssertionError: res_conservative q-statistics (first 40 lags) mismatch self.qstat",
+            "expected_output": "res_conservative[2][:40] equal to self.qstat to 3 decimals (test passes)",
+            "source": "test"
+          },
+          {
+            "input": "test_confint_drop: centered = self.res_drop[1] - self.res_drop[1].mean(1)[:, None]; assert_almost_equal(centered[1:41], self.confint_res, DECIMAL_8)",
+            "buggy_output": "AssertionError: centered confint (lags 1:41) mismatch confint_res (acvar_lb/acvar_ub) from results_corrgram.csv at 8 decimals",
+            "expected_output": "centered[1:41] equal to self.confint_res to 8 decimals (test passes)",
+            "source": "test"
+          },
+          {
+            "input": "test_confint_conservative: centered = self.res_conservative[1] - self.res_conservative[1].mean(1)[:, None]; assert_almost_equal(centered[1:41], self.confint_res, DECIMAL_8)",
+            "buggy_output": "AssertionError: centered confint (lags 1:41) mismatch confint_res at 8 decimals",
+            "expected_output": "centered[1:41] equal to self.confint_res to 8 decimals (test passes)",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Python 3.10-3.13 (CI adds 3.13/3.14; use a version with wheels/source build support), plus a C compiler and meson/ninja for the C/Cython extensions.",
+          "Install runtime deps: numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, formulaic>=1.1.0, packaging>=21.3.",
+          "Install build/test deps from requirements-dev.txt: cython>=3.0.10 (>=3.0.13 per resolution), meson-python>=0.18.0, meson>=1.9.0, ninja, setuptools_scm (>=9.2.0), pytest>=8.4.1,<10, pytest-xdist, pytest-randomly, pytest-run-parallel.",
+          "statsmodels/tsa/stattools/_stattools.py must be imported from the built extension modules (acf is a Python wrapper; acovf/ccf Cython code must compile)."
+        ],
+        "build_steps": [
+          "python -m pip install --upgrade pip",
+          "python -m pip install -r requirements.txt",
+          "python -m pip install -r requirements-dev.txt",
+          "python -m pip install . -v   # meson-python build (compiles C/Cython extensions)",
+          "python -c \"import statsmodels; print(statsmodels.__version__)\"",
+          "Verify the buggy source line is present: grep -n 'varacf = 1.0 / len(x)' statsmodels/tsa/stattools/_stattools.py"
+        ],
+        "reproduction_steps": [
+          "Confirm checkout is at da83c3b8e37fb382b06f8534534b9be88f42c7a4 (git rev-parse HEAD) and that statsmodels/tsa/tests/results/results_corrgram.csv provides acvar/acvar_lb/acvar_ub/Q1 reference values.",
+          "Confirm the added tests exist in statsmodels/tsa/tests/test_stattools.py: test_qstat_drop, test_qstat_conservative, test_confint_drop, test_confint_conservative in class CheckCorrGram (test_qstat_drop was previously committed commented out).",
+          "Run the four tests at this buggy revision and capture full assertion output (first mismatching lag and value).",
+          "Optionally reproduce manually: rng = np.random.default_rng(0); x_dropped = rng.standard_normal(200); x = np.concatenate([x_dropped, np.full(200, np.nan)]); then acf(x, nlags=40, qstat=True, alpha=0.05, missing='drop', fft=False) and inspect res[1] half-width at lag 1 (~0.098000) and res[2][0] (~0.795745).",
+          "Compare against the correct reference obtained by dropping NaNs: acf(x_dropped, nlags=40, qstat=True, alpha=0.05, missing='none', fft=False) -> confint half-width ~0.138590, qstat ~0.400857 (ratio sqrt(200/400)=0.7071).",
+          "Do NOT modify source; record the failure as evidence of the bug."
+        ],
+        "test_command": "python -m pytest statsmodels/tsa/tests/test_stattools.py -k \"qstat_drop or qstat_conservative or confint_drop or confint_conservative\"",
+        "test_selector": "statsmodels/tsa/tests/test_stattools.py::test_qstat_drop statsmodels/tsa/tests/test_stattools.py::test_qstat_conservative statsmodels/tsa/tests/test_stattools.py::test_confint_drop statsmodels/tsa/tests/test_stattools.py::test_confint_conservative",
+        "expected_buggy_behavior": "All four tests fail on da83c3b8: qstat tests mismatch self.qstat at DECIMAL_3 and confint tests mismatch confint_res at DECIMAL_8, because varacf = 1.0/len(x) includes NaNs (confint half-width at lag 1 is 0.098000 vs 0.138590; qstat at lag 1 is 0.795745 vs 0.400857).",
+        "expected_fixed_behavior": "With nobs = int(np.sum(~np.isnan(x))) for missing in (\"drop\", \"conservative\") and varacf = 1.0/nobs, res_drop/res_conservative match the Stata reference: qstat (first 40 lags) equals self.qstat at DECIMAL_3 and centered confint (lags 1:41) equals confint_res at DECIMAL_8; all four tests pass.",
+        "success_criterion": "The selected four tests (test_qstat_drop, test_qstat_conservative, test_confint_drop, test_confint_conservative) FAIL at the buggy commit da83c3b8 and would PASS after the fix at 2edccacd; at least one assertion error shows the confint/qstat mismatch caused by len(x) vs nobs.",
+        "risks_or_ambiguities": [
+          "Exact reference numbers (0.098000/0.138590, 0.795745/0.400857) come from the PR body, not verbatim test literals; tests compare against results_corrgram.csv (acvar/acvar_lb/acvar_ub/Q1) whose exact values were not shown.",
+          "DECIMAL_8 on centered confint is tight; platform BLAS/compiler differences could add noise, though the bug effect (~sqrt(2)) is far larger.",
+          "Cython/meson version pins conflict in evidence (meson.build >=3.0.10 vs >=3.0.13); wrong Cython may break the build rather than the test.",
+          "pytest-randomly/xdist may reorder or parallelize tests; use -p no:randomly or single selector if flakiness appears.",
+          "Missing evidence about whether cls.x is deterministic in CheckCorrGram setup; the class loads results_corrgram.csv and prepends one NaN.",
+          "No linked issue was provided, so the only numerical anchors are the PR body numbers and the test assertions."
+        ],
+        "confidence": 0.7
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 4334,
+        "output_tokens": 2854,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.005676
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10013",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10013,
+      "buggy_commit": "d3cb403cb5d0681c73e283d08db0ea258403186b",
+      "fixed_commit": "57d01f5b3893f2e3693df3af5b00a023abeaf6fa",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the empty-input ZeroDivisionError in statsmodels.stats.multitest.multipletests at buggy commit d3cb403cb5d0681c73e283d08db0ea258403186b. The corrected alphas alphacSidak = 1 - (1-alphaf)**(1/ntests) and alphacBonf = alphaf/ntests are computed before method dispatch, so ntests = len(pvals) == 0 raises 'float division by zero' for all methods. Reproduce by building statsmodels and running the PR's new parametrized test test_multipletests_empty, which must FAIL at this revision.",
+        "input_output_examples": [
+          {
+            "input": "multipletests([], method=method) for each method in sorted(multitest_methods_names)",
+            "buggy_output": "ZeroDivisionError: float division by zero, raised for every method (before method dispatch)",
+            "expected_output": "returns (reject, pvals_corrected, alphac_sidak, alphac_bonf) with reject.shape == (0,), pvals_corrected.shape == (0,), np.isnan(alphac_sidak) is True, np.isnan(alphac_bonf) is True",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Create/activate a Python environment covered by CI (e.g. Python 3.13); Python 3.9 is no longer supported.",
+          "Install build/test dependencies: python -m pip install -r requirements-dev.txt (pins numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, cython>=3.0.10,<4 / cython>=3.0.13, meson-python>=0.18.0, pytest>=8.4.1,<9, meson, ninja).",
+          "Ensure a C compiler and libm (meson.get_compiler('c')) plus Cython >=3.0.10 are available, since statsmodels builds C/Cython extensions.",
+          "Confirm installed versions with python -m pip list (expected numpy>=2.0.0, scipy>=1.13, pytest>=8.4.1)."
+        ],
+        "build_steps": [
+          "Verify the checkout is at the buggy revision: git rev-parse HEAD should equal d3cb403cb5d0681c73e283d08db0ea258403186b.",
+          "Build/install statsmodels with the meson-python backend: python -m pip install . -v (or python -m pip install -e . --no-build-isolation -v for an in-place editable build).",
+          "Sanity-check the install: python -c \"import statsmodels; print(statsmodels.__version__)\" and python -c \"from statsmodels.stats.multitest import multipletests\" (compiled extensions must import cleanly)."
+        ],
+        "reproduction_steps": [
+          "From the repository root at the buggy commit, confirm the bug directly: python -c \"from statsmodels.stats.multitest import multipletests; multipletests([], method='bonferroni')\" and observe ZeroDivisionError: float division by zero.",
+          "Confirm the pre-dispatch division in statsmodels/stats/multitest.py: ntests = len(pvals); alphacSidak = 1 - np.power((1.0 - alphaf), 1.0 / ntests); alphacBonf = alphaf / float(ntests) (no ntests > 0 guard at this revision).",
+          "Confirm the new test exists in statsmodels/stats/tests/test_multi.py (test_multipletests_empty, parametrized over sorted(multitest_methods_names)); if the test file is not yet present at this commit, add it verbatim from the PR diff or apply the PR's test hunk only.",
+          "Run the reproducing test: pytest statsmodels/stats/tests/test_multi.py::test_multipletests_empty -v (optionally -x and -p no:randomly); all 10 parametrized cases should error with ZeroDivisionError, not assertion failures.",
+          "Record failure output showing 'ZeroDivisionError: float division by zero' originating from the alphacSidak/alphacBonf computation for each method id."
+        ],
+        "test_command": "pytest statsmodels/stats/tests/test_multi.py::test_multipletests_empty",
+        "test_selector": "statsmodels/stats/tests/test_multi.py::test_multipletests_empty",
+        "expected_buggy_behavior": "multipletests([], method=method) raises ZeroDivisionError: float division by zero for every method in sorted(multitest_methods_names), because alphacSidak = 1 - np.power((1.0 - alphaf), 1.0 / ntests) and alphacBonf = alphaf / float(ntests) are evaluated with ntests == 0 before method dispatch. The parametrized test errors out on all 10 method cases instead of reaching the shape/NaN assertions.",
+        "expected_fixed_behavior": "With the ntests > 0 guard (and np.nan assigned to undefined corrected alphas), multipletests([], method=method) returns reject with shape (0,) and pvals_corrected with shape (0,), while alphac_sidak and alphac_bonf are np.nan for all methods; fdrcorrection already accepted empty input. All test_multipletests_empty parametrizations pass.",
+        "success_criterion": "pytest statsmodels/stats/tests/test_multi.py::test_multipletests_empty FAILS at commit d3cb403cb5d0681c73e283d08db0ea258403186b with ZeroDivisionError: float division by zero on every parametrized method (and would PASS at fixed commit 57d01f5b3893f2e3693df3af5b00a023abeaf6fa with nan corrected alphas and (0,)-shaped outputs).",
+        "risks_or_ambiguities": [
+          "The PR adds test_multipletests_empty in the same diff as the fix; if the buggy checkout does not already contain the test, the test hunk must be applied separately (test-only) or the call reproduced manually via the python -c snippets.",
+          "Evidence does not enumerate the exact 10 method names in multitest_methods_names; the parametrization uses sorted(multitest_methods_names) so the number of cases follows that set, including fdr_bh/fdr_by which already accepted empty input.",
+          "statsmodels imports compiled C/Cython extensions, so skipping the build (python -m pip install . -v) can cause import/collection errors unrelated to the bug.",
+          "CI also uses pytest-xdist/pytest-run-parallel; parallelization or random ordering add-ons could alter output formatting though not the failure itself.",
+          "meson.build requires Cython >=3.0.10 while requirements-dev.txt caps cython<4; version drift between the two could break the build independently of the bug.",
+          "No concrete non-empty numeric example is reported; the only numerical values are the expected np.nan corrected alphas and (0,)-shaped arrays for the empty input."
+        ],
+        "confidence": 0.88
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3051,
+        "output_tokens": 2023,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.004015
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/9987",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 9987,
+      "buggy_commit": "6d82ad1d6b9673ce5e595fbcb455d0fc3ffd238b",
+      "fixed_commit": "c8d418a306ef2ba9e2868431dfac401faee3744b",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the special-value bug in statsmodels.tools.validation.array_like where, with the default optional=False, a None argument is passed to np.require and silently converted to nan instead of raising TypeError. The new test test_none (in statsmodels/tools/validation/tests/test_validation.py) asserts that array_like(None, 'a', optional=True) returns None and that array_like(None, 'a') raises TypeError 'a must be array_like, not None'; on this buggy commit the raises assertion fails. Build statsmodels in place, then run the selector to observe the failure.",
+        "input_output_examples": [
+          {
+            "input": "array_like(None, \"a\")",
+            "buggy_output": "No exception; None is passed through to np.require and converted to nan",
+            "expected_output": "TypeError: a must be array_like, not None",
+            "source": "test"
+          },
+          {
+            "input": "array_like(None, \"a\", optional=True)",
+            "buggy_output": "None",
+            "expected_output": "None",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Use Python 3.13 (CI tests 3.13/3.14; no single exact version stated in evidence).",
+          "Create and activate a virtual environment, e.g. python -m venv .venv && source .venv/bin/activate (Windows: .venv\\Scripts\\activate).",
+          "Ensure a C compiler and the meson-python build backend are available, since statsmodels builds C/Cython extensions via meson.",
+          "Install dev requirements: python -m pip install -r requirements-dev.txt (brings numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, pytest>=8.4.1, cython>=3.0.13/<4, meson-python>=0.18.0, setuptools_scm>=9.2.0).",
+          "No external services or X-13ARIMA-SEATS binary are needed for this pure-Python validation test."
+        ],
+        "build_steps": [
+          "python -m pip install -r requirements-dev.txt",
+          "python -m pip install . -v (meson-python backend builds the C/Cython extensions in place)",
+          "Verify the installed package resolves: python -c \"import statsmodels; print(statsmodels.__version__)\""
+        ],
+        "reproduction_steps": [
+          "Confirm the checked-out revision is the buggy commit: git rev-parse HEAD should equal 6d82ad1d6b9673ce5e595fbcb455d0fc3ffd238b.",
+          "Confirm the fix is absent: statsmodels/tools/validation/tests/test_validation.py should already contain the added test_none (test diff applied) while statsmodels/tools/validation/validation.py has no None-rejection TypeError.",
+          "Inspect statsmodels/tools/validation/validation.py around the array_like/'failed to convert' logic to confirm None is not rejected when optional is False.",
+          "Run the discriminating test: pytest statsmodels/tools/validation/tests/test_validation.py::test_none -v.",
+          "Observe that the first assertion array_like(None, 'a', optional=True) is None passes, but the second assertion (pytest.raises(TypeError, match='a must be array_like, not None')) fails because no TypeError is raised.",
+          "Optionally reproduce interactively: python -c \"from statsmodels.tools.validation import array_like; import numpy as np; print(array_like(None, 'a'))\" and observe nan/None-conversion rather than TypeError."
+        ],
+        "test_command": "pytest statsmodels/tools/validation/tests/test_validation.py::test_none",
+        "test_selector": "statsmodels/tools/validation/tests/test_validation.py::test_none",
+        "expected_buggy_behavior": "test_none fails: array_like(None, 'a') with default optional=False does not raise TypeError (None is passed to np.require and converted to nan), so pytest.raises(TypeError, match='a must be array_like, not None') fails with 'DID NOT RAISE' (or a mismatched message/type).",
+        "expected_fixed_behavior": "test_none passes: array_like(None, 'a', optional=True) returns None, and array_like(None, 'a') raises TypeError whose message matches 'a must be array_like, not None'.",
+        "success_criterion": "On the buggy commit 6d82ad1d6b9673ce5e595fbcb455d0fc3ffd238b, running pytest statsmodels/tools/validation/tests/test_validation.py::test_none FAILS at the pytest.raises assertion (no TypeError for array_like(None, 'a')); with the fix applied the same test passes.",
+        "risks_or_ambiguities": [
+          "Mined evidence confidence is low (0.3-0.62); the exact buggy behavior wording ('None converted to nan') comes from the PR/test comment and was not independently verified.",
+          "The exact result of np.require(None) may depend on the installed NumPy version (evidence only pins numpy>=2.0.0, no exact version), so the observed wrong value could be array(None, dtype=object) rather than nan in some environments.",
+          "The first assertion array_like(None, 'a', optional=True) is None already passes on the buggy commit, so the test failure hinges solely on the raises assertion; a runner that stops at the first assertion would mask it.",
+          "No exact Python runtime or full pinned dependency set is stated; without a C compiler / meson-python toolchain the editable build of statsmodels (needed to import it) may fail.",
+          "If statsmodels is already built/installed from a source tree containing the fix, results would be wrong; the buggy commit must be the checked-out source used for the build."
+        ],
+        "confidence": 0.58
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2743,
+        "output_tokens": 2048,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.003912
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/9979",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 9979,
+      "buggy_commit": "51e6bab53568f3aad791b71c4cd47f8435e95206",
+      "fixed_commit": "a149402577e87dd23be27737b53123ab7d02d6d8",
+      "is_numerical_bug": true,
+      "bug_type": "correctness",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the PR#9979 numerical bug in statsmodels' univariate state space smoother: the smoothed measurement disturbance is returned in the diagonalized basis C_t^{-1} eps_t without being premultiplied by C_t, so (after the PR's test files are applied on top of the buggy source) the univariate-vs-conventional comparisons diverge by up to 124. Build the Cython extensions from the buggy .pyx.in at commit 51e6bab, apply only the PR's test-file changes (pure Python, no rebuild), and run the selector; the disturbance comparisons must fail at atol=1e-7/1e-12.",
+        "input_output_examples": [
+          {
+            "input": "check_smoother_output(model, periods) comparing univariate vs conventional smoothed_measurement_disturbance on the TestMultivariateGeneralObsCov model (test_multivariate_switch_univariate.py, default atol=1e-12)",
+            "buggy_output": "smoothed measurement disturbance mean returned as C_t^{-1} eps_t (never premultiplied by C_t, the diagonalization back-transform), deviating from the conventional smoother by up to 124",
+            "expected_output": "mean premultiplied by C_t again on output, agreement with the conventional smoother to 1.2e-09 after the fix",
+            "source": "pr"
+          },
+          {
+            "input": "assert_allclose(self.conventional_sim.simulated_measurement_disturbance, self.univariate_sim.simulated_measurement_disturbance, atol=1e-7), with sims built by simulation_smoother(model, seed=1234) passing measurement/state disturbance variates and zeros initial_state_variates to sim.simulate()",
+            "buggy_output": "arrays of zeros compared (variates were passed to simulation_smoother() instead of its simulate() method), so the check trivially passed and tested nothing",
+            "expected_output": "agreement at atol=1e-7 between conventional and univariate simulation smoothers on real simulated variates",
+            "source": "test"
+          },
+          {
+            "input": "assert_almost_equal(self.conventional_sim.simulated_measurement_disturbance, self.univariate_sim.simulated_measurement_disturbance, 9) / new assert_allclose(..., atol=1e-7) in TestClark1989 test_simulation_smoothed_measurement_disturbance",
+            "buggy_output": "with the buggy smoother the univariate simulated measurement disturbance is in the wrong basis and the atol=1e-7 assertion fails; the pre-PR version compared zeros and passed vacuously",
+            "expected_output": "conventional and univariate simulated measurement disturbance agree within atol=1e-7",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Check out the buggy revision: git checkout 51e6bab53568f3aad791b71c4cd47f8435e95206 (git fetch origin first so the fixed commit a149402577e87dd23be27737b53123ab7d02d6d8 is also available locally).",
+          "Create a fresh virtualenv (CI builds cp313; Python >=3.10 works) and upgrade pip/wheel.",
+          "Install build deps: python -m pip install -r requirements-dev.txt (pins cython>=3.0.10,<4; meson.build hard-errors below Cython 3.0.10).",
+          "Ensure a C compiler, Meson >=1.9.0, Ninja, and meson-python>=0.18.0 are available; numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, packaging>=21.3, pytest>=8.4.1, formulaic>=1.1.0.",
+          "Optional extras used by some statespace tests: matplotlib>=3, polars>=1.0.0, pyarrow>=14.0.0, jinja2, pytest-xdist."
+        ],
+        "build_steps": [
+          "cd statsmodels && python -m pip install -e . -v (or python -m pip install . -v) so Meson/tempita compiles the Cython sources; this must compile the BUGGY _univariate.pyx.in and _univariate_diffuse.pyx.in.",
+          "Confirm Cython version accepted: build log must not raise the meson.build 'Cython >= 3.0.10 required' error.",
+          "Verify the compiled extension exists and was built from the buggy sources, e.g. check statsmodels/tsa/statespace/_smoothers/ for _univariate*.so (or .pyd on Windows), and confirm the sources were not patched.",
+          "Sanity check: python -c \"import statsmodels; from statsmodels.tsa.statespace.kalman_smoother import KalmanSmoother; print(statsmodels.__version__)\"."
+        ],
+        "reproduction_steps": [
+          "At the buggy commit, confirm git rev-parse HEAD == 51e6bab53568f3aad791b71c4cd47f8435e95206 and that the PR source fix is absent: grep the smoothed-measurement-disturbance output path in statsmodels/tsa/statespace/_smoothers/_univariate.pyx.in / _univariate_diffuse.pyx.in and kalman_smoother.py (no C_t premultiplication of the smoothed measurement disturbance).",
+          "Apply ONLY the PR's test-file changes onto the buggy tree (they are pure Python, so no rebuild is needed): git checkout a149402577e87dd23be27737b53123ab7d02d6d8 -- statsmodels/tsa/statespace/tests/test_univariate.py statsmodels/tsa/statespace/tests/test_multivariate_switch_univariate.py.",
+          "Do NOT check out the fixed statsmodels/tsa/statespace/_smoothers/*.pyx.in or kalman_smoother.py; the buggy compiled extension must stay in place. If you already installed from a fixed tree, re-run python -m pip install -e . -v on the buggy sources.",
+          "Verify the test prerequisites import cleanly at the buggy commit: python -c \"from statsmodels.tools.sm_exceptions import OutputWarning\" (the PR's test_univariate.py imports it; if it is missing the tests cannot run and that must be recorded as an environment blocker).",
+          "Run the selector: pytest statsmodels/tsa/statespace/tests/test_univariate.py -k \"nondiagonal_obs_cov or TestClark1989 or smoothed_measurement_disturbance or time_varying_transition\" -ra.",
+          "Also run the multivariate switch test that gained the smoothed_measurement_disturbance comparison: pytest statsmodels/tsa/statespace/tests/test_multivariate_switch_univariate.py -k \"smoother\" -ra.",
+          "Record the failing assertions, the deviation magnitudes (up to 124 vs 1.2e-09 after the fix) and confirm failures are in the smoothed measurement disturbance comparisons, not in collection/import or unrelated tests."
+        ],
+        "test_command": "pytest statsmodels/tsa/statespace/tests/test_univariate.py -k \"nondiagonal_obs_cov or TestClark1989 or smoothed_measurement_disturbance or time_varying_transition\"",
+        "test_selector": "statsmodels/tsa/statespace/tests/test_univariate.py -k \"nondiagonal_obs_cov or TestClark1989 or smoothed_measurement_disturbance or time_varying_transition\"",
+        "expected_buggy_behavior": "With the buggy compiled univariate smoother, the PR's tests fail: TestClark1989.test_simulation_smoothed_measurement_disturbance (and the smoothed measurement disturbance checks) mismatch between conventional and univariate methods beyond atol=1e-7, and check_smoother_output in test_multivariate_switch_univariate.py fails on smoothed_measurement_disturbance because the mean is still in the C_t^{-1} eps_t basis (deviation up to 124 on TestMultivariateGeneralObsCov). The nondiagonal-observation-covariance tests also fail (missing OutputWarning / wrong values).",
+        "expected_fixed_behavior": "After the fix, the smoothed measurement disturbance mean is premultiplied by C_t before output, the simulation smoother's variates reach simulate() so both methods are compared on real variates, and the selector passes: conventional vs univariate simulated/smoothed measurement disturbances agree at atol=1e-7, the multivariate switch comparison agrees to 1.2e-09 on TestMultivariateGeneralObsCov, the expected OutputWarning is emitted for nondiagonal observation covariance, and non-diagonal covariance comparisons are skipped with NONDIAGONAL_OBS_COV_SKIP.",
+        "success_criterion": "On the buggy commit 51e6bab with the PR's test files applied (and only the test files changed), the selected pytest run FAILS on the smoothed measurement disturbance comparisons (univariate vs conventional) with deviations up to 124; the same selector would pass once the .pyx.in/kalman_smoother.py fix is applied (agreement to 1.2e-09).",
+        "risks_or_ambiguities": [
+          "The buggy commit does not contain the PR's modified tests, so they must be transplanted from the fixed commit; using git apply may fail on context, prefer git checkout <fixed> -- <test files>.",
+          "The PR's test_univariate.py imports OutputWarning from statsmodels.tools.sm_exceptions, which is not in the PR's modified-files list; if it does not already exist at the buggy commit the test module fails to import and the reproduction is blocked.",
+          "Source fix lives in Cython templates (.pyx.in) processed by tempita via Meson; a stale editable install built from the fixed tree will make the tests pass and mask the bug, so the compiled extension must be rebuilt from the buggy sources.",
+          "Tolerance inconsistency in the evidence: check_smoother_output default atol is 1e-12, but the PR body reports residual agreement of 1.2e-09 after the fix on TestMultivariateGeneralObsCov; whether that model's call passes a looser atol is unclear.",
+          "Test class/name ambiguity: the selector mixes test_univariate.py classes (TestClark1989, time_varying_transition) with nondiagonal_obs_cov tests; the exact class names for the nondiagonal tests are not confirmed in the evidence.",
+          "TestMultivariateGeneralObsCov is referenced from the PR body but its exact test file/class placement in the mined evidence is not explicit.",
+          "Dependency pin conflicts in the evidence (cython >=3.0.13 CI vs >=3.0.10,<4 in requirements-dev.txt; setuptools_scm >=9.2.0 vs ~=9.0) could cause build differences; meson.build requires Cython >=3.0.10 either way."
+        ],
+        "confidence": 0.6
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 5193,
+        "output_tokens": 4488,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.008211
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/9909",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 9909,
+      "buggy_commit": "67ca8f98c1eda07e5f5cbc2644469e3ae12f0b84",
+      "fixed_commit": "cccd986a2e9598e91c2e8aa28c19163c77c8794b",
+      "is_numerical_bug": true,
+      "bug_type": "convergence",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce GH#9587: at buggy commit 67ca8f98, statsmodels.stats.proportion.multinomial_proportions_confint(counts, 0.05, method='sison-glaz') raises a generic Exception (c search 'Couldn't find a value for c') for small/sparse count vectors, because the search for c starts at c=1 instead of c=0 and the Edgeworth coverage nu(c) can exceed or plateau below 1-alpha. Reproduce by running the new sparse sison-glaz tests (which encode the R MultinomialCI reference intervals) and observing failures/raises before the fix.",
+        "input_output_examples": [
+          {
+            "input": "multinomial_proportions_confint([6, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0], 0.05, method='sison-glaz')",
+            "buggy_output": "raises Exception (Couldn't find a value for c)",
+            "expected_output": "cis.shape == (11, 2); np.all(cis >= 0); np.all(cis <= 1); np.all(cis[:,0] <= proportions); np.all(proportions <= cis[:,1])",
+            "source": "test"
+          },
+          {
+            "input": "multinomial_proportions_confint([4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 0.05, method='sison-glaz')",
+            "buggy_output": "raises Exception (Couldn't find a value for c)",
+            "expected_output": "cis.shape == (11, 2); np.all(cis >= 0); np.all(cis <= 1); np.all(cis[:,0] <= proportions); np.all(proportions <= cis[:,1])",
+            "source": "test"
+          },
+          {
+            "input": "multinomial_proportions_confint([0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0], 0.05, method='sison-glaz')",
+            "buggy_output": "raises Exception (Couldn't find a value for c)",
+            "expected_output": "cis.shape == (11, 2); np.all(cis >= 0); np.all(cis <= 1); np.all(cis[:,0] <= proportions); np.all(proportions <= cis[:,1])",
+            "source": "test"
+          },
+          {
+            "input": "multinomial_proportions_confint([2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], 0.05, method='sison-glaz')",
+            "buggy_output": "raises Exception (Couldn't find a value for c)",
+            "expected_output": "cis.shape == (11, 2); np.all(cis >= 0); np.all(cis <= 1); np.all(cis[:,0] <= proportions); np.all(proportions <= cis[:,1])",
+            "source": "test"
+          },
+          {
+            "input": "multinomial_proportions_confint([1, 1, 0, 0, 0, 0, 0], 0.05, method='sison-glaz')",
+            "buggy_output": "raises Exception / c search fails; c=0 branch missing so no intervals returned",
+            "expected_output": "[[0.5, 1.0], [0.5, 1.0], [0.0, 0.9655815875], [0.0, 0.9655815875], [0.0, 0.9655815875], [0.0, 0.9655815875], [0.0, 0.9655815875]] (assert_allclose atol=1e-6)",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Use Python 3.13 (CI targets cp313/cp314; active 3.9 dropped).",
+          "Install build/test deps: pip install -r requirements.txt -r requirements-dev.txt (cython>=3.0.10/3.0.13, numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, formulaic>=1.1.0, matplotlib>=3, pytest>=8.4.1, meson-python>=0.18.0, setuptools_scm).",
+          "Ensure a C compiler (cc) plus Cython >=3.0.10 available for the meson/c/cython build.",
+          "Provide OpenBLAS and libm as system math/BLAS libs; X-13ARIMA-SEATS not needed for this stats-only test."
+        ],
+        "build_steps": [
+          "pip install -r requirements.txt",
+          "pip install -r requirements-dev.txt",
+          "python -m pip install . -v   # meson-python build of the C/Cython extensions",
+          "python -c \"import statsmodels; print(statsmodels.__version__)\""
+        ],
+        "reproduction_steps": [
+          "Confirm the buggy revision: git rev-parse HEAD should be 67ca8f98c1eda07e5f5cbc2644469e3ae12f0b84.",
+          "Note the two reproducing tests are INTRODUCED by PR#9909, so at the buggy commit they are absent from statsmodels/stats/tests/test_proportion.py; add them (or apply the PR test diff) to run them.",
+          "Add test_confint_multinomial_proportions_sison_glaz_sparse (parametrized over the four sparse count vectors) and test_confint_multinomial_proportions_sison_glaz_sparse_r_reference to statsmodels/stats/tests/test_proportion.py.",
+          "Run the selector with pytest; before the fix multinomial_proportions_confint(..., method='sison-glaz') raises Exception ('Couldn't find a value for c'), so the parametrized test errors and the R-reference test errors/fails.",
+          "Optionally reproduce directly in a REPL: import numpy as np; from statsmodels.stats.proportion import multinomial_proportions_confint; multinomial_proportions_confint(np.array([1,1,0,0,0,0,0]), 0.05, method='sison-glaz') -> raises Exception."
+        ],
+        "test_command": "pytest statsmodels/stats/tests/test_proportion.py::test_confint_multinomial_proportions_sison_glaz_sparse statsmodels/stats/tests/test_proportion.py::test_confint_multinomial_proportions_sison_glaz_sparse_r_reference",
+        "test_selector": "statsmodels/stats/tests/test_proportion.py::test_confint_multinomial_proportions_sison_glaz_sparse statsmodels/stats/tests/test_proportion.py::test_confint_multinomial_proportions_sison_glaz_sparse_r_reference",
+        "expected_buggy_behavior": "Statsmodels Sison-Glaz search starts at c=1, missing the c=0 crossing, so for small/sparse counts (e.g. [6,0,0,1,0,...], [1,1,0,0,0,0,0]) multinomial_proportions_confint(..., 0.05, method='sison-glaz') raises 'Exception: Couldn't find a value for c' instead of returning intervals. Both new tests error/fail.",
+        "expected_fixed_behavior": "With c initialised to 0 and nuc/nucp1 seeds (c=0.0; nuc=0.0; nucp1=nu(c+1) if c+1<n else 1.0), the search terminates; multinomial_proportions_confint(..., 0.05, method='sison-glaz') returns valid intervals for all sparse vectors, and [1,1,0,0,0,0,0] matches the R MultinomialCI reference within atol=1e-6.",
+        "success_criterion": "At the buggy commit, the two new sison-glaz sparse tests FAIL (raise/error on sparse counts and R-reference mismatch). Once the c=0 fix is applied they PASS. The bug is confirmed reproduced when pytest reports these tests failing/erroring before the fix.",
+        "risks_or_ambiguities": [
+          "The two reproducing tests are introduced by the PR and DO NOT exist at the buggy commit; they must be added (or the PR test diff applied) before they can be run.",
+          "Evidence gives no exact traceback text for the buggy failure; only the generic 'Exception: Couldn't find a value for c' is cited, so the precise error message may differ at runtime.",
+          "No concrete wrong NUMERIC intervals are reported for the sparse cases (the buggy path raises rather than returning values), so only the R-reference vector [1,1,0,0,0,0,0] supplies exact numbers.",
+          "Dependency pins conflict (dev pins cython>=3.0.10,<4 and setuptools_scm~=9.0 vs extracted cython>=3.0.13 and setuptools_scm>=9.2.0); a working combination must be chosen.",
+          "Python 3.13/3.14 free-threaded and pyodide specifics may change behavior; a standard CPython build is assumed."
+        ],
+        "confidence": 0.72
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 4247,
+        "output_tokens": 2304,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.004912
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/9898",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 9898,
+      "buggy_commit": "b7c1af83f0a794d5b209dd93f921435a01768364",
+      "fixed_commit": "6d35d3b806eb69661eb44c33e862005994083796",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce GH#9675 / PR#9898: at buggy commit b7c1af83, statsmodels.stats.correlation_tools.cov_nearest has no min_diag parameter, and when the input covariance has a zero (or negative) diagonal entry cov2corr divides by std=sqrt(diag(cov)), so the result is full of nan (negative variance also emits 'RuntimeWarning: invalid value encountered in sqrt'). Reproduce by installing the documented numeric/CI dependency set, building statsmodels from source with the meson-python backend, applying the test-only hunk from PR#9898 (test_cov_nearest_min_diag, parametrized over ['clipped','nearest']) onto the buggy tree, and running the pytest selector. The test must FAIL at the buggy commit and PASS once min_diag clips diagonal entries, warns SpecificationWarning, avoids nan, keeps the result PSD and leaves the input unmodified.",
+        "input_output_examples": [
+          {
+            "input": "mat = np.array([[2.0, 0.0], [0.0, 0.0]]); cov_nearest(mat, method=method)  # method in ['clipped','nearest']",
+            "buggy_output": "[[ 2. nan]\\n [nan nan]] (cov2corr divides by std = sqrt(0) -> division by zero, nan propagates)",
+            "expected_output": "Default min_diag=None is intentionally unchanged: assert np.isnan(res_default).any() is True",
+            "source": "pr"
+          },
+          {
+            "input": "cov_nearest(np.array([[2.0, 0.0], [0.0, 0.0]]), method='clipped', min_diag=1e-8)",
+            "buggy_output": "TypeError: cov_nearest() got an unexpected keyword argument 'min_diag' (parameter absent at buggy commit); default call still gives [[ 2. nan], [nan nan]]",
+            "expected_output": "[[2.e+00 0.e+00]\\n [0.e+00 1.e-08]] with SpecificationWarning; assert not np.isnan(res).any(); assert_allclose(res, [[2.0, 0.0], [0.0, 1e-8]], atol=1e-12); eigvalsh(res).min() >= -1e-12; input unchanged",
+            "source": "test"
+          },
+          {
+            "input": "neg = np.array([[2.0, 0.0], [0.0, -1e-8]]); cov_nearest(neg, method=method, min_diag=1e-8)",
+            "buggy_output": "[[ 2. nan]\\n [nan nan]] with RuntimeWarning: invalid value encountered in sqrt (sqrt of negative diagonal)",
+            "expected_output": "No nan; assert not np.isnan(res_neg).any(); assert np.diag(res_neg).min() >= 1e-8 - 1e-20",
+            "source": "issue"
+          },
+          {
+            "input": "good = np.array([[2.0, 0.1], [0.1, 1.0]]); cov_nearest(good, method=method, min_diag=1e-8)",
+            "buggy_output": "Not applicable: no nan in this case (diagonal already above min_diag)",
+            "expected_output": "No SpecificationWarning raised (warnings.simplefilter('error', SpecificationWarning)); assert not np.isnan(res_good).any()",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "CPython (recent; CI targets 3.13/3.14 including 3.14t; 3.9 support dropped) in a clean venv.",
+          "Install numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, packaging>=21.3, formulaic>=1.1.0, matplotlib>=3.",
+          "Install build toolchain: cython>=3.0.10,<4 (resolved >=3.0.13), meson>=1.9.0, meson-python>=0.18.0, ninja, setuptools_scm>=9.2.0, jinja2.",
+          "Install test tooling: pytest>=8.4.1,<9 plus pytest-cov, pytest-xdist, pytest-run-parallel (pytest-randomly is disabled: conflicts with np.random.seed()).",
+          "Install a C compiler (meson.get_compiler('c')) and libm (cc.find_library('m')); BLAS comes via scipy.linalg.cython_blas. X-13ARIMA-SEATS binary is NOT needed for these stats tests."
+        ],
+        "build_steps": [
+          "git checkout b7c1af83f0a794d5b209dd93f921435a01768364 (already the checked-out buggy revision).",
+          "python -m pip install -r requirements.txt",
+          "python -m pip install -r requirements-dev.txt",
+          "python -m pip install . -v   # meson-python backend compiles the C/Cython extensions (meson.build enforces Cython >= 3.0.10)",
+          "python -c \"import statsmodels, statsmodels.stats.correlation_tools as ct; print(statsmodels.__version__); import inspect; print(inspect.signature(ct.cov_nearest))\"  # confirm built and that min_diag is NOT in the signature"
+        ],
+        "reproduction_steps": [
+          "Apply ONLY the test hunk of PR#9898 to the buggy tree: add test_cov_nearest_min_diag (parametrized over method in ['clipped','nearest']) to statsmodels/stats/tests/test_corrpsd.py after test_corr_psd; do not modify statsmodels/stats/correlation_tools.py.",
+          "Quick standalone numeric check of the core bug (no PR code): python -W error::RuntimeWarning -c \"import numpy as np; from statsmodels.stats.correlation_tools import cov_nearest; print(cov_nearest(np.array([[2.0,0.0],[0.0,0.0]]), method='clipped'))\" -> observes nan entries / division-by-zero.",
+          "Same with a negative diagonal: cov_nearest(np.array([[2.0,0.0],[0.0,-1e-8]]), method='clipped') -> RuntimeWarning: invalid value encountered in sqrt and [[ 2. nan], [nan nan]].",
+          "Confirm the missing parameter: inspect.signature(cov_nearest) at b7c1af83 has no min_diag; calling cov_nearest(np.array([[2.0,0.0],[0.0,0.0]]), min_diag=1e-8) raises TypeError: unexpected keyword argument 'min_diag'.",
+          "Run the parametrized test selector and capture the failure output (TypeError on the min_diag kwarg / nan assertion)."
+        ],
+        "test_command": "pytest statsmodels/stats/tests/test_corrpsd.py::test_cov_nearest_min_diag",
+        "test_selector": "statsmodels/stats/tests/test_corrpsd.py::test_cov_nearest_min_diag",
+        "expected_buggy_behavior": "test_cov_nearest_min_diag[clipped] and [nearest] FAIL at b7c1af83. The first assertion (default min_diag=None still yields nan, reproduced as [[ 2. nan], [nan nan]]) passes, but 'with pytest.warns(SpecificationWarning): cov_nearest(mat, method=method, min_diag=1e-8)' errors because cov_nearest has no min_diag parameter: TypeError: cov_nearest() got an unexpected keyword argument 'min_diag'. Separately, a negative diagonal gives RuntimeWarning: invalid value encountered in sqrt and nan.",
+        "expected_fixed_behavior": "At the fixed commit 6d35d3b8, cov_nearest(..., min_diag=1e-8) clips diagonal entries below min_diag to the floor before cov2corr, emits SpecificationWarning, returns [[2.0, 0.0], [0.0, 1e-8]] (atol=1e-12) with no nan, PSD (eigvalsh min >= -1e-12), and leaves the input unmodified; the negative-diagonal case also has no nan and diag min >= 1e-8 - 1e-20; a matrix already above the floor raises no SpecificationWarning; default min_diag=None behaviour is unchanged (nan retained).",
+        "success_criterion": "Running the selector at the buggy commit b7c1af83 produces a failing/erroring test (min_diag unsupported -> TypeError, plus nan from zero/negative diagonal), while the same selector passes at the fixed commit 6d35d3b8. The visible wrong numeric value is the nan-filled result [[ 2. nan], [nan nan]] instead of [[2.0, 0.0], [0.0, 1e-8]].",
+        "risks_or_ambiguities": [
+          "The reproducing test does NOT exist at the buggy commit (introduced by PR#9898), so the test-only hunk must be applied by hand; without it pytest cannot collect the selector.",
+          "Because min_diag is entirely absent at the buggy commit, the observed failure is a TypeError on an unexpected keyword rather than a pure assertion mismatch; the nan numeric failure must be shown via the 2-line standalone cov_nearest calls.",
+          "The test asserts three coupled things (nan-free result, SpecificationWarning, unchanged input); a failure in any one is enough to mark the bug reproduced.",
+          "Exact dependency pins come from requirements-dev.txt / meson.build with some conflicts (Cython >=3.0.10 vs >=3.0.13; setuptools_scm ~=9.0 vs >=9.2.0); the C/Cython extension build can be heavy and is needed for 'import statsmodels'.",
+          "No exact test_command beyond the selector is given in the evidence; flags such as -q or -x are not evidenced and are left out."
+        ],
+        "confidence": 0.85
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 4072,
+        "output_tokens": 3371,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.006243
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/9884",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 9884,
+      "buggy_commit": "8cd2519cfb7ddb84dc4b9d3f677cdc480e09f369",
+      "fixed_commit": "c8397561fa1f6f46887b8b0523b48d1bec3555b4",
+      "is_numerical_bug": true,
+      "bug_type": "convergence",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the numerical non-convergence bug in statsmodels.stats.power.Power.solve_power: for a one-sided test whose effect_size points into the wrong tail the root finder does not converge, yet the buggy code returns the last solver-evaluated bracket bound (e.g. array([10.])) instead of nan. Reproduce by running the PR-introduced test test_solve_power_no_solution_returns_nan on the buggy commit; it must FAIL.",
+        "input_output_examples": [
+          {
+            "input": "tt = smp.TTestPower(); tt.solve_power(effect_size=0.5, nobs=None, alpha=0.05, power=0.8, alternative=\"smaller\")",
+            "buggy_output": "array([10.]) - the last solver-evaluated bracket bound - returned as if a valid sample size, with a ConvergenceWarning",
+            "expected_output": "nan (assert np.isnan(val) is True), with ConvergenceWarning; tt.cache_fit_res[0] == 0",
+            "source": "test"
+          },
+          {
+            "input": "tt.solve_power(effect_size=-0.5, nobs=None, alpha=0.05, power=0.8, alternative=\"larger\")",
+            "buggy_output": "last value the solver evaluated (a bracket bound); exact buggy value not stated in the assertion",
+            "expected_output": "nan (assert np.isnan(val) is True), with ConvergenceWarning",
+            "source": "test"
+          },
+          {
+            "input": "tt.solve_power(effect_size=0.5, nobs=None, alpha=0.05, power=0.8, alternative=\"larger\")",
+            "buggy_output": "finite sample size (unchanged by the bug)",
+            "expected_output": "finite sample size (assert np.isfinite(val) is True)",
+            "source": "test"
+          },
+          {
+            "input": "solve_power(effect_size=0.5, nobs=None, alpha=0.05, power=0.8, alternative=\"smaller\")",
+            "buggy_output": "array([10.])",
+            "expected_output": "nan",
+            "source": "pr"
+          }
+        ],
+        "environment_setup": [
+          "Use a Python 3.13 interpreter (CI uses CIBW_BUILD=cp313-*); 3.11/3.12 should also work for this pure-Python test.",
+          "A C compiler plus Cython >=3.0.13 (meson.build pins >=3.0.10; requirements-dev.txt pins cython>=3.0.10,<4).",
+          "Install runtime deps: numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, formulaic>=1.1.0, packaging>=21.3.",
+          "Install build/test deps: meson-python>=0.18.0, meson, ninja, setuptools_scm>=9.2.0, pytest>=8.4.1,<9 (and pytest-randomly, pytest-xdist from requirements-dev.txt).",
+          "python -m pip install --upgrade pip wheel setuptools"
+        ],
+        "_truncated": true
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3481,
+        "output_tokens": 1677,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.003747
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/9852",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 9852,
+      "buggy_commit": "52314c8aa5c8cf6cc79ccba7dca38085153359f9",
+      "fixed_commit": "3a2b426804aa85bca22715e76d70e051cee1a32b",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "on the buggy commit, anova_lm(model_large, model_small) with nested models passed in reverse order yields a negative df_diff that is fed to scipy.stats.f.sf, silently returning NaN for Pr(>F) with no warning. The PR adds an explicit guard raising ValueError('Models must be passed in order of increasing complexity') plus two new tests. Reproduce by adding the two new tests from the PR diff (without the anova.py fix), building statsmodels from source, and running them: test_anova_lm_model_order_error must FAIL with DID NOT RAISE on the buggy revision.",
+        "input_output_examples": [
+          {
+            "input": "anova_lm(model_large, model_small) where model_large = ols('y ~ x1 + x2', data=df).fit(), model_small = ols('y ~ x1', data=df).fit(), df = 50 rows (np.random.seed(42); y, x1, x2 = np.random.randn(50))",
+            "buggy_output": "Silently returns a normal-looking table: df_resid 47.0/48.0, df_diff 0.0/-1.0, ss_diff NaN/-0.452654, F NaN/0.514897, Pr(>F) NaN/NaN (negative df_diff reaches scipy.stats.f.sf)",
+            "expected_output": "ValueError matching 'Models must be passed in order of increasing complexity'",
+            "source": "issue"
+          },
+          {
+            "input": "anova_lm(model_large, model_small) (test_anova_lm_model_order_error, seed 42, y/x1/x2 = np.random.randn(50))",
+            "buggy_output": "No exception: DID NOT RAISE <class 'ValueError'>; table returned with negative df_diff and NaN Pr(>F)",
+            "expected_output": "pytest.raises(ValueError, match='Models must be passed in order of increasing complexity')",
+            "source": "test"
+          },
+          {
+            "input": "anova_lm(model_small, model_large) (test_anova_lm_model_order_correct)",
+            "buggy_output": "Not NaN (this guard test already passes on the buggy commit; df_diff is positive here)",
+            "expected_output": "assert not np.isnan(result['Pr(>F)'].iloc[-1])",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Python with C compiler and Cython >=3.0.10 (pin >=3.0.13); meson.build errors if Cython <3.0.10. CI targets Python 3.13/3.14.",
+          "Build backend: meson-python >=0.18.0, meson >=1.9.0, ninja, setuptools_scm >=9.2.0, packaging >=21.3.",
+          "Runtime deps: numpy >=2.0.0, scipy >=1.13, pandas >=1.4, patsy >=0.5.6, formulaic >=1.1.0, matplotlib >=3.",
+          "Test deps: pytest >=8.4.1,<9 (requirements-dev also lists pytest-xdist, pytest-randomly, pytest-run-parallel, pytest-cov).",
+          "System: libm (-lm linked), BLAS via scipy cython_blas (ILP64/blas_int check)."
+        ],
+        "build_steps": [
+          "git checkout 52314c8aa5c8cf6cc79ccba7dca38085153359f9  # buggy revision",
+          "python -m pip install --upgrade pip wheel setuptools",
+          "python -m pip install -r requirements.txt",
+          "python -m pip install -r requirements-dev.txt",
+          "python -m pip install . -v  # meson-python backend; use editable (-e) if you prefer testing the checkout in place"
+        ],
+        "reproduction_steps": [
+          "Confirm HEAD is the buggy commit 52314c8 and that statsmodels/stats/anova.py contains no guard: grep -n 'increasing complexity' statsmodels/stats/anova.py must print nothing.",
+          "The two reproducing tests do NOT exist at the buggy commit; append them from the PR diff to statsmodels/stats/tests/test_anova.py (test_anova_lm_model_order_error and test_anova_lm_model_order_correct) and add the missing imports `import pandas as pd` and `import pytest`.",
+          "Do NOT apply the statsmodels/stats/anova.py change from the PR; only the test file is modified.",
+          "Direct observation: np.random.seed(42); df=pd.DataFrame({'y':np.random.randn(50),'x1':np.random.randn(50),'x2':np.random.randn(50)}); model_small=ols('y ~ x1',data=df).fit(); model_large=ols('y ~ x1 + x2',data=df).fit(); print(anova_lm(model_large, model_small)) .",
+          "Confirm the printed table has df_diff -1.0 for the second row and Pr(>F) NaN, with no warning or exception raised.",
+          "Run the two tests via the selector below and observe test_anova_lm_model_order_error fails with 'DID NOT RAISE <class ValueError>' while test_anova_lm_model_order_correct passes."
+        ],
+        "test_command": "pytest statsmodels/stats/tests/test_anova.py::test_anova_lm_model_order_error statsmodels/stats/tests/test_anova.py::test_anova_lm_model_order_correct",
+        "test_selector": "statsmodels/stats/tests/test_anova.py::test_anova_lm_model_order_error statsmodels/stats/tests/test_anova.py::test_anova_lm_model_order_correct",
+        "expected_buggy_behavior": "test_anova_lm_model_order_error FAILS: Failed: DID NOT RAISE <class 'ValueError'> (anova_lm accepts reverse-ordered nested models and returns df_diff -1.0 with NaN Pr(>F), no warning). test_anova_lm_model_order_correct passes.",
+        "expected_fixed_behavior": "test_anova_lm_model_order_error passes because anova_lm raises ValueError matching 'Models must be passed in order of increasing complexity' when any df_diff < 0; test_anova_lm_model_order_correct passes with a non-NaN Pr(>F) for correctly ordered models.",
+        "success_criterion": "On the buggy commit 52314c8, `pytest statsmodels/stats/tests/test_anova.py::test_anova_lm_model_order_error` fails with DID NOT RAISE ValueError and a direct anova_lm(model_large, model_small) call shows df_diff -1.0 / Pr(>F) NaN; both tests pass once the anova.py guard is applied.",
+        "risks_or_ambiguities": [
+          "The two reproducing tests are introduced by the PR and are absent at the buggy commit, so they must be copied in manually; the tests-only portion of the diff is required, not the fix.",
+          "No warning is emitted on the buggy path, so a warning-based assertion cannot be used to detect failure; the failure is the absence of ValueError (and NaN in Pr(>F)).",
+          "The exact numeric values in the issue (ss_diff -0.452654, F 0.514897) depend on the issue's dataset; the test uses seed 42 with n=50, so those digits may differ. df_diff -1.0 and NaN Pr(>F) are the structural invariants.",
+          "statsmodels requires compiling C/Cython extensions via meson-python; build can be slow or fail if the C compiler, meson>=1.9.0, ninja, or Cython>=3.0.10 are missing.",
+          "CI Python is 3.13/3.14 while local interpreters may differ; numpy>=2.0.0 is required, and old BLAS/ILP64 setups can affect build success.",
+          "Test plugins (pytest-randomly, pytest-xdist, pytest-run-parallel) may reorder/parallelize tests but cannot mask the DID NOT RAISE failure."
+        ],
+        "confidence": 0.85
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3579,
+        "output_tokens": 3887,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.006707
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/9835",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 9835,
+      "buggy_commit": "383d9707516a8613a46d58998e42985b431a33f3",
+      "fixed_commit": "8470c9c164b4811527659317c972fb5283f0bb12",
+      "is_numerical_bug": true,
+      "bug_type": "accuracy",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the VIF numerical-instability bug in statsmodels.stats.outliers_influence.variance_inflation_factor at buggy commit 383d9707 (Python). The PR adds a `standardize` keyword (rescaling the design matrix) and a poorly-conditioned warning; the buggy revision still uses the legacy 1/(1-rsquared) path, which returns inf/exploding VIF for ill-conditioned matrices containing log(x) and 1/x columns. Reproduce by checking out the buggy commit, installing the package via the meson-python backend, adding the PR's test diff (test_vif_instability is NOT present at the buggy commit), and running the selector.",
+        "input_output_examples": [
+          {
+            "input": "np.random.seed(42); n=500; x1=uniform(1000,100000,n); x2=uniform(5,50,n); exog=column_stack([ones(n), log(x1), 1.0/x2, x1, x2]); variance_inflation_factor(exog, 0, standardize=True)",
+            "buggy_output": "TypeError: unexpected keyword argument 'standardize' (kwarg absent at buggy commit); legacy path yields Inf/exploded VIF from 1/(1-r_squared)",
+            "expected_output": "vif_const == 1.0 within atol=1e-2",
+            "source": "test"
+          },
+          {
+            "input": "with warnings.catch_warnings(): simplefilter('error', UserWarning); variance_inflation_factor(exog, 1, standardize=True) on same exog",
+            "buggy_output": "UserWarning raised / Inf or exploded VIF from legacy path",
+            "expected_output": "no UserWarning; stable finite VIF",
+            "source": "test"
+          },
+          {
+            "input": "with pytest.warns(UserWarning, match='The design matrix is poorly conditioned'): vif_legacy = variance_inflation_factor(exog, 0, standardize=False)",
+            "buggy_output": "Inf or unrealistic VIF without the 'poorly conditioned' UserWarning",
+            "expected_output": "UserWarning matching 'The design matrix is poorly conditioned' and vif_legacy > 100",
+            "source": "test"
+          },
+          {
+            "input": "clean_exog = column_stack([np.ones(100), np.random.normal(0, 1, (100, 2))]); vif_true = variance_inflation_factor(clean_exog, 1, standardize=True); vif_false = variance_inflation_factor(clean_exog, 1, standardize=False)",
+            "buggy_output": "TypeError on standardize kwarg; no agreement check possible",
+            "expected_output": "assert_allclose(vif_true, vif_false, rtol=1e-7)",
+            "source": "test"
+          },
+          {
+            "input": "vif = 1./(1.-r_squared_i) for small r_squared (issue #6251)",
+            "buggy_output": "vif = inf with zero division warning",
+            "expected_output": "very large finite vif instead of Inf by using ssr / tss",
+            "source": "issue"
+          },
+          {
+            "input": "design matrix with x1_log=log(x1), x2_inv=1/x2, x3_inv etc, no true multicollinearity (issue #9791)",
+            "buggy_output": "VIF explodes to extremely high numbers (20, 40, 60, 100+)",
+            "expected_output": "VIF should not explode; low true multicollinearity should not produce extreme VIF",
+            "source": "issue"
+          },
+          {
+            "input": "variance_inflation_factor(data_arr, exog_idx) / variance_inflation_factor(data, exog_idx) on Stata auto data, 'urban' index (test_outliers_influence.py::test_reset_stata)",
+            "buggy_output": "value computed with legacy path; PR changes these call sites to pass standardize=False",
+            "expected_output": "16.4394 (assert_almost_equal, decimal=4)",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Python 3.11-3.13 (CI references 3.13/3.14); install pip, wheel, setuptools first.",
+          "pip install 'numpy>=2.0.0' 'scipy>=1.13' 'pandas>=1.4' 'patsy>=0.5.6' 'formulaic>=1.1.0' 'packaging>=21.3' 'matplotlib>=3' 'jinja2==3.0.3'.",
+          "Build deps: cython>=3.0.13 (meson.build errors below 3.0.10), setuptools_scm>=9.2.0, meson-python>=0.18.0, meson>=1.9.0, C compiler 'cc'.",
+          "Test deps: pytest>=8.4.1 (optionally pytest-randomly / pytest-xdist / pytest-cov as in CI).",
+          "No external services needed; git checkout 383d9707516a8613a46d58998e42985b431a33f3."
+        ],
+        "build_steps": [
+          "git checkout 383d9707516a8613a46d58998e42985b431a33f3",
+          "python -m pip install --upgrade pip wheel setuptools",
+          "python -m pip install -r requirements.txt && python -m pip install -r requirements-dev.txt",
+          "python -m pip install . -vv  (meson-python backend, requires meson>=1.9.0 and cython>=3.0.10)",
+          "python -c \"import statsmodels; print(statsmodels.__version__)\""
+        ],
+        "reproduction_steps": [
+          "Checkout the buggy commit and confirm the buggy code lacks the fix: grep -n 'def variance_inflation_factor' -A15 statsmodels/stats/outliers_influence.py (expect no `standardize` parameter and use of 1./(1.-r_squared_i)).",
+          "The test test_vif_instability is INTRODUCED by the PR and does not exist at the buggy commit; add the PR test hunk to statsmodels/stats/tests/test_influence.py (add `import warnings`, import variance_inflation_factor) so the selector resolves.",
+          "Also apply the test_outliers_influence.py hunk (pass standardize=False) if you want the full modified-file comparison.",
+          "Run: pytest statsmodels/stats/tests/test_influence.py::test_vif_instability -x -q",
+          "Observe failure: TypeError 'variance_inflation_factor() got an unexpected keyword argument' or, on the legacy path, inf/exploded VIF with no poorly-conditioned warning.",
+          "Optionally reproduce issue #6251 directly: build ill-conditioned exog, call variance_inflation_factor(exog, i) and see inf plus ZeroDivisionError-style RuntimeWarning.",
+          "Optionally reproduce issue #9791: vif values of 20/40/60/100+ on data with no true multicollinearity."
+        ],
+        "test_command": "pytest statsmodels/stats/tests/test_influence.py::test_vif_instability",
+        "test_selector": "statsmodels/stats/tests/test_influence.py::test_vif_instability",
+        "expected_buggy_behavior": "The new test fails at the buggy commit: variance_inflation_factor raises TypeError because the `standardize` keyword does not exist, and the legacy 1./(1.-r_squared_i) path returns inf / unrealistically large VIF (20, 40, 60, 100+) with no 'The design matrix is poorly conditioned' UserWarning for exog columns log(x1) and 1/x2. The vif_const==1.0 atol=1e-2 assertion and the vif_legacy>100 + pytest.warns checks cannot pass.",
+        "expected_fixed_behavior": "With the fix (standardize default True): variance_inflation_factor(exog, 0, standardize=True) == 1.0 within atol=1e-2; variance_inflation_factor(exog, 1, standardize=True) raises no UserWarning; standardize=False on the ill-conditioned matrix emits UserWarning 'The design matrix is poorly conditioned' and returns vif_legacy > 100; on clean_exog standardize=True and standardize=False agree within rtol=1e-7; test_reset_stata still gives 16.4394.",
+        "success_criterion": "Running `pytest statsmodels/stats/tests/test_influence.py::test_vif_instability` on the buggy commit FAILS (TypeError on the standardize kwarg, or assertion failure on Inf/exploded VIF), and would PASS once the PR fix is applied.",
+        "risks_or_ambiguities": [
+          "test_vif_instability is newly added by the PR and is NOT present at the buggy commit; the test hunk must be injected manually (cherry-pick/apply the diff) or the selector errors with 'no tests ran'.",
+          "At the buggy commit the failure mode is a TypeError for the unknown `standardize` kwarg, not a pure numerical mismatch; the numerical symptom (inf/exploded VIF from 1/(1-rsquared)) only appears via the legacy path.",
+          "Uncertain whether the PR also changes the default of `standardize` (test_outliers_influence.py had to switch to standardize=False), so the exact signature/default at the buggy revision must be confirmed by grep.",
+          "Dependency pins conflict in the evidence: Cython >=3.0.13 vs >=3.0.10,<4, setuptools_scm >=9.2.0 vs ~=9.0, jinja2==3.0.3 vs unpinned; build backend migrated to meson-python (PR #9634) so setup.py commands may not work.",
+          "Exact warning message string 'The design matrix is poorly conditioned' must match for pytest.warns(match=...); changing it breaks reproduction.",
+          "Some input_output_examples derive from issue text (20/40/60/100+, ssr/tss fix) rather than verbatim test literals - treat as illustrative of the reported values.",
+          "No single pinned Python runtime is given; the new test should be version-agnostic but numpy>=2.0 is required."
+        ],
+        "confidence": 0.72
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 4322,
+        "output_tokens": 3137,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.006044
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/9812",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 9812,
+      "buggy_commit": "0a347973915a2a28ec795cb670343c37ab3d0d92",
+      "fixed_commit": "c67d83dc9befc8927753c207e3571443b42cc749",
+      "is_numerical_bug": true,
+      "bug_type": "correctness",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Numerical correctness bug in statsmodels/tsa/ardl/model.py: UECMResults.resid (inherited from the ARDL results class) returns levels-based residuals computed against model.endog instead of the differenced dependent series model._y, so UECM residual diagnostics (Durbin-Watson, Breusch-Godfrey) are wrong (issue #9793). PR #9812 overrides resid in UECMResults as model._y - self.fittedvalues and adds test_uecm_resid. Reproduce by adding that test at the buggy commit and observing it fail.",
+        "input_output_examples": [
+          {
+            "input": "mod = UECM(dane_data.lrm, 3, dane_data[[\"lry\", \"ibo\", \"ide\"]], {\"lry\": 1, \"ibo\": 3, \"ide\": 2}); res = mod.fit(); res.resid",
+            "buggy_output": "Levels-based residuals: res.model.endog - res.fittedvalues (inherited ARDL/UECM resid), i.e. levels minus fitted differences; does not equal res.model._y - res.fittedvalues",
+            "expected_output": "res.model._y - res.fittedvalues (differenced dependent variable minus fitted values); np.testing.assert_allclose(res.resid, res.model._y - res.fittedvalues) passes",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Use CPython 3.10-3.13 (CI tests 3.13/3.14 including free-threaded 3.14t; active 3.9 testing dropped); a C compiler must be findable by meson.get_compiler('c') and libm (-lm) must be linkable.",
+          "python -m pip install --upgrade pip wheel setuptools",
+          "python -m pip install -r requirements.txt  (numpy>=2.0.0, scipy>=1.13, pandas>=1.4, patsy>=0.5.6, formulaic>=1.1.0, cython>=3.0.13, jinja2==3.0.3, packaging>=21.3, setuptools_scm>=9.2.0)",
+          "python -m pip install -r requirements-dev.txt  (pytest>=8.4.1,<9 with pytest-xdist, pytest-randomly, pytest-run-parallel, coverage[toml], matplotlib>=3, meson-python>=0.18.0, meson>=1.9.0, ninja)",
+          "python -m pip list  (record resolved versions; build errors if Cython < 3.0.10)",
+          "No external services or data downloads are needed: the dane_data fixture is bundled in the statsmodels test suite (statsmodels/tsa/ardl/tests/test_ardl.py)."
+        ],
+        "build_steps": [
+          "Ensure the working tree is at the BUGGY commit 0a347973915a2a28ec795cb670343c37ab3d0d92 (the fix is NOT applied).",
+          "Build/install the package with the meson-python backend defined in meson.build/pyproject.toml: python -m pip install . -vv  (or an editable install, e.g. python -m pip install -e . -vv --no-build-isolation, so the ardl test module is importable).",
+          "Confirm the install imports: python -c \"import statsmodels, statsmodels.tsa.ardl.model as m; print(statsmodels.__version__)\"."
+        ],
+        "reproduction_steps": [
+          "Verify the buggy state before testing: grep the UECMResults class in statsmodels/tsa/ardl/model.py (around lines ~2100) and confirm there is NO `resid` override returning self.model._y - self.fittedvalues (resid is inherited and computed against model.endog).",
+          "Confirm the reproducing test is absent at this commit: pytest statsmodels/tsa/ardl/tests/test_ardl.py::test_uecm_resid should error with 'no tests ran'/not found.",
+          "Append the PR's test to statsmodels/tsa/ardl/tests/test_ardl.py (after test_ardl_trend_ctt, at end of file):\n\ndef test_uecm_resid():\n    \"\"\"Test that UECMResults.resid is computed correctly using model._y.\"\"\"\n    mod = UECM(dane_data.lrm, 3, dane_data[[\"lry\", \"ibo\", \"ide\"]], {\"lry\": 1, \"ibo\": 3, \"ide\": 2})\n    res = mod.fit()\n    np.testing.assert_allclose(res.resid, res.model._y - res.fittedvalues)\n(dane_data and UECM are already imported at the top of that test module.)",
+          "Run the single test: pytest statsmodels/tsa/ardl/tests/test_ardl.py::test_uecm_resid",
+          "Observe the failure: np.testing.assert_allclose reports a large mismatch between res.resid (levels-based: res.model.endog - res.fittedvalues) and res.model._y - res.fittedvalues; optionally print res.resid.head() and res.model._y.head() - res.fittedvalues.head() to see the different scales.",
+          "(Sanity check, optional, do not fix) On the FIXED commit c67d83dc9befc8927753c207e3571443b42cc749 the same test passes because UECMResults.resid is overridden as a property returning self.model._y - self.fittedvalues."
+        ],
+        "test_command": "pytest statsmodels/tsa/ardl/tests/test_ardl.py::test_uecm_resid",
+        "test_selector": "statsmodels/tsa/ardl/tests/test_ardl.py::test_uecm_resid",
+        "expected_buggy_behavior": "At the buggy commit, UECMResults has no resid override, so res.resid is inherited and equals model.endog - fittedvalues (levels-based, near level magnitudes). np.testing.assert_allclose(res.resid, res.model._y - res.fittedvalues) fails with a large absolute/relative mismatch (MismatchError), and downstream UECM residual diagnostics (Durbin-Watson, Breusch-Godfrey) computed from resid are wrong.",
+        "expected_fixed_behavior": "With the fix, UECMResults.resid is overridden (as a property, not cache_readonly, so it stays correct across refits) returning self.model._y - self.fittedvalues; the test assertion np.testing.assert_allclose(res.resid, res.model._y - res.fittedvalues) passes with rtol=1e-7, atol=0, and residual-based diagnostics use the differenced-series residuals.",
+        "success_criterion": "The reproduction is confirmed when, at buggy commit 0a347973915a2a28ec795cb670343c37ab3d0d92 with the PR's test_uecm_resid added, `pytest statsmodels/tsa/ardl/tests/test_ardl.py::test_uecm_resid` FAILS (assert_allclose mismatch between res.resid and res.model._y - res.fittedvalues), and the same test passes on the fixed commit c67d83dc9befc8927753c207e3571443b42cc749.",
+        "risks_or_ambiguities": [
+          "The reproducing test test_uecm_resid is INTRODUCED by the PR; it does not exist at the buggy commit, so it must be copied verbatim from the PR diff before running (a plain checkout+run yields 'test not found', not a failure).",
+          "If model.endog and fittedvalues are misaligned in length/shape for UECM, the buggy expression may raise instead of producing a comparable array; either way the test does not pass, but the observed error type may differ from a pure assert_allclose MismatchError.",
+          "Exact numeric wrong values are not stated in the issue/PR/test evidence (only the expressions model.endog - fittedvalues vs model._y - fittedvalues), so no concrete floats are given; values depend on the bundled dane_data fixture and the fitted UECM.",
+          "Build environment specifics (meson-python backend, Cython >= 3.0.10/3.0.13, numpy>=2.0.0, pytest>=8.4.1) come from CI/requirements evidence with confidence 0.55, and the source of the fixture name 'dane_data' (module-level dataset import in test_ardl.py) was not explicitly mined.",
+          "pytest-randomly/pytest-run-parallel plugins can reorder or parallelize tests; the single-test selector is unaffected but plugin interactions are a minor risk."
+        ],
+        "confidence": 0.72
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3292,
+        "output_tokens": 3020,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.005437
+      }
+    },
+    {
+      "reference": "https://github.com/statsmodels/statsmodels/pull/9390",
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 9390,
+      "buggy_commit": "d0da572b061faf1c691b471e6ad60257b0a3ccf2",
+      "fixed_commit": "9575cf4dee76f929e8492763ce3271243052c7b4",
+      "is_numerical_bug": true,
+      "bug_type": "correctness",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Buggy commit d0da572b mis-computes UECM residuals: UECM.resid subtracts UECM fitted values (in differences) from the ARDL endogenous variable (in levels), so a fitted UECM has residuals that differ from the equivalent ARDL. The PR fixes this by overriding the resid property. Reproduce by checking out the buggy commit, installing statsmodels editable, adding the PR's test_resids_ardl_uecm (test only, not the fix), and running pytest; it must fail on this revision and pass once the fix is applied.",
+        "input_output_examples": [
+          {
+            "input": "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)",
+            "buggy_output": "uecmfit.resid = ARDL endogenous values (levels) minus UECM fitted values (differences); not equal to ardlfit.resid",
+            "expected_output": "uecmfit.resid equals ardlfit.resid; no transformation is applied to residuals when deriving the UECM from the ARDL",
+            "source": "issue"
+          },
+          {
+            "input": "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)",
+            "buggy_output": "assert_allclose raises AssertionError: uecm_res.resid is not allclose to ardl_res.resid",
+            "expected_output": "assert_allclose(uecm_res.resid, ardl_res.resid) passes",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Linux/macOS with Python 3.12 and a C toolchain (gcc/clang) capable of building Cython extensions.",
+          "python -m venv .venv && source .venv/bin/activate",
+          "pip install 'numpy>=2.0.0' 'scipy>=1.13' 'pandas>=1.4' 'patsy>=0.5.6' 'packaging>=21.3' 'setuptools>=69.0.2' 'cython>=3.0.10' 'pytest>=7.3.0' 'matplotlib>=3'"
+        ],
+        "build_steps": [
+          "git checkout d0da572b061faf1c691b471e6ad60257b0a3ccf2",
+          "python -m pip install -e .  (compiles the Cython C extensions in place)",
+          "Verify import: python -c 'import statsmodels; import statsmodels.tsa.ardl as a; print(a.UECM)'"
+        ],
+        "reproduction_steps": [
+          "Ensure the working tree is at buggy commit d0da572b (no fix applied).",
+          "Install statsmodels editable so the local source is imported: python -m pip install -e .",
+          "Add the PR's new test function test_resids_ardl_uecm to statsmodels/tsa/ardl/tests/test_ardl.py WITHOUT applying the model.py fix; the test builds ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) and a matching UECM.from_ardl(...), fits both and asserts assert_allclose(uecm_res.resid, ardl_res.resid).",
+          "Confirm dane_data is importable (statsmodels.datasets.dane) and the existing ARDL/UECM import is present in the test module.",
+          "Run: pytest -x statsmodels/tsa/ardl/tests/test_ardl.py::test_resids_ardl_uecm",
+          "Observe the AssertionError from assert_allclose showing uecm_res.resid differs from ardl_res.resid (the buggy behavior).",
+          "Optionally reproduce interactively with the issue snippet: ardl = ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}); uecm = UECM.from_ardl(ardl); np.max(np.abs(uecm.fit().resid - ardl.fit().resid)) > 0."
+        ],
+        "test_command": "pytest statsmodels/tsa/ardl/tests/test_ardl.py::test_resids_ardl_uecm",
+        "test_selector": "statsmodels/tsa/ardl/tests/test_ardl.py::test_resids_ardl_uecm",
+        "expected_buggy_behavior": "On d0da572b, test_resids_ardl_uecm FAILS: np.testing.assert_allclose(uecm_res.resid, ardl_res.resid) raises AssertionError because UECM.resid subtracts UECM fitted values (differences) from ARDL endogenous levels, so the two residual arrays disagree.",
+        "expected_fixed_behavior": "With the fix (UECM overriding resid to return the ARDL-equivalent residuals), test_resids_ardl_uecm PASSES: uecm_res.resid is allclose to ardl_res.resid.",
+        "success_criterion": "Running pytest statsmodels/tsa/ardl/tests/test_ardl.py::test_resids_ardl_uecm at buggy commit d0da572b FAILS with an assert_allclose AssertionError on uecm_res.resid vs ardl_res.resid; the same test passes at fixed commit 9575cf4d.",
+        "risks_or_ambiguities": [
+          "test_resids_ardl_uecm is INTRODUCED by the PR and does not exist at the buggy commit; its exact body must be recovered from PR #9390 and added before running (add test only, not the source fix).",
+          "The provided test diff only shows black-style reformatting of existing tests, so the verbatim new test body is not fully given; the ARDL spec from the extracted facts is used.",
+          "Evidence gives no explicit numeric residual values, only the relational assertion uecm_res.resid == ardl_res.resid, so no concrete numbers are quoted.",
+          "Build-backend ambiguity: evidence notes a migration to meson-python while setup.py/pip -e is documented; if meson-python is active, use the equivalent meson editable build/PYTHONPATH instead of pip install -e .",
+          "test_against_autoreg_predict_start_end in the selector is only reformatted by the PR and should pass on both revisions; it is not a reliable failing signal.",
+          "Python version: evidence only pins 3.12.1 in the Emscripten env, not the main test matrix version."
+        ],
+        "confidence": 0.7
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 4561,
+        "output_tokens": 3005,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.005975
+      }
+    }
+  ]
+}

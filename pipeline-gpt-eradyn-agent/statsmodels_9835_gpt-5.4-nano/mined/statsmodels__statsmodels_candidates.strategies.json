@@ -1,0 +1,105 @@
+{
+  "input": "pipeline-gpt-5.4-nano/statsmodels_9835_gpt-5.4-nano/mined/statsmodels__statsmodels_9835.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 8752,
+    "output_tokens": 3585,
+    "cost_usd": 0.006232,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 9835,
+      "reference": "https://github.com/statsmodels/statsmodels/pull/9835",
+      "buggy_commit": "383d9707516a8613a46d58998e42985b431a33f3",
+      "fixed_commit": "8470c9c164b4811527659317c972fb5283f0bb12",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 8316,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the numerical bug in statsmodels.stats.outliers_influence.variance_inflation_factor by running statsmodels\u2019 influence/vif test suite commit range with a NumPy build where floating-point roundoff can make the (1 - r_squared) denominator hit exactly zero in the legacy (standardize=False) path, then verify the added test_vif_instability and the adjusted VIF tests fail on the buggy revision (383d9707516a) and pass on the fixed revision (the PR\u2019s merged state, which clips/changes the r_sq handling).",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "pandas",
+            "scipy",
+            "statsmodels"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m venv .venv && source .venv/bin/activate",
+            "python -m pip install -U pip setuptools wheel",
+            "python -m pip install -i https://pypi.anaconda.org/scientific-python-nightly-wheels/simple statsmodels --upgrade --use-deprecated=legacy-resolver"
+          ],
+          "pinned_because": [
+            "The defect is numerically sensitive to floating-point behavior during the auxiliary regression denominator computation (1 - r_squared). The provided evidence says numpy has no documented constraint, so do not pin a version beyond ensuring consistent \u201cscientific-python-nightly-wheels\u201d binaries to match the project\u2019s era/toolchain as closely as possible.",
+            "statsmodels must be tested at the buggy commit (383d9707516a) and then at the fixed revision for PR #9835; that transition is the oracle for pass/fail."
+          ]
+        },
+        "test_command": "python -m pytest -q statsmodels/stats/tests/test_influence.py::test_vif_instability statsmodels/stats/tests/test_outliers_influence.py",
+        "reproducing_test": "test_vif_instability (statsmodels/stats/tests/test_influence.py) plus the two VIF assertions updated to call variance_inflation_factor(..., standardize=False) in test_outliers_influence.py",
+        "success_criterion": "On buggy revision 383d9707516a: test_vif_instability fails because the legacy/standardize=False VIF path emits the UserWarning \u201cThe design matrix is poorly conditioned\u201d and returns an unstable value that does NOT match the fixed behavior expectation; specifically, it may produce a ValueError/RuntimeWarning-as-error behavior when warnings are configured, and/or the standardize=True and standardize=False VIFs on the clean_exog do not satisfy assert_allclose(vif_true, vif_false, rtol=1e-7). On fixed revision (PR #9835 merged): test_vif_instability passes: (1) standardize=True happy-path gives vif_const close to 1 within atol=1e-2, (2) standardize=True does not raise a UserWarning at exog index 1 when executed under warnings-as-errors, (3) standardize=False at exog index 0 triggers the expected UserWarning and produces vif_legacy > 100, and (4) on clean_exog, standardize=True and standardize=False agree to rtol=1e-7. The companion test_outliers_influence assertions pass as well with the explicit standardize=False parameter.",
+        "numerical_probe": "The instability is driven by computing VIF as 1 / (1 - r_squared_i); under floating-point roundoff, (1 - r_squared_i) can become exactly 0 in the legacy path, causing inf and/or extreme finite VIFs. PR #9835\u2019s fix is to clip/alter r_sq handling before forming the reciprocal, avoiding exact-zero denominator artifacts.",
+        "input_output_examples": [
+          {
+            "input": "Design matrix exog = column_stack([ones(n), log(x1), 1/x2, x1, x2]) with n=500, x1~Uniform(1000,100000), x2~Uniform(5,50), seed=42; call variance_inflation_factor(exog, 1, standardize=True).",
+            "buggy_output": "May emit UserWarning (poorly conditioned) or produce unstable results depending on floating-point behavior.",
+            "expected_output": "No UserWarning (the test treats UserWarning as error)."
+          },
+          {
+            "input": "Same exog as above; call variance_inflation_factor(exog, 0, standardize=False).",
+            "buggy_output": "UserWarning about poorly conditioned design matrix and VIF value that can be extremely large (often >>100), potentially with inf/precision artifacts in some NumPy builds.",
+            "expected_output": "Raises UserWarning matching 'The design matrix is poorly conditioned' and returns vif_legacy > 100."
+          },
+          {
+            "input": "clean_exog = column_stack([ones(100), normal(0,1) of shape (100,2)]) with a fixed RNG state as in the test; compare vif_true = variance_inflation_factor(clean_exog, 1, standardize=True) vs vif_false = variance_inflation_factor(clean_exog, 1, standardize=False).",
+            "buggy_output": "vif_true and vif_false may disagree beyond rtol=1e-7 due to legacy path numerical handling.",
+            "expected_output": "assert_allclose(vif_true, vif_false, rtol=1e-7)."
+          }
+        ],
+        "risks": [
+          "Unpinned numpy: the exact manifestation (inf vs very large finite) depends on floating-point and linear algebra backend behavior; the provided evidence does not document a constrained numpy version. If the denominator (1 - r_squared) does not underflow to exactly zero on your machine/build, the buggy revision may only produce large finite values rather than inf\u2014this can still fail if the test\u2019s numerical agreement check breaks, but it may reduce the chance of reproducing the warning/inf symptom.",
+          "Platform/toolchain variance: BLAS/LAPACK implementation and CPU architecture (e.g., x86_64 vs ARM) can change conditioning and rounding, affecting the probability of the (1-r_squared) exact-zero event.",
+          "Threading/parallelism: multithreaded BLAS/LAPACK can introduce minor non-determinism in regression/R^2 computations; set OMP_NUM_THREADS=1 and MKL_NUM_THREADS=1 to improve reproducibility (not stated in the evidence; include as a mitigation).",
+          "Exact fixed revision: the evidence provides the buggy commit SHA but not the fixed commit SHA. You must checkout PR #9835 merged commit or the known fixed branch state to get the passing behavior described by the updated test. If you only install published statsmodels without matching the PR\u2019s fix, you may not observe the transition."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": null,
+          "why": "The test itself is the oracle: it checks warning behavior and numerical agreement between standardize=True and standardize=False on a clean matrix (rtol=1e-7), plus threshold/magnitude behavior and warning emission on a constructed transformed design matrix. The evidence also indicates PR #9835\u2019s intended fix is clipping r_sq before computing 1/(1-r_sq), avoiding exact-zero denominators."
+        },
+        "fails_on_buggy": "In the buggy revision, test_vif_instability fails either because (a) the legacy computation produces inf/unstable results and leads to a mismatch in vif_true vs vif_false on clean_exog beyond rtol=1e-7, or (b) warning/error handling differs (e.g., an unexpected UserWarning in the standardize=True happy path when warnings are treated as errors, or failure of the expected warning/value threshold).",
+        "passes_on_fixed": "On the PR #9835 fixed revision, test_vif_instability passes: the standardize=True happy path returns ~1, the standardize=True call at index 1 emits no UserWarning, the standardize=False call at index 0 emits the expected UserWarning and returns vif_legacy > 100, and clean_exog yields matching VIFs between standardize modes within rtol=1e-7. The companion VIF tests in test_outliers_influence.py pass with standardize=False."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3679,
+        "output_tokens": 1661,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002812
+      },
+      "miner_usage": {
+        "input_tokens": 5073,
+        "output_tokens": 1924,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.00342,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

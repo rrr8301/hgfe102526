@@ -1,0 +1,133 @@
+diff --git a/astropy/io/fits/hdu/compressed/_tiled_compression.py b/astropy/io/fits/hdu/compressed/_tiled_compression.py
+index cc6909aafbd4..4901b936e832 100644
+--- a/astropy/io/fits/hdu/compressed/_tiled_compression.py
++++ b/astropy/io/fits/hdu/compressed/_tiled_compression.py
+@@ -359,7 +359,9 @@ def decompress_image_data_section(
+     else:
+         zzero_column = None
+ 
+-    zblank_header = compressed_header.get("ZBLANK", None)
++    zblank_header = compressed_header.get(
++        "ZBLANK", compressed_header.get("BLANK", None)
++    )
+ 
+     gzip_compressed_data_column = None
+     gzip_compressed_data_dtype = None
+@@ -465,7 +467,7 @@ def decompress_image_data_section(
+             if zblank is not None:
+                 if not tile_data.flags.writeable:
+                     tile_data = tile_data.copy()
+-                tile_data[blank_mask] = np.nan
++                tile_data[blank_mask] = zblank_header if zbitpix > 0 else np.nan
+ 
+         image_data[tile_slices] = tile_data
+ 
+diff --git a/astropy/io/fits/hdu/compressed/compressed.py b/astropy/io/fits/hdu/compressed/compressed.py
+index 470e35408bc9..9df53d14422a 100644
+--- a/astropy/io/fits/hdu/compressed/compressed.py
++++ b/astropy/io/fits/hdu/compressed/compressed.py
+@@ -3,6 +3,7 @@
+ import ctypes
+ import math
+ import time
++import warnings
+ from contextlib import suppress
+ 
+ import numpy as np
+@@ -21,6 +22,7 @@
+ )
+ from astropy.utils import lazyproperty
+ from astropy.utils.decorators import deprecated_renamed_argument
++from astropy.utils.exceptions import AstropyUserWarning
+ 
+ from .header import (
+     CompImageHeader,
+@@ -362,6 +364,28 @@ def __init__(
+         self._orig_bscale = self._bscale
+         self._orig_bitpix = self._bitpix
+ 
++        if (
++            self._bitpix > 0
++            and "BLANK" not in self._header
++            and "ZBLANK" not in self._header
++        ):
++            # check for column named "ZBLANK"
++            for i in range(1, self._header["TFIELDS"] + 1):
++                if self._header[f"TTYPE{i}"] == "ZBLANK":
++                    # required BLANK keyword is missing
++                    # use most negative value as default
++                    self._header["BLANK"] = -(1 << (self._bitpix - 1))
++                    warnings.warn(
++                        f"Setting default value {self._header['BLANK']} for missing BLANK keyword in compressed extension",
++                        AstropyUserWarning,
++                    )
++                    break
++
++        if self._bitpix > 0:
++            self._blank = self._header.get("BLANK", self._header.get("ZBLANK"))
++        else:
++            self._blank = None
++
+     def _remove_unnecessary_default_extnames(self, header):
+         """Remove default EXTNAME values if they are unnecessary.
+ 
+@@ -537,15 +561,15 @@ def _update_header_data(
+             self.name = name
+ 
+     def _scale_data(self, data):
+-        if self._orig_bzero != 0 or self._orig_bscale != 1:
+-            new_dtype = self._dtype_for_bitpix()
+-            data = np.array(data, dtype=new_dtype)
+-
+-            if "BLANK" in self._header:
+-                blanks = data == np.array(self._header["BLANK"], dtype="int32")
++        if self._orig_bzero != 0 or self._orig_bscale != 1 or self._blank is not None:
++            if self._blank is not None:
++                blanks = data == np.array(self._blank, dtype=data.dtype)
+             else:
+                 blanks = None
+ 
++            new_dtype = self._dtype_for_bitpix()
++            data = np.array(data, dtype=new_dtype)
++
+             if self._orig_bscale != 1:
+                 np.multiply(data, self._orig_bscale, data)
+             if self._orig_bzero != 0:
+@@ -556,7 +580,10 @@ def _scale_data(self, data):
+                 np.add(data, self._orig_bzero, out=data, casting="unsafe")
+ 
+             if blanks is not None:
+-                data = np.where(blanks, np.nan, data)
++                # use float32 version of nan to reduce data size for uint conversion
++                # result will still be float64 for larger uint sizes (e.g., uint32)
++                # for float types np.where retains the type of the data array
++                data = np.where(blanks, np.float32(np.nan), data)
+ 
+         return data
+ 
+diff --git a/astropy/io/fits/hdu/compressed/header.py b/astropy/io/fits/hdu/compressed/header.py
+index 62cf3792d798..cbc811d67e3d 100644
+--- a/astropy/io/fits/hdu/compressed/header.py
++++ b/astropy/io/fits/hdu/compressed/header.py
+@@ -467,6 +467,14 @@ def _bintable_header_to_image_header(bintable_header):
+         del image_header["PCOUNT"]
+         del image_header["GCOUNT"]
+ 
++    # Fill in BLANK keyword if necessary
++    if (
++        image_header["BITPIX"] > 0
++        and "BLANK" not in image_header
++        and "ZBLANK" in bintable_header
++    ):
++        image_header["BLANK"] = bintable_header["ZBLANK"]
++
+     # Look to see if there are any blank cards in the table
+     # header.  If there are, there should be the same number
+     # of blank cards in the image header.  Add blank cards to
+diff --git a/docs/changes/io.fits/16550.bugfix.rst b/docs/changes/io.fits/16550.bugfix.rst
+new file mode 100644
+index 000000000000..cff2187839a4
+--- /dev/null
++++ b/docs/changes/io.fits/16550.bugfix.rst
+@@ -0,0 +1 @@
++Fix a spurious exception when reading integer compressed images with blanks.

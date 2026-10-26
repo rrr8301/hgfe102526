@@ -1,0 +1,107 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/statsmodels_10232_claude-haiku-5-5/mined/statsmodels__statsmodels_10232.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 15052,
+    "output_tokens": 8059,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10232,
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10232",
+      "buggy_commit": "e7f76fec5421daa85e697bb2afbbe1cd220fd65f",
+      "fixed_commit": "3beaeeb147df215616297de655a57f2508df19af",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6268,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce gh-9556 in statsmodels at buggy commit e7f76fec5421 by building the Cython fast_linbin extension and running the two tests the PR added. test_fast_linbin_boundary_observations is the deterministic transition: on the buggy revision fast_linbin([0,0.3,1.0],0,1,5) returns [0,0,0,0,1] and assert_allclose fails, while the fixed revision returns [1,0.8,0.2,0,1]. test_kde_fft_cut_zero is the crash-prone transition, since the out-of-bounds write may abort the pytest process with a malloc checksum error on macOS or may fail its integral check (0.8317 vs 1.0 with atol 0.01). Both should pass on the fixed revision. numpy and Cython have no documented constraint, so the versions are chosen here and flagged as era-unverified.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "Cython",
+            "scipy",
+            "pandas",
+            "patsy",
+            "pytest"
+          ],
+          "system_packages": [
+            "a C compiler (clang on macOS arm64 is the platform where the malloc checksum symptom was reported; gcc on Linux also works for the value-level failure)"
+          ],
+          "build_commands": [
+            "python -m pip install numpy Cython scipy pandas patsy pytest",
+            "python setup.py build_ext --inplace"
+          ],
+          "pinned_because": [
+            "numpy and Cython are unpinned: the evidence gives no documented constraint and no era ceiling, so the strategy uses current numpy 2.x and Cython 3.x as an era-unverified choice matching the author's report (numpy 2.5.2, Cython 3.3.0)",
+            "no other pins: the transition depends on the compiled linbin extension being rebuilt from the buggy source, not on a specific library version"
+          ]
+        },
+        "test_command": "python -m pytest statsmodels/nonparametric/tests/test_kde.py::test_fast_linbin_boundary_observations -x -p no:cacheprovider && python -m pytest statsmodels/nonparametric/tests/test_kde.py::test_kde_fft_cut_zero -x -p no:cacheprovider",
+        "reproducing_test": "test_fast_linbin_boundary_observations (deterministic value check on x=[0,0.3,1.0], a=0, b=1, M=5) and test_kde_fft_cut_zero (cut=0 FFT fit on the gh-9556 data, which may abort from heap corruption)",
+        "success_criterion": "On buggy e7f76fec5421, test_fast_linbin_boundary_observations fails at its first npt.assert_allclose because fast_linbin returns [0,0,0,0,1] instead of [1,0.8,0.2,0,1], and test_kde_fft_cut_zero either fails its integral check (about 0.8317 against 1.0) or the process aborts with 'Incorrect checksum for freed object'. On fixed revision, both tests pass: counts match the hand-computed array, the moment and sum identities hold, and the FFT density integrates to about 1.0 without a crash.",
+        "numerical_probe": "fast_linbin(np.array([0.0,0.3,1.0]),0.0,1.0,5) and its bin-count sum, compared with the hand-computed [1,0.8,0.2,0,1]",
+        "input_output_examples": [
+          {
+            "input": "x = np.array([0.0, 0.3, 1.0]); fast_linbin(x, 0.0, 1.0, 5)",
+            "buggy_output": "[0, 0, 0, 0, 1]",
+            "expected_output": "[1, 0.8, 0.2, 0, 1]"
+          },
+          {
+            "input": "x = [24.0, 43.0, 27.0, 15.0, 37.0, 8.82]; kde = KDE(x); kde.fit(fft=True, cut=0)",
+            "buggy_output": "malloc: Incorrect checksum for freed object; process aborted",
+            "expected_output": "fit runs without crashing"
+          }
+        ],
+        "risks": [
+          "The crash is heap corruption: on Linux glibc it may not abort, and on macOS it may only abort under specific malloc settings, so test_kde_fft_cut_zero may not transition deterministically. Use the value-level test as the primary signal.",
+          "If the process aborts, pytest reports a crashed run rather than a clean failure; run the boundary test in a separate invocation, as the test_command does, so its result is not lost.",
+          "To make the bug deterministic on Linux, rebuild with boundscheck=True or malloc debugging (MallocScribble/MallocGuardEdges). boundscheck=True should turn the write into an IndexError on buggy and pass on fixed; this changes the build, so record it.",
+          "The 6-element trigger depends on floating-point arithmetic (8.82 triggers, 8.8 does not), so it may not reproduce on a different platform even though the boundary test is exact.",
+          "The issue says longer inputs can also trigger the bug, so the 6-element example is not the only trigger; the boundary test does not depend on it.",
+          "The reproducing test imports fast_linbin from the compiled linbin module, so a stale build from another revision would give false results; rebuild after each checkout.",
+          "The test uses the KDE alias and default trunc of fast_linbin, which the evidence does not state; confirm these exist in the checked-out test file before running.",
+          "The 1.1e-13 agreement tolerance from the commit applies to the random-case reference check, not to the hand-computed boundary test, which uses assert_allclose defaults."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "assert_allclose default rtol=1e-7 for the boundary counts; atol=0.01 for the FFT integral",
+          "reference_source": "hand-computed counts in test_fast_linbin_boundary_observations; moment identity counts @ grid == x.sum() and sum == nobs",
+          "why": "Linear binning weights are exact rational values for these inputs, so an exact-looking array is a valid oracle; the integral tolerance is loose because the density is an FFT approximation."
+        },
+        "fails_on_buggy": "The first assert_allclose in test_fast_linbin_boundary_observations sees [0,0,0,0,1] instead of [1,0.8,0.2,0,1] because observations in bins 0 and 1 are dropped and the x=1.0 point writes past gcnts[M-1], so it fails deterministically. test_kde_fft_cut_zero sees an integral of about 0.8317 or a heap abort, so it fails.",
+        "passes_on_fixed": "The fixed fast_linbin routes li >= M-1 to gcnts[M-1] and keeps weights inside [0,M-1], so the boundary counts match the hand-computed array, the moment identity holds, and the FFT density integrates to about 1.0 without memory corruption."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5523,
+        "output_tokens": 4459,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 9529,
+        "output_tokens": 3600,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

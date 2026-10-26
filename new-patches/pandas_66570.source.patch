@@ -1,0 +1,39 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 1f4bf3b0a3c8f..95641acd41b03 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -358,6 +358,7 @@ Datetimelike
+ - Bug in :meth:`DataFrame.to_string` and :meth:`Series.to_string` where ``na_rep`` was ignored for datetime and timedelta columns, always displaying ``NaT`` (:issue:`55426`)
+ - Bug in :meth:`DatetimeArray.isin` and :meth:`TimedeltaArray.isin` where mismatched resolutions could silently truncate finer-resolution values, leading to false matches (:issue:`64545`)
+ - Bug in :meth:`DatetimeIndex.intersection` returning incorrect results when the two indexes had matching ``freq`` but did not lie on the same grid, e.g. ranges with the same business-day frequency but different time-of-day components (:issue:`44025`)
++- Bug in :meth:`DatetimeIndex.tz_localize`, :meth:`Series.dt.tz_localize`, and the :class:`Timestamp` constructor with a timezone that observes DST, where a wall time whose shift to UTC lands exactly on the ``NaT`` sentinel read out of bounds and reported a spurious "nonexistent time" ``ValueError`` instead of raising :class:`OutOfBoundsDatetime` (:issue:`66550`)
+ - Bug in :meth:`DatetimeIndex.union` and :meth:`TimedeltaIndex.union` with ``sort=False`` silently dropping values from the other index that fell after the end of ``self`` (:issue:`66322`)
+ - Bug in :meth:`Series.dt.isocalendar` with a pyarrow-backed datetime or date dtype not preserving the original index, resetting it to a default :class:`RangeIndex` (:issue:`65894`)
+ - Bug in adding a :class:`DateOffset` with a ``milliseconds`` component to a :class:`Timestamp` returning a microsecond-resolution result, inconsistent with the millisecond-resolution result of the equivalent :class:`DatetimeIndex` and :class:`Series` operations (:issue:`64806`)
+diff --git a/pandas/_libs/tslibs/tzconversion.pyx b/pandas/_libs/tslibs/tzconversion.pyx
+index b0d14ebdc1b54..87c850670bf61 100644
+--- a/pandas/_libs/tslibs/tzconversion.pyx
++++ b/pandas/_libs/tslibs/tzconversion.pyx
+@@ -620,7 +620,11 @@ cdef _get_utc_bounds(ndarray[int64_t] vals, Localizer info):
+                 isl = 0
+ 
+         delta_l = deltas[isl]
+-        if checked_sub(val, delta_l, &v_left):
++        # GH#66550 landing exactly on NPY_NAT is an underflow too: it is one
++        #  below the minimum representable value.  It also breaks
++        #  bisect_right_i8's `val >= tdata[0]` precondition (tdata[0] is
++        #  NPY_NAT+1), which would leave pos_left at -1 and read out of bounds.
++        if checked_sub(val, delta_l, &v_left) or v_left == NPY_NAT:
+             status_left = BS_UNDERFLOW if delta_l > 0 else BS_OVERFLOW
+         else:
+             status_left = BS_OK
+@@ -637,7 +641,8 @@ cdef _get_utc_bounds(ndarray[int64_t] vals, Localizer info):
+                 isr = 0
+ 
+         delta_r = deltas[isr]
+-        if checked_sub(val, delta_r, &v_right):
++        # GH#66550 same guard as for v_left above
++        if checked_sub(val, delta_r, &v_right) or v_right == NPY_NAT:
+             status_right = BS_UNDERFLOW if delta_r > 0 else BS_OVERFLOW
+         else:
+             status_right = BS_OK

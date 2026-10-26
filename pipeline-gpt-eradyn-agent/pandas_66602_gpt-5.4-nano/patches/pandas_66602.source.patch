@@ -1,0 +1,50 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 122b75e9559ea..766ae14851820 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -415,7 +415,9 @@ Datetimelike
+ - Bug in adding a :class:`DateOffset` with a ``milliseconds`` component to a :class:`Timestamp` returning a microsecond-resolution result, inconsistent with the millisecond-resolution result of the equivalent :class:`DatetimeIndex` and :class:`Series` operations (:issue:`64806`)
+ - Bug in adding a month-, quarter-, half-year-, year- or semi-month-based offset (e.g. :class:`MonthEnd`, :class:`QuarterEnd`, :class:`YearEnd`, :class:`SemiMonthEnd`) with ``n`` of magnitude ``2**31`` or more silently shifting by a wrapped number of periods, e.g. ``n=2**32`` behaving like ``n=0`` (:issue:`66549`)
+ - Bug in adding non-nano :class:`DatetimeIndex` with non-vectorized offsets (e.g. :class:`CustomBusinessDay`, :class:`CustomBusinessMonthEnd`) having a sub-unit ``offset`` parameter incorrectly truncating the result or raising ``AttributeError`` (:issue:`56586`)
++- Bug in adding or subtracting a :class:`Timedelta` and a :class:`Timestamp` where a result landing exactly on the ``NaT`` sentinel, e.g. ``Timestamp.min + Timedelta(-1, "ns")``, returned ``NaT`` instead of raising :class:`OutOfBoundsDatetime` as it already did one step further out (:issue:`66549`)
+ - Bug in adding or subtracting a ``timedelta64`` NumPy array and a timezone-naive :class:`Timestamp` where the promotion to the finer of the two resolutions, or the addition itself, silently wrapped to an unrelated date instead of raising :class:`OutOfBoundsDatetime`, unlike the timezone-aware and scalar equivalents (:issue:`66552`)
++- Bug in arithmetic on :class:`DatetimeIndex`, :class:`TimedeltaIndex`, :class:`PeriodIndex` and the corresponding :class:`Series` where a result landing exactly on the ``NaT`` sentinel came back as a missing value instead of raising ``OverflowError`` as it already did one step further out (:issue:`66549`)
+ - Bug in subtracting :class:`BusinessHour` (or :class:`CustomBusinessHour`) from a :class:`Timestamp` giving incorrect results when the subtraction would land exactly on the business-hour opening time (:issue:`33682`)
+ - Bug in subtracting two :class:`Timestamp` objects whose difference lands exactly on the ``NaT`` sentinel raising ``AssertionError``, or with ``python -O`` returning a corrupt :class:`Timedelta` for which :func:`isna` was ``False``, instead of raising :class:`OutOfBoundsDatetime` (:issue:`66552`)
+ 
+diff --git a/pandas/_libs/tslibs/np_datetime.pyx b/pandas/_libs/tslibs/np_datetime.pyx
+index 99b27825b4de1..48e4bfcd3b4b5 100644
+--- a/pandas/_libs/tslibs/np_datetime.pyx
++++ b/pandas/_libs/tslibs/np_datetime.pyx
+@@ -873,6 +873,11 @@ cpdef cnp.ndarray add_overflowsafe(cnp.ndarray left, cnp.ndarray right):
+                 res_value = NPY_DATETIME_NAT
+             else:
+                 res_value = lval + rval
++                if res_value == NPY_DATETIME_NAT:
++                    # GH#66549 int64 can hold this sum, but the value is the
++                    #  NaT sentinel, so it would be indistinguishable from a
++                    #  missing value downstream. Treat it as an overflow.
++                    raise OverflowError
+ 
+             # Analogous to: result[i] = res_value
+             (<int64_t*>cnp.PyArray_MultiIter_DATA(mi, 0))[0] = res_value
+diff --git a/pandas/_libs/tslibs/timestamps.pyx b/pandas/_libs/tslibs/timestamps.pyx
+index 0fe4304712aec..0b888d4ae95f5 100644
+--- a/pandas/_libs/tslibs/timestamps.pyx
++++ b/pandas/_libs/tslibs/timestamps.pyx
+@@ -704,6 +704,15 @@ cdef class _Timestamp(ABCTimestamp):
+ 
+             try:
+                 new_value = self._value + nanos
++                if new_value == NPY_NAT:
++                    # GH#66549 int64 can hold this sum, but the value is the
++                    #  NaT sentinel, so it is not representable as a Timestamp.
++                    #  Raise like the neighbouring sum one step further out of
++                    #  bounds does.
++                    attrname = npy_unit_to_attrname[self._creso]
++                    raise OutOfBoundsDatetime(
++                        f"Out of bounds {attrname} timestamp: {new_value}"
++                    )
+                 result = type(self)._from_value_and_reso(
+                     new_value, reso=self._creso, tz=self.tzinfo
+                 )

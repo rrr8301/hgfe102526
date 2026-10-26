@@ -1,0 +1,71 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 343b27f13af30..a00772e929fa7 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -760,6 +760,7 @@ I/O
+ - Fixed bug in :func:`read_excel` with ``engine="odf"`` where ``<table:covered-table-cell>`` elements with explicit ``office:value`` attributes were incorrectly read as missing values. (:issue:`66579`)
+ - Fixed bug in :func:`read_excel` with the ``openpyxl`` engine where reading a sheet set its ``max_row`` and ``max_column`` to ``None`` on the workbook exposed through ``ExcelFile.book`` (:issue:`63010`)
+ - Fixed bug in :func:`read_sas` where ``encoding="infer"`` raised ``LookupError: unknown encoding: infer`` instead of falling back to latin-1, for SAS7BDAT files recording an encoding pandas does not recognize and for XPORT files, which record no encoding at all (:issue:`66470`)
++- Fixed bug in :func:`read_sas` where a SAS7BDAT date column holding a fractional day count was read at midnight, dropping the time of day, and for a date before 1960 at the *following* midnight, giving the wrong date (:issue:`47339`)
+ - Fixed bug where :func:`read_html` parsed nested tables incorrectly when using ``html5lib`` or ``bs4`` flavors (:issue:`64524`)
+ - Fixed regression in :func:`read_csv` where ``sep=None`` raised ``TypeError: object of type 'NoneType' has no len()`` instead of sniffing the separator with the ``python`` engine; passing ``sep=None`` together with ``engine="c"`` or ``engine="pyarrow"``, which cannot sniff the separator, again raises an informative ``ValueError`` instead of raising ``TypeError`` or silently parsing each line as a single column (:issue:`66639`)
+ - Fixed bugs in :func:`read_csv` with ``engine="pyarrow"`` where column names were handled inconsistently with the other engines: duplicated names were not de-duplicated to ``"x.1"``-style names, empty header fields did not get ``"Unnamed: {i}"`` placeholder names, and an unnamed ``index_col`` produced an index named ``""`` instead of an unnamed index (:issue:`13017`, :issue:`35211`)
+diff --git a/pandas/io/sas/sas7bdat.py b/pandas/io/sas/sas7bdat.py
+index 1ecaf3685d459..72a56079c6c6b 100644
+--- a/pandas/io/sas/sas7bdat.py
++++ b/pandas/io/sas/sas7bdat.py
+@@ -179,13 +179,11 @@ def _sas_to_gregorian_correction(values: np.ndarray, unit: str) -> np.ndarray:
+ 
+ def _convert_datetimes(sas_datetimes: pd.Series, unit: str) -> pd.Series:
+     """
+-    Convert to Timestamp if possible, otherwise to datetime.datetime.
+-    SAS float64 lacks precision for more than ms resolution so the fit
+-    to datetime.datetime is ok.
++    Convert SAS day or second counts to a datetime64 Series.
+ 
+     Parameters
+     ----------
+-    sas_datetimes : {Series, Sequence[float]}
++    sas_datetimes : Series
+        Dates or datetimes in SAS
+     unit : {'d', 's'}
+        "d" if the floats represent dates, "s" for datetimes
+@@ -193,7 +191,7 @@ def _convert_datetimes(sas_datetimes: pd.Series, unit: str) -> pd.Series:
+     Returns
+     -------
+     Series
+-       Series of datetime64 dtype or datetime.datetime.
++       datetime64[s] for unit="d", datetime64[ms] for unit="s".
+     """
+     td = (_sas_origin - _unix_origin).as_unit("s")
+     # SAS's own date range tops out near 6e6 days, so a count this size is not
+@@ -202,7 +200,9 @@ def _convert_datetimes(sas_datetimes: pd.Series, unit: str) -> pd.Series:
+     # saturates: a negative one lands on the NaT sentinel and is read as
+     # missing, and a positive one does raise below, but naming the date the
+     # saturated cast landed on rather than anything the file holds.
+-    too_large = np.abs(sas_datetimes._values) >= 2.0**63
++    # A day count is scaled by 86400 below, so its own limit is that much lower.
++    limit = 2.0**63 / 86400 if unit == "d" else 2.0**63
++    too_large = np.abs(sas_datetimes._values) >= limit
+     if too_large.any():
+         value = sas_datetimes._values[too_large][0]
+         what = "date" if unit == "d" else "datetime"
+@@ -221,8 +221,16 @@ def _convert_datetimes(sas_datetimes: pd.Series, unit: str) -> pd.Series:
+         corrected = sas_datetimes._values + _sas_to_gregorian_correction(
+             sas_datetimes._values, unit="d"
+         )
+-        vals = np.array(corrected, dtype="M8[D]") + td
+-        return pd.Series(vals, dtype="M8[s]", index=sas_datetimes.index, copy=False)
++        # A date-formatted column is a float64 day count that SAS does not force
++        # whole, so scale the fraction in rather than truncating it with an M8[D]
++        # cast. Round to seconds here instead of scaling from "D" inside
++        # cast_from_unit_vectorized, whose rounding precision is a power of ten:
++        # 1e-4 of a day, coarser than the seconds this returns.
++        secs = cast_from_unit_vectorized(
++            np.round(corrected * 86400.0), unit="s", out_unit="s"
++        )
++        dt64s = secs.view("M8[s]") + td
++        return pd.Series(dt64s, index=sas_datetimes.index, copy=False)
+ 
+ 
+ class _Column:

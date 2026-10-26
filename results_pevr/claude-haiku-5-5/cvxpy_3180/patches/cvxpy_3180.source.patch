@@ -1,0 +1,550 @@
+diff --git a/cvxpy/atoms/affine/diag.py b/cvxpy/atoms/affine/diag.py
+index 964d17c31c..335d205dce 100644
+--- a/cvxpy/atoms/affine/diag.py
++++ b/cvxpy/atoms/affine/diag.py
+@@ -101,7 +101,7 @@ def is_symmetric(self) -> bool:
+     def is_hermitian(self) -> bool:
+         """Is the expression hermitian?
+         """
+-        return self.k == 0
++        return self.k == 0 and self.args[0].is_real()
+ 
+     def is_psd(self) -> bool:
+         """Is the expression a positive semidefinite matrix?
+diff --git a/cvxpy/atoms/affine/imag.py b/cvxpy/atoms/affine/imag.py
+index 6a6cf9c7fd..d063000074 100644
+--- a/cvxpy/atoms/affine/imag.py
++++ b/cvxpy/atoms/affine/imag.py
+@@ -49,4 +49,4 @@ def is_complex(self) -> bool:
+     def is_symmetric(self) -> bool:
+         """Is the expression symmetric?
+         """
+-        return self.args[0].is_hermitian()
++        return self.args[0].is_symmetric()
+diff --git a/cvxpy/atoms/affine/real.py b/cvxpy/atoms/affine/real.py
+index 56be860786..c8c9cac2e7 100644
+--- a/cvxpy/atoms/affine/real.py
++++ b/cvxpy/atoms/affine/real.py
+@@ -50,4 +50,4 @@ def is_complex(self) -> bool:
+     def is_symmetric(self) -> bool:
+         """Is the expression symmetric?
+         """
+-        return self.args[0].is_hermitian()
++        return self.args[0].is_symmetric() or self.args[0].is_hermitian()
+diff --git a/cvxpy/atoms/dist_ratio.py b/cvxpy/atoms/dist_ratio.py
+index a4487da940..545c350de3 100644
+--- a/cvxpy/atoms/dist_ratio.py
++++ b/cvxpy/atoms/dist_ratio.py
+@@ -81,5 +81,5 @@ def is_decr(self, idx) -> bool:
+         """
+         return False
+ 
+-    def _grad(self, values) -> None:
+-        return None
++    def _grad(self, values):
++        return [None, None, None]
+diff --git a/cvxpy/atoms/elementwise/ceil.py b/cvxpy/atoms/elementwise/ceil.py
+index 5597a3f038..e166a301cd 100644
+--- a/cvxpy/atoms/elementwise/ceil.py
++++ b/cvxpy/atoms/elementwise/ceil.py
+@@ -96,7 +96,9 @@ def _grad(self, values):
+         Returns:
+             A list of SciPy CSC sparse matrices or None.
+         """
+-        return sp.csc_array(self.args[0].shape)
++        rows = self.args[0].size
++        cols = self.size
++        return [sp.csc_array((rows, cols))]
+ 
+ 
+ class floor(Elementwise):
+@@ -172,4 +174,6 @@ def _grad(self, values):
+         Returns:
+             A list of SciPy CSC sparse matrices or None.
+         """
+-        return sp.csc_array(self.args[0].shape)
++        rows = self.args[0].size
++        cols = self.size
++        return [sp.csc_array((rows, cols))]
+diff --git a/cvxpy/atoms/eye_minus_inv.py b/cvxpy/atoms/eye_minus_inv.py
+index 78c256806b..cc65a91345 100644
+--- a/cvxpy/atoms/eye_minus_inv.py
++++ b/cvxpy/atoms/eye_minus_inv.py
+@@ -124,5 +124,5 @@ def is_decr(self, idx) -> bool:
+         """
+         return False
+ 
+-    def _grad(self, values) -> None:
+-        return None
++    def _grad(self, values):
++        return [None]
+diff --git a/cvxpy/atoms/gmatmul.py b/cvxpy/atoms/gmatmul.py
+index 69b0e50d57..bcef7f3849 100644
+--- a/cvxpy/atoms/gmatmul.py
++++ b/cvxpy/atoms/gmatmul.py
+@@ -150,5 +150,5 @@ def is_decr(self, idx) -> bool:
+         """
+         return self.A.is_nonpos()
+ 
+-    def _grad(self, values) -> None:
+-        return None
++    def _grad(self, values):
++        return [None]
+diff --git a/cvxpy/atoms/lambda_max.py b/cvxpy/atoms/lambda_max.py
+index f8772f18a3..2fed1a9667 100644
+--- a/cvxpy/atoms/lambda_max.py
++++ b/cvxpy/atoms/lambda_max.py
+@@ -100,8 +100,8 @@ def is_decr(self, idx) -> bool:
+ 
+     @property
+     def value(self):
++        if self.args[0].value is None:
++            return None
+         if not np.allclose(self.args[0].value, self.args[0].value.T.conj()):
+             raise ValueError("Input matrix was not Hermitian/symmetric.")
+-        if any([p.value is None for p in self.parameters()]):
+-            return None
+         return self._value_impl()
+diff --git a/cvxpy/atoms/lambda_sum_largest.py b/cvxpy/atoms/lambda_sum_largest.py
+index ef38a50b59..1a756b77f2 100644
+--- a/cvxpy/atoms/lambda_sum_largest.py
++++ b/cvxpy/atoms/lambda_sum_largest.py
+@@ -67,8 +67,8 @@ def _grad(self, values):
+ 
+     @property
+     def value(self):
++        if self.args[0].value is None:
++            return None
+         if not np.allclose(self.args[0].value, self.args[0].value.T.conj()):
+             raise ValueError("Input matrix was not Hermitian/symmetric.")
+-        if any([p.value is None for p in self.parameters()]):
+-            return None
+         return self._value_impl()
+diff --git a/cvxpy/atoms/length.py b/cvxpy/atoms/length.py
+index 100ea38884..bed040d754 100644
+--- a/cvxpy/atoms/length.py
++++ b/cvxpy/atoms/length.py
+@@ -35,7 +35,10 @@ def numeric(self, values) -> int:
+         """Returns the length of x.
+         """
+         outside_tol = np.abs(values[0]) > s.ATOM_EVAL_TOL
+-        return np.max(np.nonzero(outside_tol)) + 1
++        nz = np.nonzero(outside_tol)
++        if nz[0].size == 0:
++            return 0
++        return np.max(nz) + 1
+ 
+     def shape_from_args(self) -> Tuple[int, ...]:
+         """Returns the (row, col) shape of the expression.
+@@ -78,5 +81,5 @@ def is_decr(self, idx) -> bool:
+         """
+         return self.args[idx].is_nonpos()
+ 
+-    def _grad(self, values) -> None:
+-        return None
++    def _grad(self, values):
++        return [None]
+diff --git a/cvxpy/atoms/log_det.py b/cvxpy/atoms/log_det.py
+index a11543b410..c800c2ab2d 100644
+--- a/cvxpy/atoms/log_det.py
++++ b/cvxpy/atoms/log_det.py
+@@ -61,7 +61,7 @@ def shape_from_args(self) -> Tuple[int, ...]:
+     def sign_from_args(self) -> Tuple[bool, bool]:
+         """Returns sign (is positive, is negative) of the expression.
+         """
+-        return (True, False)
++        return (False, False)
+ 
+     def is_atom_convex(self) -> bool:
+         """Is the atom convex?
+@@ -111,11 +111,11 @@ def _domain(self) -> List[Constraint]:
+ 
+     @property
+     def value(self) -> float:
++        if self.args[0].value is None:
++            return None
+         if not np.allclose(self.args[0].value,
+                            self.args[0].value.T.conj(),
+                            rtol=s.ATOM_EVAL_TOL,
+                            atol=s.ATOM_EVAL_TOL):
+             raise ValueError("Input matrix was not Hermitian/symmetric.")
+-        if any([p.value is None for p in self.parameters()]):
+-            return None
+         return self._value_impl()
+diff --git a/cvxpy/atoms/one_minus_pos.py b/cvxpy/atoms/one_minus_pos.py
+index b20ae085dd..c266cbff4f 100644
+--- a/cvxpy/atoms/one_minus_pos.py
++++ b/cvxpy/atoms/one_minus_pos.py
+@@ -58,7 +58,8 @@ def numeric(self, values):
+ 
+     def _grad(self, values):
+         del values
+-        return sp.csc_array(-1.0 * self._ones)
++        rows = self.args[0].size
++        return [sp.dia_array((-np.ones(rows), [0]), shape=(rows, rows)).tocsc()]
+ 
+     def name(self) -> str:
+         return f"{self.__class__.__name__}({self.args[0]})"
+diff --git a/cvxpy/atoms/pf_eigenvalue.py b/cvxpy/atoms/pf_eigenvalue.py
+index d2e61de077..697dacb0ff 100644
+--- a/cvxpy/atoms/pf_eigenvalue.py
++++ b/cvxpy/atoms/pf_eigenvalue.py
+@@ -98,5 +98,5 @@ def is_decr(self, idx) -> bool:
+         """
+         return False
+ 
+-    def _grad(self, values) -> None:
+-        return None
++    def _grad(self, values):
++        return [None]
+diff --git a/cvxpy/atoms/pnorm.py b/cvxpy/atoms/pnorm.py
+index 6dac190947..e12d6f363e 100644
+--- a/cvxpy/atoms/pnorm.py
++++ b/cvxpy/atoms/pnorm.py
+@@ -179,12 +179,12 @@ def is_atom_concave(self) -> bool:
+     def is_atom_log_log_convex(self) -> bool:
+         """Is the atom log-log convex?
+         """
+-        return True
++        return self.p > 0
+ 
+     def is_atom_log_log_concave(self) -> bool:
+         """Is the atom log-log concave?
+         """
+-        return False
++        return self.p < 0
+ 
+     def is_incr(self, idx) -> bool:
+         """Is the composition non-decreasing in argument idx?
+diff --git a/cvxpy/atoms/sign.py b/cvxpy/atoms/sign.py
+index 51160ddc30..7dffe4ecbd 100644
+--- a/cvxpy/atoms/sign.py
++++ b/cvxpy/atoms/sign.py
+@@ -36,7 +36,7 @@ def numeric(self, values):
+     def shape_from_args(self) -> Tuple[int, ...]:
+         """Returns the (row, col) shape of the expression.
+         """
+-        return tuple()
++        return self.args[0].shape
+ 
+     def sign_from_args(self) -> Tuple[bool, bool]:
+         """Returns sign (is positive, is negative) of the expression.
+@@ -73,5 +73,5 @@ def is_decr(self, idx) -> bool:
+         """
+         return False
+ 
+-    def _grad(self, values) -> None:
+-        return None
++    def _grad(self, values):
++        return [None]
+diff --git a/cvxpy/atoms/tr_inv.py b/cvxpy/atoms/tr_inv.py
+index ba37d27f31..7dacb94081 100644
+--- a/cvxpy/atoms/tr_inv.py
++++ b/cvxpy/atoms/tr_inv.py
+@@ -115,11 +115,11 @@ def _domain(self) -> List[Constraint]:
+ 
+     @property
+     def value(self) -> float:
++        if self.args[0].value is None:
++            return None
+         if not np.allclose(self.args[0].value,
+                            self.args[0].value.T.conj(),
+                            rtol=s.ATOM_EVAL_TOL,
+                            atol=s.ATOM_EVAL_TOL):
+             raise ValueError("Input array to tr_inv was not Hermitian/symmetric.")
+-        if any([p.value is None for p in self.parameters()]):
+-            return None
+         return self._value_impl()
+diff --git a/cvxpy/constraints/finite_set.py b/cvxpy/constraints/finite_set.py
+index c672792643..caa9cd9812 100644
+--- a/cvxpy/constraints/finite_set.py
++++ b/cvxpy/constraints/finite_set.py
+@@ -128,6 +128,8 @@ def residual(self):
+         -------
+         float
+         """
++        if self.expre.value is None:
++            return None
+         expr_val = np.array(self.expre.value).flatten(order='F')
+         vec_val = self.vec.value
+         resids = [np.min(np.abs(val - vec_val)) for val in expr_val]
+diff --git a/cvxpy/constraints/power.py b/cvxpy/constraints/power.py
+index cd2f99454b..472e54f39a 100644
+--- a/cvxpy/constraints/power.py
++++ b/cvxpy/constraints/power.py
+@@ -144,9 +144,10 @@ def save_dual_value(self, value) -> None:
+     def _dual_cone(self, *args):
+         """Implements the dual cone of PowCone3D See Pg 85
+         of the MOSEK modelling cookbook for more information"""
+-        if args is None:
+-            PowCone3D(self.dual_variables[0]/self.alpha, self.dual_variables[1]/(1-self.alpha),
+-                      self.dual_variables[2], self.alpha)
++        if not args:
++            return PowCone3D(self.dual_variables[0]/self.alpha,
++                             self.dual_variables[1]/(1-self.alpha),
++                             self.dual_variables[2], self.alpha)
+         else:
+             # some assertions for verifying `args`
+             args_shapes = [arg.shape for arg in args]
+@@ -292,7 +293,7 @@ def is_dcp(self, dpp: bool = False) -> bool:
+                 args_ok = self.args[0].is_affine() and self.args[1].is_affine()
+                 exps_ok = not isinstance(self.alpha, cvxtypes.parameter())
+                 return args_ok and exps_ok
+-        return True
++        return self.args[0].is_affine() and self.args[1].is_affine()
+ 
+     def is_dgp(self, dpp: bool = False) -> bool:
+         return False
+@@ -318,7 +319,7 @@ def save_dual_value(self, value) -> None:
+     def _dual_cone(self, *args):
+         """Implements the dual cone of PowConeND See Pg 85
+         of the MOSEK modelling cookbook for more information"""
+-        if args is None or args == ():
++        if not args:
+             scaled_duals = self.dual_variables[0]/self.alpha
+             return PowConeND(scaled_duals, self.dual_variables[1], self.alpha, axis=self.axis)
+         else:
+diff --git a/cvxpy/constraints/psd.py b/cvxpy/constraints/psd.py
+index b9cfb78635..a30f2afb15 100644
+--- a/cvxpy/constraints/psd.py
++++ b/cvxpy/constraints/psd.py
+@@ -81,13 +81,13 @@ def residual(self):
+         """
+         if self.expr.value is None:
+             return None
+-        min_eig = cvxtypes.lambda_min()(self.args[0] + self.args[0].T)/2
++        min_eig = cvxtypes.lambda_min()(self.args[0] + self.args[0].H)/2
+         return cvxtypes.neg()(min_eig).value
+ 
+     def _dual_cone(self, *args):
+         """Implements the dual cone of the PSD cone See Pg 85 of the
+         MOSEK modelling cookbook for more information"""
+-        if args is None:
++        if not args:
+             return self.dual_variables[0] >> 0
+         else:
+             # some assertions for verifying `args`
+diff --git a/cvxpy/constraints/second_order.py b/cvxpy/constraints/second_order.py
+index 364553f8f2..758feee863 100644
+--- a/cvxpy/constraints/second_order.py
++++ b/cvxpy/constraints/second_order.py
+@@ -185,7 +185,7 @@ def save_dual_value(self, value) -> None:
+     def _dual_cone(self, *args):
+         """Implements the dual cone of the second-order cone
+         See Pg 85 of the MOSEK modelling cookbook for more information"""
+-        if args is None:
++        if not args:
+             return SOC(self.dual_variables[0], self.dual_variables[1], self.axis)
+         else:
+             # some assertions for verifying `args`
+diff --git a/cvxpy/problems/objective.py b/cvxpy/problems/objective.py
+index b53dd3dd1c..4b8939607b 100644
+--- a/cvxpy/problems/objective.py
++++ b/cvxpy/problems/objective.py
+@@ -217,7 +217,7 @@ def __add__(self, other):
+         if type(other) is Maximize:
+             return Maximize(self.args[0] + other.args[0])
+         else:
+-            raise Exception("Problem does not follow DCP rules.")
++            raise DCPError("Problem does not follow DCP rules.")
+ 
+     def canonicalize(self):
+         """Negates the target expression's objective.
+diff --git a/cvxpy/reductions/canonicalization.py b/cvxpy/reductions/canonicalization.py
+index 44f198403f..7040286015 100644
+--- a/cvxpy/reductions/canonicalization.py
++++ b/cvxpy/reductions/canonicalization.py
+@@ -76,9 +76,12 @@ def apply(self, problem):
+     def invert(self, solution, inverse_data):
+         pvars = {vid: solution.primal_vars[vid] for vid in inverse_data.id_map
+                  if vid in solution.primal_vars}
+-        dvars = {orig_id: solution.dual_vars[vid]
+-                 for orig_id, vid in inverse_data.cons_id_map.items()
+-                 if vid in solution.dual_vars}
++        if solution.dual_vars is not None:
++            dvars = {orig_id: solution.dual_vars[vid]
++                     for orig_id, vid in inverse_data.cons_id_map.items()
++                     if vid in solution.dual_vars}
++        else:
++            dvars = None
+ 
+         return Solution(solution.status, solution.opt_val, pvars, dvars,
+                         solution.attr)
+diff --git a/cvxpy/reductions/complex2real/canonicalizers/matrix_canon.py b/cvxpy/reductions/complex2real/canonicalizers/matrix_canon.py
+index 3ffc21e478..fd37515501 100644
+--- a/cvxpy/reductions/complex2real/canonicalizers/matrix_canon.py
++++ b/cvxpy/reductions/complex2real/canonicalizers/matrix_canon.py
+@@ -137,7 +137,7 @@ def quantum_rel_entr_canon(expr: quantum_rel_entr,
+     """
+     no_imag = all(ia is None for ia in imag_args)
+     if no_imag:
+-        return expr.copy(real_args)
++        return expr.copy(real_args), None
+     assert all(ra is not None for ra in real_args)
+     expanded_X = expand_complex(real_args[0], imag_args[0])
+     expanded_Y = expand_complex(real_args[1], imag_args[1])
+diff --git a/cvxpy/reductions/complex2real/complex2real.py b/cvxpy/reductions/complex2real/complex2real.py
+index 68343f3373..bb7b0d5358 100644
+--- a/cvxpy/reductions/complex2real/complex2real.py
++++ b/cvxpy/reductions/complex2real/complex2real.py
+@@ -61,8 +61,8 @@ def __init__(self) -> None:
+         # Set in apply() to enable DPP for complex parameters.
+         self.canon_methods = None
+ 
+-    def accepts(self, problem) -> None:
+-        accepts(problem)
++    def accepts(self, problem) -> bool:
++        return accepts(problem)
+ 
+     def update_parameters(self, problem) -> None:
+         """Update real/imag parameter values from complex parameters.
+diff --git a/cvxpy/reductions/cone2cone/affine2direct.py b/cvxpy/reductions/cone2cone/affine2direct.py
+index f8c8169e32..152e63b06c 100644
+--- a/cvxpy/reductions/cone2cone/affine2direct.py
++++ b/cvxpy/reductions/cone2cone/affine2direct.py
+@@ -427,5 +427,6 @@ def invert(solution, inv_data):
+             x = prim_vars[FREE]
+             del prim_vars[FREE]
+             prim_vars[inv_data['x_id']] = x
+-        solution.opt_val += inv_data[s.OBJ_OFFSET]
++        if solution.opt_val is not None:
++            solution.opt_val += inv_data[s.OBJ_OFFSET]
+         return solution
+diff --git a/cvxpy/reductions/cone2cone/exact.py b/cvxpy/reductions/cone2cone/exact.py
+index 4fced8321b..fd5bcc3c57 100644
+--- a/cvxpy/reductions/cone2cone/exact.py
++++ b/cvxpy/reductions/cone2cone/exact.py
+@@ -444,9 +444,12 @@ def apply(self, problem):
+     def invert(self, solution, inverse_data):
+         pvars = {vid: solution.primal_vars[vid] for vid in inverse_data.id_map
+                  if vid in solution.primal_vars}
+-        dvars = {orig_id: solution.dual_vars[vid]
+-                 for orig_id, vid in inverse_data.cons_id_map.items()
+-                 if vid in solution.dual_vars}
++        if solution.dual_vars is not None:
++            dvars = {orig_id: solution.dual_vars[vid]
++                     for orig_id, vid in inverse_data.cons_id_map.items()
++                     if vid in solution.dual_vars}
++        else:
++            dvars = None
+ 
+         if not dvars:
+             return Solution(solution.status, solution.opt_val, pvars, dvars,
+diff --git a/cvxpy/reductions/cvx_attr2constr.py b/cvxpy/reductions/cvx_attr2constr.py
+index 281cf5a538..3e688ecdb0 100644
+--- a/cvxpy/reductions/cvx_attr2constr.py
++++ b/cvxpy/reductions/cvx_attr2constr.py
+@@ -299,8 +299,11 @@ def invert(self, solution, inverse_data) -> Solution:
+                 pvars[id] = recover_value_for_leaf(
+                     var, solution.primal_vars[new_var.id])
+ 
+-        dvars = {orig_id: solution.dual_vars[vid]
+-                 for orig_id, vid in cons_id_map.items()
+-                 if vid in solution.dual_vars}
++        if solution.dual_vars is not None:
++            dvars = {orig_id: solution.dual_vars[vid]
++                     for orig_id, vid in cons_id_map.items()
++                     if vid in solution.dual_vars}
++        else:
++            dvars = None
+         return Solution(solution.status, solution.opt_val, pvars, dvars,
+                         solution.attr)
+diff --git a/cvxpy/reductions/dcp2cone/canonicalizers/von_neumann_entr_canon.py b/cvxpy/reductions/dcp2cone/canonicalizers/von_neumann_entr_canon.py
+index dd8f250eae..24c1e4fa2e 100644
+--- a/cvxpy/reductions/dcp2cone/canonicalizers/von_neumann_entr_canon.py
++++ b/cvxpy/reductions/dcp2cone/canonicalizers/von_neumann_entr_canon.py
+@@ -42,10 +42,6 @@ def von_neumann_entr_canon(expr, args, solver_context: SolverInfo | None = None)
+         con = NonNeg(sum(x[:r]) - epi)
+         constrs.append(con)
+ 
+-    # trace(N) \leq sum(x)
+-    con = trace(N) == sum(x)
+-    constrs.append(con)
+-
+     # trace(N) == sum(x)
+     con = Zero(trace(N) - sum(x))
+     constrs.append(con)
+diff --git a/cvxpy/reductions/dgp2dcp/dgp2dcp.py b/cvxpy/reductions/dgp2dcp/dgp2dcp.py
+index 928a36b807..e4b86bb109 100644
+--- a/cvxpy/reductions/dgp2dcp/dgp2dcp.py
++++ b/cvxpy/reductions/dgp2dcp/dgp2dcp.py
+@@ -15,7 +15,6 @@
+ """
+ import numpy as np
+ 
+-from cvxpy import settings
+ from cvxpy.expressions.expression import Expression
+ from cvxpy.reductions.canonicalization import Canonicalization
+ from cvxpy.reductions.dgp2dcp.canonicalizers import DgpCanonMethods
+@@ -153,7 +152,7 @@ def canonicalize_expr(
+ 
+     def invert(self, solution, inverse_data):
+         solution = super(Dgp2Dcp, self).invert(solution, inverse_data)
+-        if solution.status == settings.SOLVER_ERROR:
++        if solution.opt_val is None:
+             return solution
+         for vid, value in solution.primal_vars.items():
+             solution.primal_vars[vid] = np.exp(value)
+diff --git a/cvxpy/reductions/dqcp2dcp/inverse.py b/cvxpy/reductions/dqcp2dcp/inverse.py
+index c29c40e8c6..91b0511a7b 100644
+--- a/cvxpy/reductions/dqcp2dcp/inverse.py
++++ b/cvxpy/reductions/dqcp2dcp/inverse.py
+@@ -49,7 +49,9 @@ def inverse(expr):
+         def power_inv(t):
+             if expr.p.value == 1:
+                 return t
+-            return atoms.power(t, 1/expr.p.value) if t.is_nonneg() else np.inf
++            if t.is_nonneg():
++                return atoms.power(t, 1/expr.p.value)
++            return -np.inf if expr.p.value > 0 else np.inf
+         return power_inv
+     elif type(expr) == atoms.multiply:
+         if expr.args[0].is_constant():
+diff --git a/cvxpy/reductions/dqcp2dcp/sets.py b/cvxpy/reductions/dqcp2dcp/sets.py
+index 85b1e97f19..4a090ecb30 100644
+--- a/cvxpy/reductions/dqcp2dcp/sets.py
++++ b/cvxpy/reductions/dqcp2dcp/sets.py
+@@ -37,7 +37,7 @@ def sublevel_set():
+         if t.value > 1:
+             return False
+         tsq = t.value**2
+-        return ((1-tsq**2)*atoms.sum_squares(x) -
++        return ((1-tsq)*atoms.sum_squares(x) -
+                 atoms.matmul(2*(a-tsq*b), x) + atoms.sum_squares(a) -
+                 tsq*atoms.sum_squares(b)) <= 0
+     return [sublevel_set]
+diff --git a/cvxpy/reductions/solvers/bisection.py b/cvxpy/reductions/solvers/bisection.py
+index 261bebf305..22e9d73813 100644
+--- a/cvxpy/reductions/solvers/bisection.py
++++ b/cvxpy/reductions/solvers/bisection.py
+@@ -63,7 +63,7 @@ def _find_bisection_interval(problem, t, solver=None, low=None, high=None,
+             _solve(lowered, solver)
+             if _infeasible(lowered):
+                 low = high
+-                high *= 2
++                high = high * 2 if high != 0 else 1
+                 continue
+             elif lowered.status in s.SOLUTION_PRESENT:
+                 feasible_high = True
+@@ -79,7 +79,7 @@ def _find_bisection_interval(problem, t, solver=None, low=None, high=None,
+                 infeasible_low = True
+             elif lowered.status in s.SOLUTION_PRESENT:
+                 high = low
+-                low *= 2
++                low = low * 2 if low != 0 else -1
+                 continue
+             else:
+                 raise error.SolverError(
+diff --git a/cvxpy/reductions/solvers/qp_solvers/knitro_qpif.py b/cvxpy/reductions/solvers/qp_solvers/knitro_qpif.py
+index c1dc4780d4..758527723e 100644
+--- a/cvxpy/reductions/solvers/qp_solvers/knitro_qpif.py
++++ b/cvxpy/reductions/solvers/qp_solvers/knitro_qpif.py
+@@ -175,7 +175,7 @@ def invert(self, results, inverse_data):
+                 x = np.array(x_kn)
+                 primal_vars = {KNITRO.VAR_ID: x}
+                 dual_vars = None
+-                is_mip = bool(inverse_data.get("is_mip", False))
++                is_mip = bool(inverse_data.get(self.IS_MIP, False))
+                 if y_kn is not None and not is_mip:
+                     # Build dual vars dict keyed by constraint IDs
+                     # Knitro returns duals for [eq_constrs; ineq_constrs]

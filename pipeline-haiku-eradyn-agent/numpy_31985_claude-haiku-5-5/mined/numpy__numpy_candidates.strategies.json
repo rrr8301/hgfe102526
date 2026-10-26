@@ -1,0 +1,114 @@
+{
+  "input": "pipeline-haiku-eradyn-agent/numpy_31985_claude-haiku-5-5/mined/numpy__numpy_31985.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-24",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 14724,
+    "output_tokens": 5642,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "numpy/numpy",
+      "pr_number": 31985,
+      "reference": "https://github.com/numpy/numpy/pull/31985",
+      "buggy_commit": "279da819df8cfdfd568ffde0166d6950f6e40ce4",
+      "fixed_commit": "d7621257b8fbf27f56f0488aa928d9c3e230d4a6",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6150,
+      "withheld": [],
+      "strategy": {
+        "summary": "Build NumPy from source at the buggy commit 279da819df8c and run the two regression tests added by PR 31985. On the buggy revision the nditer test and the unravel_index round-trip test should fail; on the fixed revision (the PR's parent-plus-patch) both should pass. The defect is in npyiter_allocate_transfer_functions (nditer_constr.c), where a size-one inner axis with zero stride combined with HASMULTIINDEX and buffering gets the wrong op_stride, so the environment must be a from-source build, not a released wheel.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "pytest",
+            "hypothesis",
+            "cython",
+            "meson-python",
+            "ninja",
+            "spin",
+            "numpy-build-requirements-from-repo"
+          ],
+          "system_packages": [
+            "git",
+            "a C compiler (gcc or clang)",
+            "ninja"
+          ],
+          "build_commands": [
+            "git clone https://github.com/numpy/numpy.git numpy-src && cd numpy-src && git checkout 279da819df8c && git submodule update --init",
+            "python -m pip install -r requirements/build_requirements.txt",
+            "python -m pip install -r requirements/test_requirements.txt",
+            "python -m pip install --no-build-isolation -e . -Csetup-args=-Dbuildtype=debug",
+            "python -c \"import numpy; print(numpy.__version__, numpy.__file__)\""
+          ],
+          "pinned_because": [
+            "numpy: era-inferred ceiling of 2.3 from issue#31980 (2.3.4 reported affected; 2.2.6 last good; 2.3.0 first bad). This is not a documented constraint. The reproduction builds numpy from the buggy source, so the released-version ceiling is only a cross-check and the source commit is what is actually pinned.",
+            "pytest: unbounded, no documented constraint and no era entry. Chosen: latest pytest available from the repo's test requirements, because the test files use plain asserts and pytest-level behaviour does not affect the transition.",
+            "hypothesis: unbounded, no documented constraint and no era entry. Chosen: version from the repo's test requirements file; the new tests do not use hypothesis, so it is not numerically relevant."
+          ]
+        },
+        "test_command": "python -m pytest numpy/_core/tests/test_nditer.py::test_iter_remove_multi_index_buffered numpy/lib/tests/test_index_tricks.py -k \"test_iter_remove_multi_index_buffered or test_unravel_index_buffer_boundary\" -q",
+        "reproducing_test": "numpy/lib/tests/test_index_tricks.py::test_unravel_index_buffer_boundary (class TestUnravelIndex, per the diff's placement after test_regression_size_1_index) and numpy/_core/tests/test_nditer.py::test_iter_remove_multi_index_buffered",
+        "success_criterion": "On the buggy revision 279da819df8c, test_unravel_index_buffer_boundary fails: np.ravel_multi_index(np.unravel_index(indices, (100,100)), (100,100)) differs from indices at one element (position 8193), so assert_array_equal raises AssertionError. test_iter_remove_multi_index_buffered also fails or errors on the buggy revision because the concatenated buffered chunks do not match a.ravel(). On the fixed revision (buggy commit plus the PR 31985 patch in nditer_constr.c setting op_stride to NPY_MAX_INTP when HASMULTIINDEX and NAD_SHAPE==1 and op_stride==0), both tests pass. The transition is the success criterion; no printed values are checked.",
+        "numerical_probe": "python -c \"import numpy as np; a=np.arange(10000,dtype=np.intp)[:,None]; c=np.unravel_index(a,(100,100)); r=np.ravel_multi_index(c,(100,100)); print(int((r.ravel()!=a.ravel()).sum()))\"",
+        "input_output_examples": [
+          {
+            "input": "indices_1d = np.arange(10_000, dtype=np.intp); indices_2d = indices_1d[:, None]; flat index 8193 on the 2-D view",
+            "buggy_output": "(8, 192)",
+            "expected_output": "(8, 193)"
+          },
+          {
+            "input": "2-D input shape (8194, 1), int64, strides (8, 8), C-contiguous; flat index 8193",
+            "buggy_output": "2-D round-tripped value: 8192",
+            "expected_output": "8193"
+          }
+        ],
+        "risks": [
+          "Platform: the only confirmed failure is on ARM Mac (reviewer). On x86-64 Linux the bug may not reproduce, in which case the buggy revision will pass the test and the transition will not occur. If the failure is platform-gated, run on an ARM64 machine and record the platform in the result.",
+          "Toolchain: the defect depends on the compiled nditer code path, so a debug or release build with different optimisation may change buffer behaviour. Build with the default release flags first; if the bug does not appear, try a debug build (-Dbuildtype=debug). Sanitisers are not stated in the evidence and should not be assumed.",
+          "Test selection: the environment's test_commands entry (python -c numpy.test()) runs the whole suite and does not select the regression tests; it is not used here. Using pytest -k selects the two tests directly.",
+          "The nditer test uses buffersize=5 and the unravel test uses size 10000 with a boundary near 8192; the buffer-boundary behaviour may only trigger in the unravel test, so both should be run and checked separately.",
+          "numpy version: the reproducer reports 2.3.4, but the strategy builds from the buggy commit. If a released 2.3.4 wheel is used instead of the source build, the reproduction does not match the buggy commit and should not be used for the transition.",
+          "Exact equality of integer coordinates is the oracle; there is no tolerance, so a passing run means exact match.",
+          "Whether test_unravel_index_buffer_boundary sits in class TestUnravelIndex is inferred from the diff placement, not stated; use -k selection rather than a full node id if the class name differs.",
+          "Hypothesis and pytest versions are unconstrained by the evidence; a different version of either should not change the transition, but this is not verified."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "np.arange(10000) round-tripped through unravel_index and ravel_multi_index (the test's own reference), and the 1-D result",
+          "why": "The values are integer coordinates, so any mismatch is a bug; the test asserts exact equality via assert_array_equal."
+        },
+        "fails_on_buggy": "On 279da819df8c, the 2-D round trip returns 8192 at position 8193 where 8193 is expected. assert_array_equal reports one mismatched element out of 10000 (AssertionError: Arrays are not equal), which fails the test because the buggy op_stride for the size-one zero-stride axis causes the buffered iterator to produce the wrong coordinate.",
+        "passes_on_fixed": "On the fixed revision (buggy commit plus PR 31985 patch), op_stride is set to NPY_MAX_INTP for HASMULTIINDEX with NAD_SHAPE==1 and zero stride, so the coordinate at 8193 is (8,193), the round trip is exact, and both tests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5091,
+        "output_tokens": 3320,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 9633,
+        "output_tokens": 2322,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

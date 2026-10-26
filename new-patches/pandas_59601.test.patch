@@ -1,0 +1,161 @@
+diff --git a/pandas/tests/groupby/aggregate/test_aggregate.py b/pandas/tests/groupby/aggregate/test_aggregate.py
+index 4f6c27bd327cb..ae7a840937163 100644
+--- a/pandas/tests/groupby/aggregate/test_aggregate.py
++++ b/pandas/tests/groupby/aggregate/test_aggregate.py
+@@ -10,6 +10,7 @@
+ import pytest
+ 
+ from pandas.errors import SpecificationError
++import pandas.util._test_decorators as td
+ 
+ from pandas.core.dtypes.common import is_integer_dtype
+ 
+@@ -23,6 +24,7 @@
+     to_datetime,
+ )
+ import pandas._testing as tm
++from pandas.arrays import ArrowExtensionArray
+ from pandas.core.groupby.grouper import Grouping
+ 
+ 
+@@ -1809,6 +1811,102 @@ def test_groupby_aggregation_func_list_multi_index_duplicate_columns():
+     tm.assert_frame_equal(result, expected)
+ 
+ 
++@td.skip_if_no("pyarrow")
++@pytest.mark.parametrize(
++    "input_dtype, output_dtype",
++    [
++        # With NumPy arrays, the results from the UDF would be e.g. np.float32 scalars
++        # which we can therefore preserve. However with PyArrow arrays, the results are
++        # Python scalars so we have no information about size or uint vs int.
++        ("float[pyarrow]", "double[pyarrow]"),
++        ("int64[pyarrow]", "int64[pyarrow]"),
++        ("uint64[pyarrow]", "int64[pyarrow]"),
++        ("bool[pyarrow]", "bool[pyarrow]"),
++    ],
++)
++def test_agg_lambda_pyarrow_dtype_conversion(input_dtype, output_dtype):
++    # GH#59601
++    # Test PyArrow dtype conversion back to PyArrow dtype
++    df = DataFrame(
++        {
++            "A": ["c1", "c2", "c3", "c1", "c2", "c3"],
++            "B": pd.array([100, 200, 255, 0, 199, 40392], dtype=input_dtype),
++        }
++    )
++    gb = df.groupby("A")
++    result = gb.agg(lambda x: x.min())
++
++    expected = DataFrame(
++        {"B": pd.array([0, 199, 255], dtype=output_dtype)},
++        index=Index(["c1", "c2", "c3"], name="A"),
++    )
++    tm.assert_frame_equal(result, expected)
++
++
++@td.skip_if_no("pyarrow")
++def test_agg_lambda_complex128_dtype_conversion():
++    # GH#59601
++    df = DataFrame(
++        {"A": ["c1", "c2", "c3"], "B": pd.array([100, 200, 255], "int64[pyarrow]")}
++    )
++    gb = df.groupby("A")
++    result = gb.agg(lambda x: complex(x.sum(), x.count()))
++
++    expected = DataFrame(
++        {
++            "B": pd.array(
++                [complex(100, 1), complex(200, 1), complex(255, 1)], dtype="complex128"
++            ),
++        },
++        index=Index(["c1", "c2", "c3"], name="A"),
++    )
++    tm.assert_frame_equal(result, expected)
++
++
++@td.skip_if_no("pyarrow")
++def test_agg_lambda_numpy_uint64_to_pyarrow_dtype_conversion():
++    # GH#59601
++    df = DataFrame(
++        {
++            "A": ["c1", "c2", "c3"],
++            "B": pd.array([100, 200, 255], dtype="uint64[pyarrow]"),
++        }
++    )
++    gb = df.groupby("A")
++    result = gb.agg(lambda x: np.uint64(x.sum()))
++
++    expected = DataFrame(
++        {
++            "B": pd.array([100, 200, 255], dtype="uint64[pyarrow]"),
++        },
++        index=Index(["c1", "c2", "c3"], name="A"),
++    )
++    tm.assert_frame_equal(result, expected)
++
++
++@td.skip_if_no("pyarrow")
++def test_agg_lambda_pyarrow_struct_to_object_dtype_conversion():
++    # GH#59601
++    import pyarrow as pa
++
++    df = DataFrame(
++        {
++            "A": ["c1", "c2", "c3"],
++            "B": pd.array([100, 200, 255], dtype="int64[pyarrow]"),
++        }
++    )
++    gb = df.groupby("A")
++    result = gb.agg(lambda x: {"number": 1})
++
++    arr = pa.array([{"number": 1}, {"number": 1}, {"number": 1}])
++    expected = DataFrame(
++        {"B": ArrowExtensionArray(arr)},
++        index=Index(["c1", "c2", "c3"], name="A"),
++    )
++
++    tm.assert_frame_equal(result, expected)
++
++
+ def test_groupby_aggregate_empty_builtin_sum():
+     df = DataFrame(columns=["Group", "Data"])
+     result = df.groupby(["Group"], as_index=False)["Data"].agg("sum")
+diff --git a/pandas/tests/groupby/test_groupby.py b/pandas/tests/groupby/test_groupby.py
+index 4b1f23c1f755e..4955b1fe0da54 100644
+--- a/pandas/tests/groupby/test_groupby.py
++++ b/pandas/tests/groupby/test_groupby.py
+@@ -2434,25 +2434,28 @@ def test_rolling_wrong_param_min_period():
+ 
+ def test_by_column_values_with_same_starting_value(any_string_dtype):
+     # GH29635
++    dtype = any_string_dtype
+     df = DataFrame(
+         {
+             "Name": ["Thomas", "Thomas", "Thomas John"],
+             "Credit": [1200, 1300, 900],
+-            "Mood": Series(["sad", "happy", "happy"], dtype=any_string_dtype),
++            "Mood": Series(["sad", "happy", "happy"], dtype=dtype),
+         }
+     )
+     aggregate_details = {"Mood": Series.mode, "Credit": "sum"}
+ 
+     result = df.groupby(["Name"]).agg(aggregate_details)
+-    expected_result = DataFrame(
++    expected = DataFrame(
+         {
+             "Mood": [["happy", "sad"], "happy"],
+             "Credit": [2500, 900],
+             "Name": ["Thomas", "Thomas John"],
+-        }
++        },
+     ).set_index("Name")
+-
+-    tm.assert_frame_equal(result, expected_result)
++    if getattr(dtype, "storage", None) == "pyarrow":
++        mood_values = pd.array(["happy", "sad"], dtype=dtype)
++        expected["Mood"] = [mood_values, "happy"]
++    tm.assert_frame_equal(result, expected)
+ 
+ 
+ def test_groupby_none_in_first_mi_level():

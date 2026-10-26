@@ -1,0 +1,393 @@
+{
+  "repo": "jax-ml/jax",
+  "pr_number": 25038,
+  "reference": "https://github.com/jax-ml/jax/pull/25038",
+  "buggy_commit": "e707edeafaf1c9d71b2b172596c95299474d04a0",
+  "fixed_commit": "96c012990de86ccb0eb815a11ae4e2c337802794",
+  "pr_date": "",
+  "category": "accuracy",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python (JAX)",
+    "language_version": "3.12",
+    "dependencies": [
+      {
+        "name": "jax",
+        "constraint": null,
+        "documented": false,
+        "numerically_relevant": true,
+        "source": "Only stack trace paths show jax is used: /workspaces/options/venv/lib/python3.12/site-packages/jax/..."
+      },
+      {
+        "name": "jaxlib",
+        "constraint": null,
+        "documented": false,
+        "numerically_relevant": true,
+        "source": "Not explicitly stated in passages (but implied by JAX stack trace under site-packages/jax)."
+      },
+      {
+        "name": "jax.scipy.stats.gamma",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "PR body and diff refer to jax.scipy.stats.gamma.logpdf implementation."
+      },
+      {
+        "name": "NumPy",
+        "constraint": null,
+        "documented": false,
+        "numerically_relevant": true,
+        "source": "README references NumPy dtype semantics and JAX built on NumPy-style computation, but no version constraint provided."
+      }
+    ],
+    "installation_commands": [],
+    "build_commands": [],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: jax \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: jaxlib \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: jax.scipy.stats.gamma \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: NumPy \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "jax",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "Only stack trace paths show jax is used: /workspaces/options/venv/lib/python3.12/site-packages/jax/..."
+      },
+      {
+        "package": "jaxlib",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "Not explicitly stated in passages (but implied by JAX stack trace under site-packages/jax)."
+      },
+      {
+        "package": "jax.scipy.stats.gamma",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "PR body and diff refer to jax.scipy.stats.gamma.logpdf implementation."
+      },
+      {
+        "package": "NumPy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "README references NumPy dtype semantics and JAX built on NumPy-style computation, but no version constraint provided."
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "accuracy",
+    "affected_api": "jax._src.scipy.stats.gamma.logpdf",
+    "observed_behavior": "When running with `jax.config.update(\"jax_debug_nans\", True)`, `jax.scipy.stats.gamma.pdf`/`logpdf` can trigger a `FloatingPointError: invalid value (nan) encountered in jit(log)`, even though the invalid inputs are supposed to be handled by returning `-inf` (not NaNs).",
+    "expected_behavior": "For invalid inputs (specifically cases where `x < loc`), the implementation should return `-inf` and not produce internal NaNs so that debug-nan checks do not raise an error.",
+    "manifestation": "exception",
+    "trigger_conditions": [
+      "`jax.config.update(\"jax_debug_nans\", True)` (debug NaNs mode enabled)",
+      "Execution of `mle_loss` that calls `jax.vmap(jax.scipy.stats.gamma.pdf)(target, k, theta)`",
+      "Inputs where the gamma logpdf invalid-input handling path is exercised (the implementation mentions `x < loc`), leading to the prior implementation incorrectly triggering NaN checks",
+      "JIT execution where the error is reported as `invalid value (nan) encountered in jit(log)`"
+    ],
+    "input_output_examples": [
+      {
+        "input": "jax.config.update(\"jax_debug_nans\", True); data = jnp.array([[[1.0, 0.7096346, 0.7514472]],[[1.0, 0.7194072, 0.735364]],[[1.0, 0.7475644, 0.7523259]],[[1.0, 0.7042354, 0.7264852]],[[1.0, 0.47818542, 1.3681346]],[[1.0, 0.6943242, 0.7313199]],[[1.0, 0.687601, 0.81750506]],[[1.0, 0.72067565, 0.7784166]]]); target = jnp.array([1.0, 1.0004145, 0.99964607, 1.0004367, 1.000424, 0.99967706, 1.0009085, 1.000621]); calling mle_loss(data, target)",
+        "buggy_output": "Raises `FloatingPointError: invalid value (nan) encountered in jit(log)`",
+        "expected_output": "No `FloatingPointError`; invalid-input handling should result in `-inf` rather than internal NaNs being produced",
+        "value_kind": "exception",
+        "source": "issue#24939 reproduction code and traceback; PR/commit text explains invalid-input handling should return `-inf` and should not produce internal NaNs"
+      }
+    ],
+    "oracle_clues": [
+      "The prior behavior is described as a \"false positive\" `debug_nans` error: even though `jax.scipy.stats.gamma.logpdf` handles invalid inputs (e.g. `x < loc`) by returning `-inf`, the existing implementation incorrectly triggers the NaN checks.",
+      "The fix changes the computation to avoid producing internal NaNs by using `ok = lax.ge(x, loc)` and returning `-jnp.inf` when `ok` is false: `return jnp.where(ok, log_probs, -jnp.inf)`.",
+      "The thrown error message explicitly states: `FloatingPointError: invalid value (nan) encountered in jit(log)`."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": null,
+    "precision": null,
+    "magnitude": null,
+    "tolerance": null,
+    "category_specific_evidence": [
+      "Repro/observed failure: with `jax.config.update(\"jax_debug_nans\", True)` the call `probs = jax.vmap(jax.scipy.stats.gamma.pdf)(target, k, theta)` leads (later during `loss = -jax.lax.log(prob).mean()`) to `FloatingPointError: invalid value (nan) encountered in jit(log)`.",
+      "Numerical-condition described: the implementation should handle invalid inputs (specifically cases where `x < loc`) by returning `-inf` rather than producing internal NaNs; the existing implementation incorrectly triggers debug NaNs checks.",
+      "PR description: even though `jax.scipy.stats.gamma.logpdf` handles invalid inputs (e.g. `x < loc`) by returning `-inf`, the existing implementation incorrectly triggers NaN checks introduced by JAX debug NaNs mode; the change updates the implementation to no longer produce internal NaNs.",
+      "Fix detail in `jax/_src/scipy/stats/gamma.py`: compute `ok = lax.ge(x, loc)`; compute `y = jnp.where(ok, lax.div(lax.sub(x, loc), scale), one)`; and return `jnp.where(ok, log_probs, -jnp.inf)` instead of returning `jnp.where(lax.lt(x, loc), -jnp.inf, log_probs)`.",
+      "Test evidence added: `testGammaDebugNans` runs `with jax.debug_nans(True):` and asserts `osp_stats.gamma.pdf(0.0, 1.0, 1.0)` matches `lsp_stats.gamma.pdf(0.0, 1.0, 1.0)` via `self.assertAllClose(...)` (no explicit tolerance parameters shown).",
+      "In the issue reproduction snippet, the invalid-input handling is mentioned as involving `x < loc` in the PR/commit text; the same error is thrown as a debug-NaNs `FloatingPointError` rather than a numerical mismatch. (NaN-check trigger is governed by `jax.debug_nans` and `np.any(np.isnan(...))` in `_check_special`.)"
+    ],
+    "reproduction_risks": [
+      "Passages provide no dtype-specific or precision-specific behavior; dtype/precision fields must remain null.",
+      "Passages provide no explicit magnitude regime boundaries (only the logical invalid-input condition `x < loc` is mentioned).",
+      "Passages provide no explicit accuracy tolerance/ULP separation criteria for when correct vs incorrect results diverge; `FloatingPointError` is the observed failure mode under debug NaNs, not a numeric value comparison."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python (JAX)",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.language_version",
+      "value": "3.12",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "jax",
+      "source": "Only stack trace paths show jax is used: /workspaces/options/venv/lib/python3.12/site-packages/jax/...",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "jaxlib",
+      "source": "Not explicitly stated in passages (but implied by JAX stack trace under site-packages/jax).",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "jax.scipy.stats.gamma",
+      "source": "PR body and diff refer to jax.scipy.stats.gamma.logpdf implementation.",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "NumPy",
+      "source": "README references NumPy dtype semantics and JAX built on NumPy-style computation, but no version constraint provided.",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "jax._src.scipy.stats.gamma.logpdf",
+      "source": "issue",
+      "evidence_location": "issue:issue#24939"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "When running with `jax.config.update(\"jax_debug_nans\", True)`, `jax.scipy.stats.gamma.pdf`/`logpdf` can trigger a `FloatingPointError: invalid value (nan) encountered in jit(log)`, even though the invalid inputs are supposed to be handled by returning `-inf` (not NaNs).",
+      "source": "issue",
+      "evidence_location": "issue:issue#24939"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "For invalid inputs (specifically cases where `x < loc`), the implementation should return `-inf` and not produce internal NaNs so that debug-nan checks do not raise an error.",
+      "source": "issue",
+      "evidence_location": "issue:issue#24939"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "exception",
+      "source": "issue",
+      "evidence_location": "issue:issue#24939"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 4,
+      "source": "issue",
+      "evidence_location": "issue:issue#24939"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 3,
+      "source": "issue",
+      "evidence_location": "issue:issue#24939"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 1,
+      "source": "issue",
+      "evidence_location": "issue:issue#24939"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 5,
+      "source": "issue",
+      "evidence_location": "issue:issue#24939"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 4,
+      "source": "issue",
+      "evidence_location": "issue:issue#24939"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 6,
+      "source": "issue",
+      "evidence_location": "issue:issue#24939"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "issue",
+      "evidence_location": "issue:issue#24939"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "readme:README.md",
+        "issue:issue#24939",
+        "pr_body:PR#25038",
+        "commit:commits",
+        "diff:jax/_src/scipy/stats/gamma.py:51-63",
+        "readme:README.md",
+        "readme:README.md"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "issue:issue#24939",
+        "issue:issue#24939",
+        "pr_body:PR#25038",
+        "commit:commits",
+        "diff:jax/_src/scipy/stats/gamma.py:51-63",
+        "issue:issue#24939",
+        "issue:issue#24939",
+        "issue:issue#24939"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "issue:issue#24939",
+        "issue:issue#24939",
+        "test_diff:tests/scipy_stats_test.py:543-555",
+        "pr_body:PR#25038",
+        "commit:commits",
+        "diff:jax/_src/scipy/stats/gamma.py:51-63",
+        "issue:issue#24939",
+        "issue:issue#24939"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "accuracy",
+        "checked": 5,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          },
+          {
+            "path": "environment.numerical_backend",
+            "why": "BLAS/LAPACK choice changes results for linear algebra instances"
+          }
+        ],
+        "present": [
+          "environment.dependencies",
+          "environment.language_version"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "accuracy",
+        "checked": 10,
+        "score": 0.714,
+        "required_total": 7,
+        "required_present": 5,
+        "required_missing": [
+          {
+            "path": "numerical_characteristics.dtype",
+            "why": "the defect appears for one dtype and not another"
+          },
+          {
+            "path": "numerical_characteristics.tolerance",
+            "why": "a 1-ULP defect is invisible at a default tolerance"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "numerical_characteristics.magnitude",
+            "why": "the regime where the discrepancy appears"
+          }
+        ],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "budget": {
+      "max_calls": 1,
+      "max_rung": "widened",
+      "spent": 1,
+      "log": [
+        {
+          "rung": "targeted",
+          "note": "characteristics: The first pass left these REQUIRED fields empty. Search the ",
+          "input_tokens": 4350,
+          "output_tokens": 562,
+          "cost_usd": 0.001573
+        }
+      ]
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 12353,
+    "output_tokens": 2136,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.005141,
+    "llm_calls": 4
+  },
+  "errors": {},
+  "expansions": [
+    {
+      "rung": "targeted",
+      "question": "characteristics",
+      "error": "",
+      "n_passages": 8,
+      "fields_added": [
+        "category_specific_evidence",
+        "confidence",
+        "dtype",
+        "magnitude",
+        "precision",
+        "reproduction_risks",
+        "tolerance"
+      ]
+    }
+  ]
+}

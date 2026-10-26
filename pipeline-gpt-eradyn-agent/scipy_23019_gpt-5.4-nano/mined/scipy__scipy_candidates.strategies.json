@@ -1,0 +1,109 @@
+{
+  "input": "pipeline-gpt-5.4-nano/scipy_23019_gpt-5.4-nano/mined/scipy__scipy_23019.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-22",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 10930,
+    "output_tokens": 3249,
+    "cost_usd": 0.006248,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 23019,
+      "reference": "https://github.com/scipy/scipy/pull/23019",
+      "buggy_commit": "01fd29031eff45a6527adce1782bc53e0df37a2c",
+      "fixed_commit": "9930630d65ad7167b02f10f750da91a5708ce844",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 7757,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce SciPy correctness bug where Akima1DInterpolator initialization can overflow internally and then fail with ValueError(\"`dydx` must contain only finite values.\") even when per-interval slopes are finite; ensure the project test `test_no_overflow` fails on the buggy revision and passes on the fixed one by matching the exact SciPy commit environment and running only the relevant interpolator test module.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "numpy==<install matching SciPy constraints; choose latest compatible with SciPy build and Python 3.12>",
+            "pytest==<use a recent pytest compatible with Python 3.12>"
+          ],
+          "system_packages": [
+            "python3-dev",
+            "gcc",
+            "g++",
+            "gfortran",
+            "libopenblas-dev (or equivalent BLAS/LAPACK provider)",
+            "pkg-config"
+          ],
+          "build_commands": [
+            "python -m venv venv",
+            "source venv/bin/activate",
+            "pip install -U pip wheel setuptools",
+            "pip install numpy pytest",
+            "git clone https://github.com/scipy/scipy.git",
+            "cd scipy",
+            "git checkout 01fd29031eff",
+            "python -m pip install -e . --no-build-isolation",
+            "# keep venv and reinstall after switching commits for fixed run",
+            "git checkout <fixed commit SHA for PR #23019>",
+            "python -m pip install -e . --no-build-isolation"
+          ],
+          "pinned_because": [
+            "The bug is in SciPy interpolate internals; it must be exercised from the specific buggy commit `01fd29031eff` and then from the fixed commit from PR #23019 so that the overflow-prone numerator form in `_cubic.py` (lines ~539-540) is present/absent accordingly.",
+            "Python 3.12 is required by the provided environment; NumPy must be installed in a way compatible with SciPy on that Python version so the overflow behavior matches."
+          ]
+        },
+        "test_command": "source venv/bin/activate && python -m pytest -q scipy/interpolate/tests/test_interpolate.py -k test_no_overflow",
+        "reproducing_test": "scipy/interpolate/tests/test_interpolate.py::test_no_overflow (the project-added regression test in the provided diff)",
+        "success_criterion": "On buggy revision `01fd29031eff`, running the above `test_command` results in a failing assertion (typically by raising an exception during `Akima1DInterpolator(... method='akima')` initialization or producing non-finite values so `np.isfinite(...).all()` fails). On the fixed revision (the commit that includes PR #23019 fix), the same test completes without exceptions and both `ak1(x)` and `ak2(x)` produce finite outputs for the provided `x`/`y` inputs.",
+        "numerical_probe": "Implicit in `test_no_overflow`: it probes overflow via finiteness of `y_eval1 = ak1(x)` and `y_eval2 = ak2(x)` for `x = np.arange(1, 10)` and `y = 1.e6*np.sqrt(np.finfo(float).max)*np.heaviside(x-4, 0.5)`; the bug manifests as overflow in internal slope/breakpoint computation (per issue trace: multiplying f1[ind]*m[...] and f2[ind]*m[...] before division by f12[ind]), leading to non-finite results or a ValueError about non-finite `dydx`.",
+        "input_output_examples": [
+          {
+            "input": "x = np.arange(1, 10)\ny = 1.e6*np.sqrt(np.finfo(float).max)*np.heaviside(x-4, 0.5)\nAkima1DInterpolator(x, y, method='makima')\nAkima1DInterpolator(x, y, method='akima')",
+            "buggy_output": "Test fails: either initialization of the `method='akima'` interpolator raises ValueError(\"`dydx` must contain only finite values.\") after RuntimeWarnings about overflow, or `ak1(x)`/`ak2(x)` contain non-finite values so the `np.isfinite(...).all()` assertions fail.",
+            "expected_output": "Test passes: `ak1(x)` and `ak2(x)` evaluate to arrays where all entries are finite (no overflow-driven exception or non-finite results)."
+          }
+        ],
+        "risks": [
+          "You must identify and check out the exact fixed commit for PR #23019; without that, you cannot guarantee the transition from failing to passing.",
+          "This is a floating-point overflow/cancellation issue; although the repro uses float64, the exact overflow behavior can depend on the compiled backend (BLAS/LAPACK only affects other parts, but SciPy\u2019s interpolate code path and compiler flags matter). Use the default SciPy build (no aggressive `-ffast-math`) to avoid changing floating-point semantics.",
+          "If the test uses `np.finfo(float).max` (float32 max on some platforms) instead of float64, or if NumPy\u2019s `float` mapping differs, the magnitude may change; ensure NumPy behaves as expected on your platform (standard CPython/NumPy float is float64).",
+          "The manifest bug described in the issue trace is specifically for `method='akima'`; `method='makima'` should be robust, so failures are expected primarily on the `ak2 = Akima1DInterpolator(..., method='akima')` path.",
+          "If you cannot compile SciPy from source, the exact code (and thus the overflow fix/bug) may not be present; building from the specified commits is required for a reliable failing/passing transition."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": "Project regression test added in the provided diff; it treats the correct behavior as finiteness and absence of exceptions for this input rather than numerical agreement to a reference implementation.",
+          "why": "The task\u2019s provided test does not check numeric values beyond `np.isfinite(...).all()`, and the bug is manifested as overflow/non-finite results or an exception."
+        },
+        "fails_on_buggy": "`test_no_overflow` fails on `01fd29031eff` (at minimum for `method='akima'`): either `Akima1DInterpolator(x, y, method='akima')` raises ValueError(\"`dydx` must contain only finite values.\") after overflow RuntimeWarnings, or the returned `y_eval2` contains non-finite entries causing `assert np.isfinite(y_eval2).all()` to fail.",
+        "passes_on_fixed": "On the fixed revision from PR #23019, `test_no_overflow` passes: both interpolators (`makima` and `akima`) initialize and evaluate so that `np.isfinite(y_eval1).all()` and `np.isfinite(y_eval2).all()` are True."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3029,
+        "output_tokens": 1420,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002381
+      },
+      "miner_usage": {
+        "input_tokens": 7901,
+        "output_tokens": 1829,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.003867,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

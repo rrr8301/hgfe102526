@@ -1,0 +1,370 @@
+{
+  "repo": "numba/numba",
+  "pr_number": 10649,
+  "reference": "https://github.com/numba/numba/pull/10649",
+  "buggy_commit": "c50e90decabe8522a9c78039a917ea778bde1a03",
+  "fixed_commit": "befa51f92d2b5c1521641783bd31cfae2e31f254",
+  "pr_date": "",
+  "category": "accuracy",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "numba",
+        "constraint": null,
+        "documented": false,
+        "numerically_relevant": true,
+        "source": "Reproducer imports `numba` and uses `@numba.jit` to compute `a.mean()`."
+      },
+      {
+        "name": "numpy",
+        "constraint": null,
+        "documented": false,
+        "numerically_relevant": true,
+        "source": "Reproducer imports `numpy as np` and constructs `np.zeros(n, dtype=np.float32)` and uses `a.mean()`."
+      }
+    ],
+    "installation_commands": [],
+    "build_commands": [],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: numba \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: numpy \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "numba",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "Reproducer imports `numba` and uses `@numba.jit` to compute `a.mean()`."
+      },
+      {
+        "package": "numpy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "Reproducer imports `numpy as np` and constructs `np.zeros(n, dtype=np.float32)` and uses `a.mean()`."
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "accuracy",
+    "affected_api": "numba.np.arraymath.array_mean_impl",
+    "observed_behavior": "For float32 (and complex64) arrays with more than ~2**24 elements, the mean is computed using a divisor cast to the result dtype (e.g., float32), so the divisor is rounded (e.g., 2**24+1 becomes float32(2**24+1)=2**24). This produces a slightly larger mean than NumPy.",
+    "expected_behavior": "Numba should divide by the exact element count (in full precision) and then cast/round once to the result dtype, matching NumPy bit-for-bit (mirroring NumPy's ret.dtype.type(ret / rcount). For float32 input, float32 in/float32 out remains unchanged.",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "Input array dtype is float32 (and similarly complex64)",
+      "Array size n is larger than 2**24 (specifically n = 2**24 + 1 in the reproducer)",
+      "Computation path uses array_mean_impl that previously returned c / dtype.type(a.size) (casting element count to the result dtype before dividing)"
+    ],
+    "input_output_examples": [
+      {
+        "input": "n = 2**24 + 1; a = np.zeros(n, dtype=np.float32); a[0] = np.float32(2**24 - 1); nb_mean(a) where nb_mean is a numba.jit function returning a.mean()",
+        "buggy_output": "0.9999999403953552",
+        "expected_output": "0.9999998807907104",
+        "value_kind": "float",
+        "source": "issue:issue#10647"
+      },
+      {
+        "input": "nb_mean(a) and a.mean() for the same a described above",
+        "buggy_output": "nb_mean(a): 0.9999999403953552",
+        "expected_output": "a.mean(): 0.9999998807907104",
+        "value_kind": "float",
+        "source": "issue:issue#10647"
+      }
+    ],
+    "oracle_clues": [
+      "The issue explains that for float32, dtype.type(a.size) rounds counts above 2**24 because float32(2**24+1) is 2**24.",
+      "Cause described: Numba divides by 2**24, computing (2**24 - 1) / 2**24 = 0.99999994, while NumPy divides by the true count 2**24 + 1 and gets the correctly-rounded float32 result 0.99999988.",
+      "The fix changes the final step from `c / dtype.type(a.size)` to `dtype.type(c / a.size)` (divide in full precision by the true integer count, then round once to the result dtype)."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": "float32 (also complex64 mentioned)",
+    "precision": null,
+    "magnitude": "n = 2**24 + 1 elements (integers above 2**24 are not all exactly representable in float32; divisor rounding starts for more than ~16.7M elements)",
+    "tolerance": null,
+    "category_specific_evidence": [
+      "PR#10649: `array_mean` previously computed `c / dtype.type(a.size)`, casting the element count to the result dtype before dividing; for `float32` (and `complex64`) arrays, integers above `2**24` are not all exactly representable in `float32`.",
+      "PR#10649: changed final step to `dtype.type(c / a.size)`: divide by the exact integer count (promoted to double precision), then round once to the result dtype; mirrors NumPy's `ret.dtype.type(ret / rcount)`.",
+      "PR#10649 / issue#10647: result dtype remains unchanged (`float32` in, `float32` out).",
+      "issue#10647 minimal reproducer uses `n = 2**24 + 1`, with `a = np.zeros(n, dtype=np.float32)` and `a[0] = np.float32(2**24 - 1)`.",
+      "issue#10647 outputs: `nb_mean(a): 0.9999999403953552` vs `a.mean(): 0.9999998807907104`.",
+      "issue#10647 cause: `float32(2**24 + 1)` is `2**24`, so Numba divides by `2**24` and computes `(2**24 - 1) / 2**24 = 0.99999994`, while NumPy divides by the true count `2**24 + 1` and gets the correctly-rounded `float32` result.",
+      "test_diff/test_array_reductions.py: `test_mean_count_rounding` sets `n = 2**24 + 1` and iterates `dtype in (np.float32, np.complex64)`, sets `arr[0] = dtype(2**24 - 1)`, runs `run_comparative(array_mean, arr)`, and asserts `self.assertPreciseEqual(npr, nbr)`.",
+      "diff/arraymath.py: `return c / dtype.type(a.size)` changed to `return dtype.type(c / a.size)`.",
+      "docs/upcoming_changes/10649.bug_fix.rst: describes integer/boolean element-count casting narrowing the divisor and slightly incorrect results; division now performed in full precision and only final mean is cast, matching NumPy's result (no tolerance specified)."
+    ],
+    "reproduction_risks": [
+      "The discrepancy depends on dtype and magnitude regime: evidence only specifies `np.float32` (and also `np.complex64`) and array sizes around/above `2**24` (the reproducer uses `n = 2**24 + 1`).",
+      "The reproducer must use the problematic element-count construction: `2**24 + 1` because `float32(2**24 + 1) == 2**24` in the buggy behavior.",
+      "The available tests validate using `assertPreciseEqual`, so using a different (tolerance-based) oracle could change whether the bug is detected.",
+      "Evidence does not state any tolerance or \u201c1-ULP at default tolerance\u201d behavior; leaving tolerance unspecified may affect how an external reproduction judges pass/fail."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "issue",
+      "evidence_location": "issue:issue#10647"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "numba",
+      "source": "Reproducer imports `numba` and uses `@numba.jit` to compute `a.mean()`.",
+      "evidence_location": "issue:issue#10647"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "numpy",
+      "source": "Reproducer imports `numpy as np` and constructs `np.zeros(n, dtype=np.float32)` and uses `a.mean()`.",
+      "evidence_location": "issue:issue#10647"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "numba.np.arraymath.array_mean_impl",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "For float32 (and complex64) arrays with more than ~2**24 elements, the mean is computed using a divisor cast to the result dtype (e.g., float32), so the divisor is rounded (e.g., 2**24+1 becomes float32(2**24+1)=2**24). This produces a slightly larger mean than NumPy.",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "Numba should divide by the exact element count (in full precision) and then cast/round once to the result dtype, matching NumPy bit-for-bit (mirroring NumPy's ret.dtype.type(ret / rcount). For float32 input, float32 in/float32 out remains unchanged.",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 3,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 3,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 2,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_characteristics.dtype",
+      "value": "float32 (also complex64 mentioned)",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "n = 2**24 + 1 elements (smallest length not exactly representable as float32); threshold 2**24 = 16,777,216 (integers above 2**24 not all exactly representable in float32)",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 8,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_characteristics.dtype",
+      "value": "float32 (also complex64 mentioned)",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "n = 2**24 + 1 elements (integers above 2**24 are not all exactly representable in float32; divisor rounding starts for more than ~16.7M elements)",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 9,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 4,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#10649"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "issue:issue#10647",
+        "readme:README.rst",
+        "pr_body:PR#10649",
+        "readme:README.rst",
+        "diff:docs/upcoming_changes/10649.bug_fix.rst:1-7",
+        "commit:commits",
+        "issue:issue#10647",
+        "readme:README.rst"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "pr_body:PR#10649",
+        "issue:issue#10647",
+        "issue:issue#10647",
+        "diff:docs/upcoming_changes/10649.bug_fix.rst:1-7",
+        "commit:commits",
+        "diff:numba/np/arraymath.py:482-488"
+      ],
+      "n_passages": 6
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "pr_body:PR#10649",
+        "issue:issue#10647",
+        "test_diff:numba/tests/test_array_reductions.py:517-533",
+        "diff:docs/upcoming_changes/10649.bug_fix.rst:1-7",
+        "issue:issue#10647",
+        "commit:commits",
+        "diff:numba/np/arraymath.py:482-488"
+      ],
+      "n_passages": 7
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "accuracy",
+        "checked": 5,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          },
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          },
+          {
+            "path": "environment.numerical_backend",
+            "why": "BLAS/LAPACK choice changes results for linear algebra instances"
+          }
+        ],
+        "present": [
+          "environment.dependencies"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "accuracy",
+        "checked": 10,
+        "score": 0.857,
+        "required_total": 7,
+        "required_present": 6,
+        "required_missing": [
+          {
+            "path": "numerical_characteristics.tolerance",
+            "why": "a 1-ULP defect is invisible at a default tolerance"
+          }
+        ],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.dtype",
+          "numerical_characteristics.magnitude",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "budget": {
+      "max_calls": 1,
+      "max_rung": "widened",
+      "spent": 1,
+      "log": [
+        {
+          "rung": "targeted",
+          "note": "characteristics: The first pass left these REQUIRED fields empty. Search the ",
+          "input_tokens": 3123,
+          "output_tokens": 733,
+          "cost_usd": 0.001541
+        }
+      ]
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 8244,
+    "output_tokens": 2222,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.0044269999999999995,
+    "llm_calls": 4
+  },
+  "errors": {},
+  "expansions": [
+    {
+      "rung": "targeted",
+      "question": "characteristics",
+      "error": "",
+      "n_passages": 7,
+      "fields_added": [
+        "category_specific_evidence",
+        "confidence",
+        "dtype",
+        "magnitude",
+        "precision",
+        "reproduction_risks",
+        "tolerance"
+      ]
+    }
+  ]
+}

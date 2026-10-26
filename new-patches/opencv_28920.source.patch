@@ -1,0 +1,48 @@
+diff --git a/modules/dnn/src/graph_fusion_qdq.cpp b/modules/dnn/src/graph_fusion_qdq.cpp
+index 4ac53fdefa8f..7ef3da81134e 100644
+--- a/modules/dnn/src/graph_fusion_qdq.cpp
++++ b/modules/dnn/src/graph_fusion_qdq.cpp
+@@ -486,7 +486,16 @@ struct ModelFusionQDQ
+                                         symmetric_pads = false;
+                                 }
+ 
+-                                if (all_wzp_zero && symmetric_pads) {
++                                // Conv2Int8's VNNI kernel processes K0=8 output channels per
++                                // SIMD iteration. When ngroups>1 and Kg<K0, multiple groups map
++                                // to the same K0-wide output slot and clobber one another, so
++                                // skip the fusion and fall back to the unfused float path.
++                                // See https://github.com/opencv/opencv/issues/28798
++                                const int outChannelsPerGroup = outCn / std::max(conv->ngroups, 1);
++                                const bool kernelSupportsGrouping =
++                                    conv->ngroups <= 1 || outChannelsPerGroup >= 8;
++
++                                if (all_wzp_zero && symmetric_pads && kernelSupportsGrouping) {
+                                     Mat bias = Mat::zeros(1, outCn, CV_32S);
+                                     bool biasOk = true;
+                                     int dq_bias_idx = -1;
+diff --git a/samples/dnn/face_detect.cpp b/samples/dnn/face_detect.cpp
+index 1f9e6a0ae098..b8c3b622e62b 100644
+--- a/samples/dnn/face_detect.cpp
++++ b/samples/dnn/face_detect.cpp
+@@ -46,7 +46,7 @@ int main(int argc, char** argv)
+         "{scale sc          | 1.0        | Scale factor used to resize input video frames}"
+         "{fd_model fd       | face_detection_yunet_2023mar.onnx| Path to the model. Download yunet.onnx in https://github.com/opencv/opencv_zoo/tree/master/models/face_detection_yunet}"
+         "{fr_model fr       | face_recognition_sface_2021dec.onnx | Path to the face recognition model. Download the model at https://github.com/opencv/opencv_zoo/tree/master/models/face_recognition_sface}"
+-        "{score_threshold   | 0.9        | Filter out faces of score < score_threshold}"
++        "{score_threshold   | 0.85       | Filter out faces of score < score_threshold}"
+         "{nms_threshold     | 0.3        | Suppress bounding boxes of iou >= nms_threshold}"
+         "{top_k             | 5000       | Keep top_k bounding boxes before NMS}"
+         "{save s            | false      | Set true to save results. This flag is invalid when using camera}"
+diff --git a/samples/dnn/face_detect.py b/samples/dnn/face_detect.py
+index f07c5f3be171..95012fdbba39 100644
+--- a/samples/dnn/face_detect.py
++++ b/samples/dnn/face_detect.py
+@@ -18,7 +18,7 @@ def str2bool(v):
+ parser.add_argument('--scale', '-sc', type=float, default=1.0, help='Scale factor used to resize input video frames.')
+ parser.add_argument('--face_detection_model', '-fd', type=str, default='face_detection_yunet_2023mar.onnx', help='Path to the face detection model. Download the model at https://github.com/opencv/opencv_zoo/tree/master/models/face_detection_yunet')
+ parser.add_argument('--face_recognition_model', '-fr', type=str, default='face_recognition_sface_2021dec.onnx', help='Path to the face recognition model. Download the model at https://github.com/opencv/opencv_zoo/tree/master/models/face_recognition_sface')
+-parser.add_argument('--score_threshold', type=float, default=0.9, help='Filtering out faces of score < score_threshold.')
++parser.add_argument('--score_threshold', type=float, default=0.85, help='Filtering out faces of score < score_threshold.')
+ parser.add_argument('--nms_threshold', type=float, default=0.3, help='Suppress bounding boxes of iou >= nms_threshold.')
+ parser.add_argument('--top_k', type=int, default=5000, help='Keep top_k bounding boxes before NMS.')
+ parser.add_argument('--save', '-s', type=str2bool, default=False, help='Set true to save results. This flag is invalid when using camera.')

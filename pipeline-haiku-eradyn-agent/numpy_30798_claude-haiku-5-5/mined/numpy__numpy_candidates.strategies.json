@@ -1,0 +1,119 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/numpy_30798_claude-haiku-5-5/mined/numpy__numpy_30798.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 21773,
+    "output_tokens": 6530,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "numpy/numpy",
+      "pr_number": 30798,
+      "reference": "https://github.com/numpy/numpy/pull/30798",
+      "buggy_commit": "8a0557f40b6085751b3ba321c6cfe699b28c67d7",
+      "fixed_commit": "a0338f2f999d4b61fdcb6bf4646e5c77ed159991",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 8670,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the QuadPrecDType repr precision bug on the buggy base commit 8a0557f40b60 by building NumPy from source with numpy_quaddtype (>1.0.0) installed, then run the developer's test test_user_defined_floating_dtype_printing_does_not_corrupt_precision in numpy/_core/tests/test_arrayprint.py. The transition relies on the repr path for floating dtypes going through Dragon4 on the buggy revision and through scalar str formatting on the fixed revision. The supplied test as written references QuadPrecDType without importing it, so it may error with NameError on both revisions; the plan includes a corrected import and a fallback reproducer.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12.11",
+          "pip_packages": [
+            "numpy_quaddtype>1.0.0 (latest release; version chosen by this plan, no documented constraint)",
+            "pytest (documented in README as required for testing; unpinned)",
+            "hypothesis (documented in README as required for testing; unpinned)",
+            "meson-python",
+            "ninja",
+            "cython (build requirement from requirements/build_requirements.txt)",
+            "pytest-timeout"
+          ],
+          "system_packages": [
+            "C/C++ compiler toolchain (gcc or clang) capable of building NumPy",
+            "OpenBLAS (libopenblasp) 0.3.29 as observed in the issue reproducer; not pinned by documentation, so used only as the environment the defect was reported on"
+          ],
+          "build_commands": [
+            "git checkout 8a0557f40b60 (buggy base; fixed revision is the PR #30798 merge)",
+            "python -m pip install -r requirements/build_requirements.txt",
+            "python -m pip install -r requirements/test_requirements.txt",
+            "python -m pip install numpy_quaddtype>1.0.0",
+            "python -m pip install --no-build-isolation -e . (rebuild from scratch after each checkout of the fixed revision; the C change in dragon4-related code requires a rebuild)"
+          ],
+          "pinned_because": [
+            "numpy_quaddtype must be >1.0.0 because the test skips when version is <=1.0.0 (critical import bug in that release), so the test would not run at 1.0.0 or earlier",
+            "OpenBLAS 0.3.29 is recorded from the issue reproducer only and is not documented as a requirement; it is not pinned here, since the mechanism is in Dragon4 formatting rather than BLAS"
+          ]
+        },
+        "test_command": "python -m pytest numpy/_core/tests/test_arrayprint.py -k user_defined_floating_dtype_printing -p no:cacheprovider -v",
+        "reproducing_test": "numpy/_core/tests/test_arrayprint.py::test_user_defined_floating_dtype_printing_does_not_corrupt_precision (from the PR diff; plan adds 'from numpy_quaddtype import QuadPrecDType' inside the test, or uses numpy_quaddtype.QuadPrecDType, because the diff uses the name without importing it)",
+        "success_criterion": "Buggy revision 8a0557f40b60 with numpy_quaddtype>1.0.0 installed: the test must FAIL, with the failure coming from the printed repr/round-trip comparison rather than from an import or NameError. Fixed revision (PR #30798 applied, rebuilt): the same test must PASS. The transition is FAIL on buggy and PASS on fixed; if the test errors with NameError on both revisions, the transition is not established and the import fix above must be applied first.",
+        "numerical_probe": "python -c \"import numpy as np; from numpy_quaddtype import QuadPrecDType; a=np.array(['3.14159265358979323846264338327950288'],dtype=QuadPrecDType()); np.set_printoptions(precision=34,floatmode='fixed'); print(repr(a)); print(str(a[0]))\" then reset with np.set_printoptions(precision=8,floatmode='maxprec')",
+        "input_output_examples": [
+          {
+            "input": "a = np.array(['3.14159265358979323846264338327950288'], dtype=QuadPrecDType()); np.set_printoptions(precision=34, floatmode='fixed'); repr(a)",
+            "buggy_output": "array([3.1415926535897931159979634685441852], ...)",
+            "expected_output": "array([3.1415926535897932384626433832795028], ...)"
+          },
+          {
+            "input": "a = np.array(['3.14159265358979323846264338327950288'], dtype=QuadPrecDType()); np.set_printoptions(floatmode='unique'); repr(a)",
+            "buggy_output": "array([3.141592653589793], ...)",
+            "expected_output": "34-digit value 3.1415926535897932384626433832795028 (no float64 truncation)"
+          },
+          {
+            "input": "str(a[0]) for the same quad array",
+            "buggy_output": "3.1415926535897932384626433832795028 (correct, not affected)",
+            "expected_output": "3.1415926535897932384626433832795028"
+          }
+        ],
+        "risks": [
+          "The supplied test uses QuadPrecDType without importing it (only numpy_quaddtype is imported via importorskip), so it may raise NameError on both revisions and never transition; fix the import before trusting the result.",
+          "The supplied test's round-trip check uses str(arr) with default print options, which may not exercise the Dragon4 precision=34 floatmode='fixed' path at all; a transition on it is not guaranteed. The issue's own check (repr startswith '[3.1415926535897932' under precision=34, floatmode='fixed') is the more direct probe and should be added if the supplied test does not transition.",
+          "The defect appears only when the repr goes through Dragon4 with precision above 16; if the buggy build's printing path differs (e.g. a patched numpy_quaddtype default repr with verbose QuadPrecision formatting), the transition may not appear.",
+          "Printing options are global; the test must reset precision=8 and floatmode='maxprec' to avoid cross-test contamination, and a failing assertion can leave options modified.",
+          "Exact float64 artifact digits may vary by platform (the test itself notes this), and the defect was observed on x86 Zen with OpenBLAS 0.3.29 pthreads; it has not been shown on other architectures, so it may not transition on aarch64 or macOS wheels.",
+          "numpy_quaddtype backend 'sleef' is shown in the repr output; if the installed release uses a different default backend, the value path may differ.",
+          "Building NumPy from source requires a compiler toolchain and a full rebuild between buggy and fixed revisions; an incremental build may leave stale Dragon4 objects and give a false PASS.",
+          "The numpy version recorded in the issue (2.5.0.dev0+git20251208.7eec5e2) is a development snapshot; the buggy base 8a0557f40b60 is the reference, and the exact snapshot may not be reproduced.",
+          "The numpy_quaddtype constraint (>1.0.0) is an inference from the test's skip condition, not a documented dependency; the test's own comment is the only evidence for it.",
+          "Sanitizers are not stated in the evidence; none are assumed here."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "issue:issue#30796 reproducer and PR #30798 test diff",
+          "why": "The test compares the round-trip of a QuadPrecDType array with assert_array_equal, which is an exact comparison; the issue expects the full 34-digit value 3.1415926535897932384626433832795028 with no float64 truncation."
+        },
+        "fails_on_buggy": "On the buggy revision with the import fix applied, the repr of the quad array under the test's printing path shows float64 artifact digits (3.14159265358979311599...), so the round-trip comparison fails and assert_array_equal raises AssertionError. Without the import fix the test raises NameError instead, which is not a valid transition.",
+        "passes_on_fixed": "On the fixed revision (Dragon4 restricted to float16/32/64/longdouble, scalar str formatting for other floating dtypes), the repr and str agree on the full 34-digit value and the round-trip equality holds, so the test passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6270,
+        "output_tokens": 3911,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 15503,
+        "output_tokens": 2619,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

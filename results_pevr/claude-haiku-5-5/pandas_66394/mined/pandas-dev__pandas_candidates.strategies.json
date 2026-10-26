@@ -1,0 +1,105 @@
+{
+  "input": "pipeline_no_historic/pandas_66394/mined/pandas-dev__pandas_66394.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 19998,
+    "output_tokens": 4516,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66394,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66394",
+      "buggy_commit": "389c06f9d7d9a5695552e2f152f7155fefcc3a69",
+      "fixed_commit": "76bac9e32eeee63f003ffecd431e8463a35e9b3c",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7470,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#66394 in a pandas source build: maybe_downcast_numeric must not downcast out-of-range floats (2**63 to int64, inf, 2**64 to uint64) and must not let OverflowError escape from object-dtype astype in DataFrame.combine. The developer tests fail on the buggy commit 389c06f9d7d9 and pass on the fix. The arm64 saturation corruption is platform-specific; the deterministic failure on x86_64 is the object-dtype OverflowError and missing bounds check for exact-looking values.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "gcc or clang C/C++ compiler",
+            "git"
+          ],
+          "build_commands": [
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy: no documented constraint and no era table entry; left unpinned, so the build uses the newest NumPy compatible with the buggy commit's Cython extensions; this is a choice, not evidence-derived",
+            "python-dateutil, tzdata, Cython: no documented constraint; installed unpinned, not numerically relevant"
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/dtypes/cast/test_downcast.py pandas/tests/frame/methods/test_combine.py pandas/tests/series/indexing/test_setitem.py -k 'out_of_integer_range or within_integer_range or do_round_out_of_range or out_of_int64_range or within_int64_range or object_result' -q -p no:cacheprovider",
+        "reproducing_test": "pandas/tests/dtypes/cast/test_downcast.py::test_downcast_float_out_of_integer_range (and siblings test_downcast_object_out_of_integer_range, test_downcast_do_round_out_of_range); pandas/tests/frame/methods/test_combine.py::test_combine_object_result_not_castable_to_int; pandas/tests/series/indexing/test_setitem.py::test_setitem_enlarge_out_of_int64_range",
+        "success_criterion": "On buggy commit 389c06f9d7d9: the out-of-range float cases fail because maybe_downcast_numeric returns an int array (or a RuntimeWarning is raised and promoted to an error under simplefilter('error', RuntimeWarning)); the object-dtype combine cases fail with OverflowError from astype; test_setitem_enlarge_out_of_int64_range fails because ser.loc[2]=2**63 is stored as int64. On the fixed revision: all the listed tests pass, meaning out-of-range values are left unchanged with no RuntimeWarning and in-range values such as 2**62 still downcast to int64.",
+        "input_output_examples": [
+          {
+            "input": "ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = 2**63",
+            "buggy_output": "arm64: dtype int64, values [1, 2, 9223372036854775807]; x86_64: dtype float64, value preserved; RuntimeWarning 'invalid value encountered in cast'",
+            "expected_output": "dtype float64 with value 2**63 preserved (no int64 downcast, no RuntimeWarning)"
+          },
+          {
+            "input": "df1.combine(df2, lambda s1, s2: pd.Series([2**64, 2**64], dtype=object))",
+            "buggy_output": "OverflowError: Python int too large to convert to C long",
+            "expected_output": "no exception; the result is not downcast to the common integer dtype"
+          }
+        ],
+        "risks": [
+          "The arm64 corruption (FCVTZS saturation to int64 max) is platform-specific; on x86_64 the setitem case may show float64 and pass on buggy code, so the setitem test may not transition there. The object-dtype combine and float out-of-range tests are the transitions expected to reproduce on x86_64.",
+          "Reproducing the arm64 corruption requires an aarch64 host or emulation (e.g. QEMU); a sanitizer or x86-only run will not exhibit it.",
+          "NumPy is unbounded in the evidence, so the NumPy version is an unverified choice; NumPy 2.x changed float-to-int cast warnings and may alter whether RuntimeWarning appears.",
+          "The RuntimeWarning check depends on NumPy emitting 'invalid value encountered in cast'; if the installed NumPy does not emit it, the warning assertion may not discriminate.",
+          "The test filter -k selects tests by name; if the fixed commit renames tests the selection may match nothing, so verify collection count is nonzero.",
+          "2**63 - 1 is not representable as float64, so boundary cases sit on float rounding and are sensitive to the strict upper bound."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": "rtol=0 losslessness check np.allclose(new_result, result, rtol=0) in float64 space, as described by the passages; no other tolerance stated",
+          "reference_source": "pandas/tests/dtypes/cast/test_downcast.py, pandas/tests/frame/methods/test_combine.py, pandas/tests/series/indexing/test_setitem.py in PR #66394",
+          "why": "The developer tests use exact equality via tm.assert_numpy_array_equal and tm.assert_series_equal; the losslessness check is float64-based and therefore weaker than exact integer comparison."
+        },
+        "fails_on_buggy": "On 389c06f9d7d9 the out-of-range float cases return integer arrays or raise RuntimeWarning-as-error, and the object-dtype combine cases raise OverflowError from astype, so the assertions fail.",
+        "passes_on_fixed": "On the fixed revision the bounds check uses strict upper bound float(iinfo.max+1), leaves out-of-range and non-finite values as their original dtype with no RuntimeWarning, and the in-range downcast tests still pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 7721,
+        "output_tokens": 2001,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 12277,
+        "output_tokens": 2515,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

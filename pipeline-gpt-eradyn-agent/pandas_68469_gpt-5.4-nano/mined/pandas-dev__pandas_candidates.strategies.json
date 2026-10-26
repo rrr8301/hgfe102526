@@ -1,0 +1,105 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_68469_gpt-5.4-nano/mined/pandas-dev__pandas_68469.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 15619,
+    "output_tokens": 3765,
+    "cost_usd": 0.007829,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 68469,
+      "reference": "https://github.com/pandas-dev/pandas/pull/68469",
+      "buggy_commit": "1087a91a531b17a2ce37160cdd09f658f3991ac7",
+      "fixed_commit": "32b3ba3573f72a1e39539f4f26ca11cff324c6f1",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 8806,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#68469 (pandas SparseArray.take with allow_fill=True) where _take_with_fill incorrectly promotes dtype based on type(fill_value) even for identity takes, causing wrong dtype/value (and in one datetimelike/no-gaps case an exception). Use the project\u2019s own added regression tests so they fail on buggy commit 1087a91a531b and pass on the fixed revision.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "pytz",
+            "tzdata; platform_system == 'Windows' or platform_system == 'Emscripten'"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip setuptools wheel",
+            "python -m pip install cython numpy python-dateutil",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "No explicit NumPy/pandas version constraints were provided in the evidence. NumPy is documented as a dependency but without an era-constraint, so the exact NumPy version is not pinned here. Pick a common NumPy version for pandas development CI (e.g., latest compatible) and ensure it matches the fixed/buggy runs; this defect is specifically sensitive to datetimelike fill handling (NaT unit) which can vary across NumPy versions, but the evidence does not specify a minimum/maximum."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/arrays/sparse/test_indexing.py -k \"take_fill_preserves_subtype or take_fill_all_fill_preserves_subtype or take_fill_datetimelike_subtype or take_fill_datetimelike_no_gaps\"",
+        "reproducing_test": "pandas/tests/arrays/sparse/test_indexing.py::TestSparseArrayTakeFill::test_take_fill_preserves_subtype (and closely related tests added in PR#68469 such as test_take_fill_all_fill_preserves_subtype, test_take_fill_datetimelike_subtype, test_take_fill_datetimelike_no_gaps)",
+        "success_criterion": "On the buggy revision (pandas commit 1087a91a531b), at least one assertion in the selected tests fails because result from SparseArray.take(..., allow_fill=True) does not preserve SparseDtype/subtype for an identity take (dtype widens, precision is lost, or datetimelike is converted to object/raw integers). On the fixed revision, all selected tests pass, meaning dtype/subtype round-trips are preserved (and the datetimelike/no-gaps case no longer raises DTypePromotionError).",
+        "numerical_probe": "Not needed; the reproduction relies on the regression tests\u2019 dtype/value equality assertions (tm.assert_sp_array_equal) and the dtype check. The bug is triggered inside _take_with_fill via allow_fill=True promotion logic.",
+        "input_output_examples": [
+          {
+            "input": "sparse = SparseArray(np.array([1, 0, big], dtype=subtype), fill_value=0); result = sparse.take(np.array([0, 1, 2]), allow_fill=True)",
+            "buggy_output": "result differs from sparse (SparseDtype subtype promoted, e.g., int8->int64 or uint64->float64 with precision loss, etc.)",
+            "expected_output": "result equals sparse (same SparseDtype/subtype) for identity take"
+          },
+          {
+            "input": "sparse = SparseArray(np.array([0, 0, 0], dtype=\"int8\"), fill_value=0); result = sparse.take(np.array([0, 1, -1]), allow_fill=True, fill_value=0)",
+            "buggy_output": "result.dtype is not SparseDtype(\"int8\", 0)",
+            "expected_output": "result.dtype == SparseDtype(\"int8\", 0) and result equals sparse-like expected structure"
+          },
+          {
+            "input": "sparse = SparseArray(np.array([1, 3, 5], dtype=unit), fill_value=fill); result = sparse.take(np.array([0, 1, 2, -1]), allow_fill=True) where unit in [\"M8[s]\",\"M8[ns]\",\"m8[s]\",\"m8[ns]\"] and fill uses pd.Timestamp/pd.Timedelta with the same unit",
+            "buggy_output": "either promotion changes dtype/subtype (e.g., M8[s]->M8[us], M8[ns]->object/raw integers) or for datetime64[ns] with no gaps it raises DTypePromotionError",
+            "expected_output": "dtype.subtype preserved and new fill at -1 is pd.NaT in the same subtype"
+          }
+        ],
+        "risks": [
+          "Because no exact NumPy version is constrained in the evidence, the precise failure mode (which subtype widens to what, or whether the datetimelike branch raises) may vary across NumPy versions. The transition is still selected by running pandas\u2019 own tests; however, to ensure the buggy->fixed transition, run both revisions (buggy and fixed) against the same installed NumPy version.",
+          "This defect may depend on platform/toolchain nuances related to datetime/timedelta scalar construction and NumPy unit behavior; the evidence does not specify platform/architecture. Prefer Linux x86_64 with default build settings (no special sanitizers) unless the project CI that discovered the bug specified otherwise.",
+          "The environment needs a Cython-enabled build because pandas may use compiled extensions; failing to build/compile could mask or change behavior. Use the provided editable install commands to ensure extensions are built."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "pandas regression tests from PR#68469 itself (tm.assert_sp_array_equal and dtype equality assertions)",
+          "why": "The failure criterion is equality of the returned SparseArray to the expected one, including dtype/subtype preservation. The tests assert exact dtype/subtype rather than numeric tolerance."
+        },
+        "fails_on_buggy": "The assertion fails in test_take_fill_preserves_subtype (or related tests) because result = sparse.take(..., allow_fill=True) does not equal sparse: SparseDtype subtype is promoted/widened or datetimelike is converted to object/raw integers; alternatively test_take_fill_datetimelike_no_gaps triggers DTypePromotionError for datetime64[ns]. The buggy revision is specifically 1087a91a531b as provided.",
+        "passes_on_fixed": "The same assertions pass: SparseArray.take(..., allow_fill=True) preserves SparseDtype/subtype for identity take and the datetimelike cases no longer promote incorrectly (and the DTypePromotionError is avoided when expected).",
+        "type": "object"
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 5426,
+        "output_tokens": 1372,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0028
+      },
+      "miner_usage": {
+        "input_tokens": 10193,
+        "output_tokens": 2393,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.005029,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

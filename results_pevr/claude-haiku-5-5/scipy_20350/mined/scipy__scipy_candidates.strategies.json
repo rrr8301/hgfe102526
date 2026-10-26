@@ -1,0 +1,110 @@
+{
+  "input": "pipeline_no_historic/scipy_20350/mined/scipy__scipy_20350.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 17435,
+    "output_tokens": 6456,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 20350,
+      "reference": "https://github.com/scipy/scipy/pull/20350",
+      "buggy_commit": "9d6aac2e67218ab9252fd421ef72d7bc84f8e7a5",
+      "fixed_commit": "cef67bc46dc88633722575b91fab581e3aba4424",
+      "bug_type": "convergence",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6638,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce scipy PR 20350 by building scipy at the buggy commit 9d6aac2e6721 with a Python 3.12 environment matching the reporter (numpy 1.26.4, pythran 0.15.0), then running the developer's updated test_scalar_search_wolfe2 in test_linesearch.py. On the buggy revision the loop guard alpha0 == amax aborts at i == 1 with a LineSearchWarning, which SciPy's pytest configuration turns into a test error. On the fixed revision (guard changed to alpha0 > amax) the test returns None, None for amax=0.001 with no warning. The mechanism is pure-Python control flow, so MKL and platform should not decide the transition.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "numpy==1.26.4",
+            "pythran==0.15.0",
+            "pytest",
+            "meson-python",
+            "ninja",
+            "cython",
+            "pybind11",
+            "setuptools<70",
+            "pyyaml"
+          ],
+          "system_packages": [
+            "gfortran",
+            "g++ or clang++ with C++17 support",
+            "pkg-config",
+            "BLAS/LAPACK provider (reporter used Intel MKL mkl-sdl 2023.1; OpenBLAS is an acceptable substitute since the bug is in Python control flow)"
+          ],
+          "build_commands": [
+            "git checkout 9d6aac2e6721",
+            "git submodule update --init --recursive",
+            "pip install -r requirements/build.txt numpy==1.26.4 pythran==0.15.0",
+            "pip install --no-build-isolation -e . (or python dev.py build)"
+          ],
+          "pinned_because": [
+            "numpy 1.26.4: taken from the reporter's system information in issue 20340; no documented constraint, so this is an era-inferred choice rather than a documented requirement",
+            "pythran 0.15.0: taken from the reporter's build configuration in issue 20340; a build-time dependency, not numerically relevant to the line search",
+            "scipy: built from the buggy commit itself, not installed from PyPI, because the transition needs the buggy source of _linesearch.py"
+          ]
+        },
+        "test_command": "python -m pytest scipy/optimize/tests/test_linesearch.py -k 'test_scalar_search_wolfe2 and not regression' -v",
+        "reproducing_test": "scipy/optimize/tests/test_linesearch.py::TestLineSearch::test_scalar_search_wolfe2 (class name assumed from the test file layout; select with -k if the node id differs). It calls ls.scalar_search_wolfe2(phi, derphi, amax=0.001) with phi(alpha)=(alpha-5)**2 and derphi(alpha)=2*(alpha-5), then asserts alpha_star is None and derphi_star is None.",
+        "success_criterion": "On the buggy revision 9d6aac2e6721 the test FAILS: scalar_search_wolfe2 emits LineSearchWarning ('could not find a solution less than or equal to amax') at the alpha0 == amax guard on i == 1, and the warning is raised as an error under SciPy's pytest filterwarnings configuration, so the test errors. On the fixed revision (guard changed to alpha0 > amax) the test PASSES: the function returns alpha_star None and derphi_star None with no LineSearchWarning, because the true minimum at alpha=5 lies beyond amax=0.001 and no step <= amax satisfies the Wolfe conditions.",
+        "numerical_probe": "Call scalar_search_wolfe2(phi, derphi, amax=0.001) directly and record whether a LineSearchWarning is emitted and what the four return values are, on both revisions.",
+        "input_output_examples": [
+          {
+            "input": "scalar_search_wolfe2(phi, derphi, amax=0.001) with phi(alpha)=(alpha-5)**2 and derphi(alpha)=2*(alpha-5)",
+            "buggy_output": "LineSearchWarning: The line search algorithm could not find a solution less than or equal to amax (raised as an error under the pytest warnings configuration, so the test fails)",
+            "expected_output": "(None, _, _, None): alpha_star None and derphi_star None, no warning emitted; test passes"
+          }
+        ],
+        "risks": [
+          "The buggy-side failure depends on SciPy's pytest config turning warnings into errors. If that config is absent, the buggy test would pass silently, because the new test no longer wraps the call in assert_warns. Confirm the filterwarnings setting in the repo's pytest.ini before trusting the transition.",
+          "On the fixed revision the loop may still reach maxiter and emit 'did not converge' LineSearchWarning, which would also fail the test. The transition holds only if the developer's fix avoids both warnings for this input; verify this by running the fixed commit.",
+          "Maintainer discussion in issue 22544 disputes whether the original behaviour was wrong, so the fix's rationale is contested even though the test defines the transition.",
+          "The reporter's MKL/pkgconfig BLAS detail is not expected to affect this pure-Python path. Do not plan a platform-specific reproduction; if the test passes on both revisions with OpenBLAS, that is a finding, not an environment error.",
+          "numpy 1.26.4 and pythran 0.15.0 come from the reporter's environment, not from a documented constraint. The evidence gives no era table entry, so these are chosen, not required. If the build fails, adjust the pins and record that as a deviation.",
+          "The alpha1 starting value and the c1/c2 constants are not given in the evidence; the defaults c1=1e-4 and c2=0.9 are assumed from the test helper, and the clipping amount is inferred from amax=0.001.",
+          "No sanitizer, specific architecture, or threading setting is indicated by the evidence; none should be assumed."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "developer test diff in scipy/optimize/tests/test_linesearch.py (assert alpha_star is None and derphi_star is None)",
+          "why": "The transition is decided by the presence or absence of the LineSearchWarning and by the None returns, which are exact checks rather than numerical tolerances."
+        },
+        "fails_on_buggy": "The guard alpha0 == amax fires at i == 1 after alpha1 is clipped to amax=0.001, so scalar_search_wolfe2 emits LineSearchWarning and returns early; under SciPy's warnings-as-errors pytest configuration this raises and the test fails.",
+        "passes_on_fixed": "With the guard changed to alpha0 > amax the early abort does not trigger, the function returns (None, _, _, None) for this input with no LineSearchWarning, and the test's exact None assertions hold."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5002,
+        "output_tokens": 4393,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 12433,
+        "output_tokens": 2063,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

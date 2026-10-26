@@ -1,0 +1,266 @@
+diff --git a/pandas/tests/io/parser/test_parse_dates.py b/pandas/tests/io/parser/test_parse_dates.py
+index 66fb2e20d35d1..daaef03ac765b 100644
+--- a/pandas/tests/io/parser/test_parse_dates.py
++++ b/pandas/tests/io/parser/test_parse_dates.py
+@@ -998,6 +998,37 @@ def test_parse_dates_c_fastpath_out_of_bounds_offset(low_memory):
+     assert result.iloc[0] == "2262-04-11T20:00:00.000000000-11:00"
+ 
+ 
++@pytest.mark.parametrize("low_memory", [False, True])
++def test_parse_dates_c_fastpath_nat_sentinel(low_memory):
++    # GH#66510 this renders onto iNaT, which the fastpath cannot tell apart from
++    # a missing value. It falls back to the raw strings like any other date the
++    # fastpath cannot represent, rather than emitting a bogus NaT.
++    data = "a\n1677-09-21 00:12:43.145224192\n"
++    result = read_csv(StringIO(data), parse_dates=["a"], low_memory=low_memory)["a"]
++    expected = read_csv(StringIO(data), parse_dates=["a"], engine="python")["a"]
++    tm.assert_series_equal(result, expected)
++    assert result.iloc[0] == "1677-09-21 00:12:43.145224192"
++
++
++@pytest.mark.parametrize("low_memory", [False, True])
++def test_parse_dates_c_fastpath_nat_sentinel_shifts_into_range(low_memory):
++    # GH#66510 the wall time renders onto iNaT but the westward shift moves it
++    # back in bounds, so the column still parses
++    data = "a\n1677-09-21 00:12:43.145224192-01:00\n"
++    result = read_csv(StringIO(data), parse_dates=["a"], low_memory=low_memory)["a"]
++    expected = read_csv(StringIO(data), parse_dates=["a"], engine="python")["a"]
++    tm.assert_series_equal(result, expected)
++    assert result.array.asi8[0] == -(2**63) + 3600 * 10**9
++
++
++@pytest.mark.parametrize("low_memory", [False, True])
++def test_parse_dates_c_fastpath_nat_sentinel_neighbour(low_memory):
++    # GH#66510 one nanosecond later is representable and must still parse
++    data = "a\n1677-09-21 00:12:43.145224193\n"
++    result = read_csv(StringIO(data), parse_dates=["a"], low_memory=low_memory)["a"]
++    assert result.iloc[0] == Timestamp("1677-09-21 00:12:43.145224193")
++
++
+ def _multichunk_csv(date_strings):
+     # wide enough that 20k rows span several low_memory chunks
+     num_extra_cols = 63
+diff --git a/pandas/tests/scalar/timestamp/methods/test_replace.py b/pandas/tests/scalar/timestamp/methods/test_replace.py
+index 0f61736161cb1..b3b3a23c49603 100644
+--- a/pandas/tests/scalar/timestamp/methods/test_replace.py
++++ b/pandas/tests/scalar/timestamp/methods/test_replace.py
+@@ -1,4 +1,5 @@
+ from datetime import datetime
++import re
+ import zoneinfo
+ 
+ from dateutil.tz import gettz
+@@ -209,3 +210,16 @@ def test_replace_updates_unit(self):
+         result = ts3.replace(microsecond=ts2.microsecond)
+         assert result.unit == "us"
+         assert result == ts2
++
++
++@pytest.mark.parametrize("tz", [None, "UTC"])
++def test_replace_hits_nat_sentinel(tz):
++    # GH#66510 the replaced value renders onto iNaT, which is not NaT but is
++    #  indistinguishable from it once stored in a datetime64 array
++    ts = Timestamp("1677-09-21 00:12:43.145224193", tz=tz)
++    msg = re.escape("Out of bounds nanosecond timestamp: 1677-09-21 00:12:43.145224192")
++    with pytest.raises(OutOfBoundsDatetime, match=msg):
++        ts.replace(nanosecond=192)
++
++    # the neighbouring value is fine
++    assert ts.replace(nanosecond=194)._value == ts._value + 1
+diff --git a/pandas/tests/scalar/timestamp/test_constructors.py b/pandas/tests/scalar/timestamp/test_constructors.py
+index 0f14963e2fbc4..40d7cf6d161ec 100644
+--- a/pandas/tests/scalar/timestamp/test_constructors.py
++++ b/pandas/tests/scalar/timestamp/test_constructors.py
+@@ -6,6 +6,7 @@
+     timedelta,
+     timezone,
+ )
++import re
+ import zoneinfo
+ 
+ import dateutil.tz
+@@ -1192,3 +1193,75 @@ def test_timestamp_iso8601_offset_out_of_bounds(tz):
+     msg = "Out of bounds nanosecond timestamp"
+     with pytest.raises(OutOfBoundsDatetime, match=msg):
+         Timestamp("2262-04-11T20:00:00.000000000-11:00", tz=tz)
++
++
++# GH#66510 iNaT == INT64_MIN, one below Timestamp.min. A value that renders or
++#  shifts onto it is not NaT, but is indistinguishable from NaT once stored in a
++#  datetime64 array, so it has to be rejected instead.
++SENTINEL_UTC = "1677-09-21 00:12:43.145224192"
++SENTINEL_PLUS_1H = "1677-09-21 01:12:43.145224192"
++PLUS_1H = timezone(timedelta(hours=1))
++MINUS_1H = timezone(timedelta(hours=-1))
++
++
++def test_constructor_naive_datetime_renders_nat_sentinel():
++    # GH#66510 dtstruct -> int64 rendering lands on iNaT
++    msg = re.escape(f"Out of bounds nanosecond timestamp: {SENTINEL_UTC}")
++    with pytest.raises(OutOfBoundsDatetime, match=msg):
++        Timestamp(datetime(1677, 9, 21, 0, 12, 43, 145224), nanosecond=192)
++
++
++def test_constructor_datetime64_tz_shift_hits_nat_sentinel():
++    # GH#66510 np.datetime64 is treated as a wall time; localizing it lands on iNaT
++    msg = re.escape(f"Out of bounds nanosecond timestamp: {SENTINEL_PLUS_1H}")
++    with pytest.raises(OutOfBoundsDatetime, match=msg):
++        Timestamp(np.datetime64(SENTINEL_PLUS_1H.replace(" ", "T")), tz=PLUS_1H)
++
++
++def test_constructor_aware_datetime_offset_hits_nat_sentinel():
++    # GH#66510 subtracting the UTC offset lands on iNaT
++    msg = re.escape(f"Out of bounds nanosecond timestamp: {SENTINEL_PLUS_1H}")
++    with pytest.raises(OutOfBoundsDatetime, match=msg):
++        Timestamp(
++            datetime(1677, 9, 21, 1, 12, 43, 145224, tzinfo=PLUS_1H), nanosecond=192
++        )
++
++
++@pytest.mark.parametrize(
++    "arg, kwargs",
++    [
++        # the tz keyword shifts via tz_localize_to_utc_single
++        (SENTINEL_PLUS_1H, {"tz": PLUS_1H}),
++        # an embedded offset shifts via the checked_sub fastpath
++        (f"{SENTINEL_PLUS_1H}+01:00", {}),
++    ],
++)
++def test_constructor_str_shift_hits_nat_sentinel(arg, kwargs):
++    # GH#66510 both shift paths in convert_str_to_tsobject
++    msg = re.escape(f"Out of bounds nanosecond timestamp: {SENTINEL_PLUS_1H}")
++    with pytest.raises(OutOfBoundsDatetime, match=msg):
++        Timestamp(arg, **kwargs)
++
++
++def test_constructor_aware_datetime_offset_overflow():
++    # GH#66510 the offset subtraction used to raise a bare OverflowError
++    msg = re.escape("Out of bounds nanosecond timestamp: 2262-04-11 23:47:16.854775807")
++    tz = timezone(timedelta(hours=-23, minutes=-59))
++    with pytest.raises(OutOfBoundsDatetime, match=msg):
++        Timestamp(datetime(2262, 4, 11, 23, 47, 16, 854775, tzinfo=tz), nanosecond=807)
++
++
++def test_constructor_offset_shifts_off_nat_sentinel():
++    # GH#66510 the wall time renders onto iNaT but the shift to UTC moves it back
++    #  in bounds, so the rejection has to happen after the shift, not before
++    ts = Timestamp(
++        datetime(1677, 9, 21, 0, 12, 43, 145224, tzinfo=MINUS_1H), nanosecond=192
++    )
++    assert ts._value == -(2**63) + 3600 * 10**9
++
++
++def test_constructor_nat_sentinel_neighbours():
++    # GH#66510 only the sentinel itself is out of bounds
++    assert Timestamp("1677-09-21 00:12:43.145224193")._value == -(2**63) + 1
++    assert Timestamp.min._value == -(2**63) + 1
++    assert Timestamp(NaT) is NaT
+diff --git a/pandas/tests/tools/test_to_datetime.py b/pandas/tests/tools/test_to_datetime.py
+index 63596b48e4fd1..a431010fe4ade 100644
+--- a/pandas/tests/tools/test_to_datetime.py
++++ b/pandas/tests/tools/test_to_datetime.py
+@@ -11,6 +11,7 @@
+ )
+ from decimal import Decimal
+ import locale
++import re
+ import zoneinfo
+ 
+ from dateutil.parser import parse
+@@ -4392,3 +4393,96 @@ def test_dataframe_assemble_duplicate_index_with_nan(cache):
+         dtype="M8[us]",
+     )
+     tm.assert_series_equal(result, expected)
++
++
++# GH#66510 iNaT == INT64_MIN, one below Timestamp.min. A value that renders or
++#  tz-shifts onto it is not NaT but reads back as NaT once stored. `{}` takes the
++#  last three digits: "192" is the sentinel, "193" is one nanosecond later and
++#  must keep parsing. to_datetime has several parser legs, and the format alone
++#  does not determine which one a value takes -- with format=None the "192"
++#  values take the array_to_datetime route, because guess_datetime_format
++#  validates its guess by round-tripping through array_strptime and discards it
++#  when that raises, while the "193" values keep their guess and go through
++#  array_strptime. Both are worth pinning; the labels below are for "192".
++NAT_SENTINEL_PARSE_ROUTES = [
++    # array_to_datetime -> convert_str_to_tsobject (format guess discarded)
++    ("1677-09-21 00:12:43.145224{}", None),
++    ("1677-09-21 01:12:43.145224{}+01:00", None),
++    # array_strptime, ISO route (string_to_dts), naive
++    ("1677-09-21 00:12:43.145224{}", "ISO8601"),
++    # array_strptime, ISO route, embedded offset (checked_sub leg)
++    ("1677-09-21 01:12:43.145224{}+01:00", "ISO8601"),
++    # array_strptime, _parse_with_format route, naive
++    ("21/09/1677 00:12:43.145224{}", "%d/%m/%Y %H:%M:%S.%f"),
++    # array_strptime, _parse_with_format route, %z fixed offset (checked_sub leg)
++    ("21/09/1677 01:12:43.145224{}+01:00", "%d/%m/%Y %H:%M:%S.%f%z"),
++    # array_strptime, _parse_with_format route, named tz
++    #  (tz_localize_to_utc_single leg)
++    ("1677-09-21 01:12:43.145224{} Etc/GMT-1", "%Y-%m-%d %H:%M:%S.%f %Z"),
++    # array_to_datetime -> convert_str_to_tsobject, explicitly
++    ("1677-09-21 00:12:43.145224{}", "mixed"),
++    ("1677-09-21 01:12:43.145224{}+01:00", "mixed"),
++]
++
++
++@pytest.mark.parametrize("template, format", NAT_SENTINEL_PARSE_ROUTES)
++def test_to_datetime_hits_nat_sentinel(template, format):
++    # GH#66510 every parser leg must reject the sentinel rather than silently
++    #  producing NaT
++    with pytest.raises(OutOfBoundsDatetime, match="Out of bounds nanosecond timestamp"):
++        to_datetime([template.format("192")], format=format)
++
++
++@pytest.mark.parametrize("template, format", NAT_SENTINEL_PARSE_ROUTES)
++def test_to_datetime_hits_nat_sentinel_coerce(template, format):
++    # GH#66510 errors="coerce" still asks for NaT
++    result = to_datetime([template.format("192")], format=format, errors="coerce")
++    assert result[0] is NaT
++
++
++@pytest.mark.parametrize("template, format", NAT_SENTINEL_PARSE_ROUTES)
++def test_to_datetime_nat_sentinel_neighbour(template, format):
++    # GH#66510 one nanosecond later is representable and must still parse
++    result = to_datetime([template.format("193")], format=format)
++    assert result[0]._value == -(2**63) + 1
++
++
++@pytest.mark.parametrize(
++    "value, format, wall",
++    [
++        ("1677-09-21 00:12:43.145224192", "ISO8601", "1677-09-21 00:12:43.145224192"),
++        (
++            "1677-09-21 01:12:43.145224192 Etc/GMT-1",
++            "%Y-%m-%d %H:%M:%S.%f %Z",
++            "1677-09-21 01:12:43.145224192",
++        ),
++    ],
++)
++def test_to_datetime_nat_sentinel_message(value, format, wall):
++    # GH#66510 the message names the sub-second digits -- truncating to seconds
++    #  would name a representable value
++    msg = re.escape(f"Out of bounds nanosecond timestamp: {wall}")
++    with pytest.raises(OutOfBoundsDatetime, match=msg):
++        to_datetime([value], format=format)
++
++
++@pytest.mark.parametrize(
++    "format",
++    [
++        None,  # array_strptime, ISO route
++        "ISO8601",  # array_strptime, ISO route
++        "%Y-%m-%d %H:%M:%S.%f%z",  # array_strptime, _parse_with_format route
++    ],
++)
++def test_to_datetime_offset_shifts_off_nat_sentinel(format):
++    # GH#66510 to_datetime counterpart of
++    #  test_constructor_offset_shifts_off_nat_sentinel: the wall time renders onto
++    #  the sentinel but the westward shift moves it back in bounds, so rejecting
++    #  before the shift would be wrong.
++    # utc=True so the result is usable: keeping the +01:00 offset would leave a
++    #  value that boxes back through check_dts_bounds on the sentinel wall time.
++    result = to_datetime(
++        ["1677-09-21 00:12:43.145224192-01:00"], format=format, utc=True
++    )
++    assert result.asi8[0] == -(2**63) + 3600 * 10**9
++    assert result[0] == Timestamp("1677-09-21 01:12:43.145224192", tz="UTC")

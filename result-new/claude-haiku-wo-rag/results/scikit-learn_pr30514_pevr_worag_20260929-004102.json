@@ -1,0 +1,1667 @@
+[
+  {
+    "slug": "scikit-learn_30514",
+    "bug_type": "",
+    "image": "python:3.10",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 1/2 reported example(s) reproduce, but 2 of 4 reported example(s) could not be evaluated on either revision, so those values remain unchecked",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "incomplete",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "stress_mismatch_metric_mds": "import numpy as np\nfrom sklearn.manifold._mds import smacof\nfrom sklearn.metrics import euclidean_distances\n\n# Example from bug report: disparities matrix and expected stress mismatch\ndisparities = np.array([\n    [0.0, 1.0, 4.0, 2.828],\n    [1.0, 0.0, 3.0, 2.236],\n    [4.0, 3.0, 0.0, 2.828],\n    [2.828, 2.236, 2.828, 0.0]\n])\n\n# Run smacof with metric=True\nembedding, stress, n_iter = smacof(\n    dissimilarities=disparities,\n    n_components=2,\n    metric=True,\n    random_state=42,\n    n_init=1\n)\n\n# Calculate stress manually from the returned embedding\ndist_embedding = euclidean_distances(embedding, embedding)\nDelta_sq = disparities ** 2\nD_sq = dist_embedding ** 2\nmanual_stress = np.sqrt(np.sum((Delta_sq - D_sq) ** 2) / np.sum(D_sq))\n\nprobe('returned_stress', stress)\nprobe('manual_stress', manual_stress)\nprobe('stress_mismatch', abs(stress - manual_stress))",
+        "nonmetric_nan_handling": "import numpy as np\nfrom sklearn.manifold._mds import smacof\n\n# Simple small dissimilarity matrix\ndissimilarities = np.array([\n    [0.0, 1.0, 2.0],\n    [1.0, 0.0, 1.5],\n    [2.0, 1.5, 0.0]\n])\n\ntry:\n    embedding, stress, n_iter = smacof(\n        dissimilarities=dissimilarities,\n        n_components=2,\n        metric=False,\n        random_state=42,\n        n_init=1,\n        max_iter=10\n    )\n    probe('nonmetric_success', 1.0)\n    probe('nonmetric_stress', stress)\n    probe('nonmetric_has_nan', float(np.isnan(embedding).any()))\nexcept ValueError as e:\n    if 'NaN' in str(e):\n        probe('nonmetric_nan_error', 1.0)\n    else:\n        probe('nonmetric_other_error', 1.0)\nexcept Exception as e:\n    probe('nonmetric_exception', 1.0)",
+        "stress_mismatch_measurement": "import numpy as np\nfrom scipy.spatial.distance import pdist, squareform\nfrom sklearn.manifold._mds import smacof\n\n# The reported example: disparities_matrix from issue\ndissimilarities = np.array([\n    [0, 1, 4, 2.828],\n    [1, 0, 3, 2.236],\n    [4, 3, 0, 2.828],\n    [2.828, 2.236, 2.828, 0]\n])\n\n# Run smacof with metric=True\nembedding, stress = smacof(\n    dissimilarities,\n    n_components=2,\n    init='random',\n    n_init=1,\n    random_state=42,\n    metric=True,\n    normalized_stress='auto'\n)\n\n# Calculate stress manually from the returned embedding\ndistances = squareform(pdist(embedding))\nstress_diff = dissimilarities - distances\nmanual_stress = np.sqrt(np.sum(stress_diff ** 2) / np.sum(dissimilarities ** 2))\n\nprobe('returned_stress', stress)\nprobe('manual_stress', manual_stress)\nprobe('stress_mismatch', abs(stress - manual_stress))",
+        "normalized_stress_metric_error": "import numpy as np\nfrom sklearn.manifold._mds import smacof\n\ndissimilarities = np.array([\n    [0, 1, 4, 2.828],\n    [1, 0, 3, 2.236],\n    [4, 3, 0, 2.828],\n    [2.828, 2.236, 2.828, 0]\n])\n\nerror_occurred = 0\ntry:\n    embedding, stress = smacof(\n        dissimilarities,\n        n_components=2,\n        n_init=1,\n        random_state=42,\n        metric=True,\n        normalized_stress=True\n    )\n    # If we get here, the bug is fixed - no error\n    error_occurred = 0\nexcept ValueError as e:\n    # ValueError means the restriction is still in place (the bug)\n    if 'normalized_stress' in str(e).lower() or 'not supported' in str(e).lower():\n        error_occurred = 1\n    else:\n        raise\n\nprobe('normalized_stress_restriction_present', float(error_occurred))",
+        "nonmetric_nan_error": "import numpy as np\nfrom sklearn.manifold._mds import smacof\n\n# Small dissimilarity matrix that can trigger out_of_bounds in isotonic regression\ndissimilarities = np.array([\n    [0.0, 0.5, 1.0, 1.5],\n    [0.5, 0.0, 0.6, 1.2],\n    [1.0, 0.6, 0.0, 0.9],\n    [1.5, 1.2, 0.9, 0.0]\n])\n\nerror_flag = 0\ntry:\n    embedding, stress = smacof(\n        dissimilarities,\n        n_components=2,\n        n_init=1,\n        random_state=42,\n        metric=False,\n        normalized_stress='auto',\n        max_iter=10\n    )\n    # Check if result contains NaN\n    if np.any(np.isnan(embedding)) or np.isnan(stress):\n        error_flag = 1\nexcept (ValueError, RuntimeError) as e:\n    # ValueError from NaN handling is a bug sign\n    if 'nan' in str(e).lower() or 'contain' in str(e).lower():\n        error_flag = 1\n    else:\n        raise\n\nprobe('nonmetric_nan_error_occurred', float(error_flag))",
+        "reported_examples": "import numpy as np\nfrom sklearn.manifold import MDS, smacof\nfrom sklearn.datasets import load_digits\nfrom sklearn.metrics import euclidean_distances\n\n# Example 1: Non-metric MDS on digits dataset\ntry:\n    digits = load_digits()\n    result = MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(digits.data)\n    # Record the embedding quality - check if there's clear structure\n    probe(\"MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)\", \n          result.shape)\n    probe(\"MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)::min_max_range\",\n          (result.min(), result.max()))\n    probe(\"MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)::std\",\n          (result[:, 0].std(), result[:, 1].std()))\nexcept Exception as e:\n    probe(\"MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)\",\n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 2: Stress value mismatch with precomputed dissimilarities\ntry:\n    disparities = np.array([[0, 1, 4, 2.828], \n                           [1, 0, 3, 2.236], \n                           [4, 3, 0, 2.828], \n                           [2.828, 2.236, 2.828, 0]])\n    \n    mds_obj = MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True)\n    mds_obj.fit(disparities)\n    returned_stress = mds_obj.stress_\n    \n    # Calculate stress manually from returned embedding\n    coords = mds_obj.embedding_\n    distances = euclidean_distances(coords)\n    manual_stress = np.sum((disparities - distances) ** 2)\n    \n    probe(\"MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_value\",\n          returned_stress)\n    probe(\"MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) manual_stress\",\n          manual_stress)\n    probe(\"MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_match\",\n          np.allclose(returned_stress, manual_stress))\nexcept Exception as e:\n    probe(\"MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_value\",\n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 3: NaN error with non-metric MDS and small dissimilarities\ntry:\n    # Create a small dissimilarity matrix with values that might cause issues\n    dissimilarities = np.array([[0, 0.1, 0.5],\n                               [0.1, 0, 0.3],\n                               [0.5, 0.3, 0]])\n    init_array = np.array([[0.001, 0.001],\n                          [0.001, 0.001],\n                          [0.1, 0.1]])\n    \n    result = smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1)\n    probe(\"smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values\",\n          result[0].shape)\n    probe(\"smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values::has_nan\",\n          np.isnan(result[0]).any())\nexcept Exception as e:\n    probe(\"smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values\",\n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 4: normalized_stress with metric MDS\ntry:\n    disparities = np.array([[0, 1, 4, 2.828], \n                           [1, 0, 3, 2.236], \n                           [4, 3, 0, 2.828], \n                           [2.828, 2.236, 2.828, 0]])\n    \n    result = smacof(disparities, metric=True, normalized_stress=True, n_init=1, random_state=42)\n    probe(\"smacof with metric=True, normalized_stress=True\",\n          type(result[1]))\n    probe(\"smacof with metric=True, normalized_stress=True::stress_value\",\n          result[1])\nexcept Exception as e:\n    probe(\"smacof with metric=True, normalized_stress=True\",\n          \"__error__: \" + type(e).__name__ + \": \" + str(e))",
+        "described_examples": "import numpy as np\nfrom sklearn.manifold import smacof\n\n# Create a valid dissimilarity matrix\ndissimilarities = np.array([\n    [0.0, 1.0, 2.0],\n    [1.0, 0.0, 1.5],\n    [2.0, 1.5, 0.0]\n])\n\ntry:\n    result, stress = smacof(dissimilarities, normalized_stress='auto', metric=False, n_init=1)\n    probe(\"smacof(dissimilarities, normalized_stress='auto', metric=False, n_init=1)\", result)\nexcept Exception as e:\n    probe_exception(\"smacof(dissimilarities, normalized_stress='auto', metric=False, n_init=1)\", e)"
+      },
+      "fixed": {
+        "stress_mismatch_measurement": "import numpy as np\nfrom scipy.spatial.distance import pdist, squareform\nfrom sklearn.manifold._mds import smacof\n\n# The reported example: disparities_matrix from issue\ndissimilarities = np.array([\n    [0, 1, 4, 2.828],\n    [1, 0, 3, 2.236],\n    [4, 3, 0, 2.828],\n    [2.828, 2.236, 2.828, 0]\n])\n\n# Run smacof with metric=True\nembedding, stress = smacof(\n    dissimilarities,\n    n_components=2,\n    init='random',\n    n_init=1,\n    random_state=42,\n    metric=True,\n    normalized_stress='auto'\n)\n\n# Calculate stress manually from the returned embedding\ndistances = squareform(pdist(embedding))\nstress_diff = dissimilarities - distances\nmanual_stress = np.sqrt(np.sum(stress_diff ** 2) / np.sum(dissimilarities ** 2))\n\nprobe('returned_stress', stress)\nprobe('manual_stress', manual_stress)\nprobe('stress_mismatch', abs(stress - manual_stress))",
+        "reported_examples": "import numpy as np\nfrom sklearn.manifold import MDS, smacof\nfrom sklearn.datasets import load_digits\nfrom sklearn.metrics import euclidean_distances\n\n# Example 1: Non-metric MDS on digits dataset\ntry:\n    digits = load_digits()\n    result = MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(digits.data)\n    # Record the embedding quality - check if there's clear structure\n    probe(\"MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)\", \n          result.shape)\n    probe(\"MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)::min_max_range\",\n          (result.min(), result.max()))\n    probe(\"MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)::std\",\n          (result[:, 0].std(), result[:, 1].std()))\nexcept Exception as e:\n    probe(\"MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)\",\n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 2: Stress value mismatch with precomputed dissimilarities\ntry:\n    disparities = np.array([[0, 1, 4, 2.828], \n                           [1, 0, 3, 2.236], \n                           [4, 3, 0, 2.828], \n                           [2.828, 2.236, 2.828, 0]])\n    \n    mds_obj = MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True)\n    mds_obj.fit(disparities)\n    returned_stress = mds_obj.stress_\n    \n    # Calculate stress manually from returned embedding\n    coords = mds_obj.embedding_\n    distances = euclidean_distances(coords)\n    manual_stress = np.sum((disparities - distances) ** 2)\n    \n    probe(\"MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_value\",\n          returned_stress)\n    probe(\"MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) manual_stress\",\n          manual_stress)\n    probe(\"MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_match\",\n          np.allclose(returned_stress, manual_stress))\nexcept Exception as e:\n    probe(\"MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_value\",\n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 3: NaN error with non-metric MDS and small dissimilarities\ntry:\n    # Create a small dissimilarity matrix with values that might cause issues\n    dissimilarities = np.array([[0, 0.1, 0.5],\n                               [0.1, 0, 0.3],\n                               [0.5, 0.3, 0]])\n    init_array = np.array([[0.001, 0.001],\n                          [0.001, 0.001],\n                          [0.1, 0.1]])\n    \n    result = smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1)\n    probe(\"smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values\",\n          result[0].shape)\n    probe(\"smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values::has_nan\",\n          np.isnan(result[0]).any())\nexcept Exception as e:\n    probe(\"smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values\",\n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 4: normalized_stress with metric MDS\ntry:\n    disparities = np.array([[0, 1, 4, 2.828], \n                           [1, 0, 3, 2.236], \n                           [4, 3, 0, 2.828], \n                           [2.828, 2.236, 2.828, 0]])\n    \n    result = smacof(disparities, metric=True, normalized_stress=True, n_init=1, random_state=42)\n    probe(\"smacof with metric=True, normalized_stress=True\",\n          type(result[1]))\n    probe(\"smacof with metric=True, normalized_stress=True::stress_value\",\n          result[1])\nexcept Exception as e:\n    probe(\"smacof with metric=True, normalized_stress=True\",\n          \"__error__: \" + type(e).__name__ + \": \" + str(e))",
+        "described_examples": "import numpy as np\nfrom sklearn.manifold import smacof\n\n# Create a valid dissimilarity matrix\ndissimilarities = np.array([\n    [0.0, 1.0, 2.0],\n    [1.0, 0.0, 1.5],\n    [2.0, 1.5, 0.0]\n])\n\ntry:\n    result, stress = smacof(dissimilarities, normalized_stress='auto', metric=False, n_init=1)\n    probe(\"smacof(dissimilarities, normalized_stress='auto', metric=False, n_init=1)\", result)\nexcept Exception as e:\n    probe_exception(\"smacof(dissimilarities, normalized_stress='auto', metric=False, n_init=1)\", e)"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 1/2 reported example(s) reproduce, but 2 of 4 reported example(s) could not be evaluated on either revision, so those values remain unchecked",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "incomplete",
+      "success_criterion": "The test assertions in the PR diff verify that stress values are now correctly computed after the SMACOF update (not from previous iteration), disparities matrix is properly symmetric, isotonic regression is called only after first iteration, and normalized_stress is allowed for metric MDS. Specifically, the tests should fail on the buggy commit because stress mismatch, NaN errors, or ValueError exceptions will occur.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 1,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 1,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "smacof(dissimilarities, normalized_stress='auto', metric=False, n_init=1)": [
+                [
+                  -0.14712520888474012,
+                  -0.3808493020678375
+                ],
+                [
+                  0.4067647069565691,
+                  0.06860249257686811
+                ],
+                [
+                  -0.25731036972450894,
+                  0.3113646408650059
+                ]
+              ]
+            },
+            "fixed_values": {
+              "smacof(dissimilarities, normalized_stress='auto', metric=False, n_init=1)": [
+                [
+                  0.3847574702519379,
+                  -0.33302447911727096
+                ],
+                [
+                  -0.3641405439878225,
+                  -0.3591191700555896
+                ],
+                [
+                  -0.020616926264115418,
+                  0.6921436491728605
+                ]
+              ]
+            }
+          },
+          {
+            "label": "nonmetric_nan_error",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=1.000e+00, tol=0.000e+00)"
+              ]
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "nonmetric_nan_error_occurred": 0.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "nonmetric_nan_handling",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "nonmetric_other_error": 1.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "normalized_stress_metric_error",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "normalized_stress_restriction_present": 1.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)": [
+                1797,
+                2
+              ],
+              "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)::min_max_range": [
+                -0.6730443716191264,
+                0.6906550050546498
+              ],
+              "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)::std": [
+                0.34007000157985484,
+                0.33530299198250685
+              ],
+              "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_value": 0.004518404380378453,
+              "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) manual_stress": 0.004068428285057122,
+              "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_match": false,
+              "smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values": [
+                3,
+                2
+              ],
+              "smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values::has_nan": false,
+              "smacof with metric=True, normalized_stress=True": "__error__: ValueError: Normalized stress is not supported for metric MDS. Either set `normalized_stress=False` or use `metric=False`."
+            },
+            "fixed_values": {
+              "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)": [
+                1797,
+                2
+              ],
+              "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)::min_max_range": [
+                -0.8156549934945239,
+                0.8290668946625941
+              ],
+              "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)::std": [
+                0.4545939973735553,
+                0.45159919519437014
+              ],
+              "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_value": 0.004518404380378453,
+              "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) manual_stress": 0.009036808760756906,
+              "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_match": false,
+              "smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values": [
+                3,
+                2
+              ],
+              "smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values::has_nan": false,
+              "smacof with metric=True, normalized_stress=True": "<class 'numpy.float64'>",
+              "smacof with metric=True, normalized_stress=True::stress_value": 0.023850165986974602
+            }
+          },
+          {
+            "label": "stress_mismatch_measurement",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: sklearn.utils._param_validation.InvalidParameterError: The 'init' parameter of smacof must be an array-like or None. Got 'random' instead.",
+                "values do not match the reference (length mismatch: 0 vs 3)"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: sklearn.utils._param_validation.InvalidParameterError: The 'init' parameter of smacof must be an array-like or None. Got 'random' instead.",
+                "values do not match the reference (length mismatch: 0 vs 3)"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "stress_mismatch_metric_mds",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: not enough values to unpack (expected 3, got 2)"
+              ]
+            },
+            "fixed": null,
+            "buggy_status": "exception",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": null
+          }
+        ],
+        "examples": [
+          {
+            "input": "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)",
+            "expected_output": "Well-structured embedding showing clear digit clusters with proper non-metric MDS properties",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Non-sensical embedding where points are scattered randomly (digits dataset shows no clear clustering)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)",
+              "observed": [
+                1797,
+                2
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)",
+              "observed": [
+                1797,
+                2
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) with disparities=[[0, 1, 4, 2.828], [1, 0, 3, 2.236], [4, 3, 0, 2.828], [2.828, 2.236, 2.828, 0]]",
+            "expected_output": "stress_=0.0020293041020245147 (matching the returned embedding)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "stress_=0.0045113518633979315 but manual calculation with returned coordinates gives stress=0.0020293041020245147",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with specific small dissimilarity matrix and init causing near-zero values",
+            "expected_output": "Valid MDS result without NaN errors",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: Input contains NaN due to IsotonicRegression out_of_bounds error",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "smacof with metric=True, normalized_stress=True",
+            "expected_output": "Computation succeeds and returns normalized stress for metric MDS",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: Normalized stress is not supported for metric MDS",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "smacof with metric=True, normalized_stress=True",
+              "observed": "__error__: ValueError: Normalized stress is not supported for metric MDS. Either set `normalized_stress=False` or use `metric=False`.",
+              "evaluation_error": "ValueError: Normalized stress is not supported for metric MDS. Either set `normalized_stress=False` or use `metric=False`.",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "smacof with metric=True, normalized_stress=True",
+              "observed": "<class 'numpy.float64'>",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 7,
+            "n_failed": 4,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 1,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata",
+            "numpy>=1.22.0",
+            "pytest>=7.1.2",
+            "pytest-cov>=2.9.0",
+            "meson-python>=0.16.0",
+            "cython>=3.0.10",
+            "pooch>=1.6.0"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2025-03-31T08:49:03+02:00",
+        "fixed_commit_date": "2025-03-31T11:25:50+02:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2025-03-31T11:25:50+02:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.10/site-packages/sklearn/__init__.py",
+            "build_requires": [
+              "meson-python>=0.16.0",
+              "Cython>=3.0.10",
+              "scipy>=1.8.0"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.2.4",
+              "pandas": "2.2.3",
+              "matplotlib": "3.10.1",
+              "pyparsing": "3.2.3",
+              "llvmlite": "0.44.0",
+              "meson-python": "0.17.1",
+              "cython": "3.0.12",
+              "scipy": "1.15.2"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.1"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "matplotlib>=3.5.0",
+              "scikit-image>=0.19.0",
+              "pandas>=1.4.0",
+              "pytest>=7.1.2",
+              "pytest-cov>=2.9.0",
+              "pyamg>=5.0.0",
+              "polars>=0.20.30",
+              "pyarrow>=12.0.0",
+              "numpydoc>=1.2.0",
+              "pooch>=1.6.0"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nCollecting threadpoolctl>=3.1.0\n  Downloading threadpoolctl-3.7.0-py3-none-any.whl (26 kB)\nCollecting joblib>=1.2.0\n  Downloading joblib-1.6.0-py3-none-any.whl (306 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 306.1/306.1 kB 33.8 MB/s eta 0:00:00\nRequirement already satisfied: scipy>=1.8.0 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from scikit-learn==1.7.dev0) (1.15.2)\nRequirement already satisfied: numpy>=1.22.0 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from scikit-learn==1.7.dev0) (2.2.4)\nCollecting cloudpickle>=3.0\n  Downloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nBuilding wheels for collected packages: scikit-learn\n  Building wheel for scikit-learn (pyproject.toml): started\n  Building wheel for scikit-learn (pyproject.toml): finished with status 'done'\n  Created wheel for scikit-learn: filename=scikit_learn-1.7.dev0-cp310-cp310-linux_x86_64.whl size=14112690 sha256=9e56843131b2caea7a622f91cf6d0fc271e3de06ee76cc77dbce0c288acb6e8c\n  Stored in directory: /tmp/pip-ephem-wheel-cache-irykzuni/wheels/ed/f7/86/c0f1039ac56a217e74c3b8eda25eb10695c47995525191ed3e\nSuccessfully built scikit-learn\nInstalling collected packages: threadpoolctl, cloudpickle, joblib, scikit-learn\nSuccessfully installed cloudpickle-3.1.2 joblib-1.6.0 scikit-learn-1.7.dev0 threadpoolctl-3.7.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.10/site-packages/sklearn/__init__.py",
+            "build_requires": [
+              "meson-python>=0.16.0",
+              "Cython>=3.0.10",
+              "scipy>=1.8.0"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.2.4",
+              "pandas": "2.2.3",
+              "matplotlib": "3.10.1",
+              "pyparsing": "3.2.3",
+              "llvmlite": "0.44.0",
+              "meson-python": "0.17.1",
+              "cython": "3.0.12",
+              "scipy": "1.15.2"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.1"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "matplotlib>=3.5.0",
+              "scikit-image>=0.19.0",
+              "pandas>=1.4.0",
+              "pytest>=7.1.2",
+              "pytest-cov>=2.9.0",
+              "pyamg>=5.0.0",
+              "polars>=0.20.30",
+              "pyarrow>=12.0.0",
+              "numpydoc>=1.2.0",
+              "pooch>=1.6.0"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nCollecting joblib>=1.2.0\n  Downloading joblib-1.6.0-py3-none-any.whl (306 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 306.1/306.1 kB 4.5 MB/s eta 0:00:00\nRequirement already satisfied: numpy>=1.22.0 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from scikit-learn==1.7.dev0) (2.2.4)\nCollecting threadpoolctl>=3.1.0\n  Downloading threadpoolctl-3.7.0-py3-none-any.whl (26 kB)\nRequirement already satisfied: scipy>=1.8.0 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from scikit-learn==1.7.dev0) (1.15.2)\nCollecting cloudpickle>=3.0\n  Downloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nBuilding wheels for collected packages: scikit-learn\n  Building wheel for scikit-learn (pyproject.toml): started\n  Building wheel for scikit-learn (pyproject.toml): finished with status 'done'\n  Created wheel for scikit-learn: filename=scikit_learn-1.7.dev0-cp310-cp310-linux_x86_64.whl size=14112983 sha256=c47f52f10170950a9ced7bcbb0bcecab5f3b87f5dcf615e7f75a7001f1f51391\n  Stored in directory: /tmp/pip-ephem-wheel-cache-7rj7ccao/wheels/e7/d9/e6/2becdd66929be2a2e7d7caf6055a3b033c7fa76967b6c0543a\nSuccessfully built scikit-learn\nInstalling collected packages: threadpoolctl, cloudpickle, joblib, scikit-learn\nSuccessfully installed cloudpickle-3.1.2 joblib-1.6.0 scikit-learn-1.7.dev0 threadpoolctl-3.7.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 1,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 1,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 7,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "smacof(dissimilarities, normalized_stress='auto', metric=False, n_init=1)": [
+                [
+                  -0.14712520888474012,
+                  -0.3808493020678375
+                ],
+                [
+                  0.4067647069565691,
+                  0.06860249257686811
+                ],
+                [
+                  -0.25731036972450894,
+                  0.3113646408650059
+                ]
+              ]
+            },
+            "fixed_values": {
+              "smacof(dissimilarities, normalized_stress='auto', metric=False, n_init=1)": [
+                [
+                  0.3847574702519379,
+                  -0.33302447911727096
+                ],
+                [
+                  -0.3641405439878225,
+                  -0.3591191700555896
+                ],
+                [
+                  -0.020616926264115418,
+                  0.6921436491728605
+                ]
+              ]
+            }
+          },
+          {
+            "label": "nonmetric_nan_error",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=1.000e+00, tol=0.000e+00)"
+              ]
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "nonmetric_nan_error_occurred": 0.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "nonmetric_nan_handling",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "nonmetric_other_error": 1.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "normalized_stress_metric_error",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "normalized_stress_restriction_present": 1.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)": [
+                1797,
+                2
+              ],
+              "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)::min_max_range": [
+                -0.6730443716191264,
+                0.6906550050546498
+              ],
+              "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)::std": [
+                0.34007000157985484,
+                0.33530299198250685
+              ],
+              "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_value": 0.004518404380378453,
+              "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) manual_stress": 0.004068428285057122,
+              "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_match": false,
+              "smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values": [
+                3,
+                2
+              ],
+              "smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values::has_nan": false,
+              "smacof with metric=True, normalized_stress=True": "__error__: ValueError: Normalized stress is not supported for metric MDS. Either set `normalized_stress=False` or use `metric=False`."
+            },
+            "fixed_values": {
+              "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)": [
+                1797,
+                2
+              ],
+              "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)::min_max_range": [
+                -0.8156549934945239,
+                0.8290668946625941
+              ],
+              "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)::std": [
+                0.4545939973735553,
+                0.45159919519437014
+              ],
+              "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_value": 0.004518404380378453,
+              "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) manual_stress": 0.009036808760756906,
+              "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) stress_match": false,
+              "smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values": [
+                3,
+                2
+              ],
+              "smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with near-zero values::has_nan": false,
+              "smacof with metric=True, normalized_stress=True": "<class 'numpy.float64'>",
+              "smacof with metric=True, normalized_stress=True::stress_value": 0.023850165986974602
+            }
+          },
+          {
+            "label": "stress_mismatch_measurement",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: sklearn.utils._param_validation.InvalidParameterError: The 'init' parameter of smacof must be an array-like or None. Got 'random' instead.",
+                "values do not match the reference (length mismatch: 0 vs 3)"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: sklearn.utils._param_validation.InvalidParameterError: The 'init' parameter of smacof must be an array-like or None. Got 'random' instead.",
+                "values do not match the reference (length mismatch: 0 vs 3)"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "stress_mismatch_metric_mds",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: not enough values to unpack (expected 3, got 2)"
+              ]
+            },
+            "fixed": null,
+            "buggy_status": "exception",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": null
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 4,
+        "n_judged": 2,
+        "n_reproduced": 1,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 2,
+        "n_contested": 0,
+        "unobserved": [
+          "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) with disparities=[[0, 1, 4, 2.828], [1, 0, 3, 2.236], [4, 3, 0, 2.828], [2.828, 2.236, 2.828, 0]]",
+          "smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with specific small dissimilarity matrix and init causing near-zero values"
+        ],
+        "verdict": "incomplete",
+        "examples": [
+          {
+            "input": "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)",
+            "expected_output": "Well-structured embedding showing clear digit clusters with proper non-metric MDS properties",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Non-sensical embedding where points are scattered randomly (digits dataset shows no clear clustering)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)",
+              "observed": [
+                1797,
+                2
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "MDS(n_components=2, n_init=1, random_state=42, metric=False).fit_transform(load_digits().data)",
+              "observed": [
+                1797,
+                2
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "MDS(n_components=2, dissimilarity='precomputed', random_state=42, metric=True).fit(disparities_matrix) with disparities=[[0, 1, 4, 2.828], [1, 0, 3, 2.236], [4, 3, 0, 2.828], [2.828, 2.236, 2.828, 0]]",
+            "expected_output": "stress_=0.0020293041020245147 (matching the returned embedding)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "stress_=0.0045113518633979315 but manual calculation with returned coordinates gives stress=0.0020293041020245147",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "smacof(dissimilarities, init=init_array, normalized_stress='auto', metric=False, n_init=1) with specific small dissimilarity matrix and init causing near-zero values",
+            "expected_output": "Valid MDS result without NaN errors",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: Input contains NaN due to IsotonicRegression out_of_bounds error",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "smacof with metric=True, normalized_stress=True",
+            "expected_output": "Computation succeeds and returns normalized stress for metric MDS",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: Normalized stress is not supported for metric MDS",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "smacof with metric=True, normalized_stress=True",
+              "observed": "__error__: ValueError: Normalized stress is not supported for metric MDS. Either set `normalized_stress=False` or use `metric=False`.",
+              "evaluation_error": "ValueError: Normalized stress is not supported for metric MDS. Either set `normalized_stress=False` or use `metric=False`.",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "smacof with metric=True, normalized_stress=True",
+              "observed": "<class 'numpy.float64'>",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 7,
+          "n_failed": 4,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 1,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "The test assertions in the PR diff verify that stress values are now correctly computed after the SMACOF update (not from previous iteration), disparities matrix is properly symmetric, isotonic regression is called only after first iteration, and normalized_stress is allowed for metric MDS. Specifically, the tests should fail on the buggy commit because stress mismatch, NaN errors, or ValueError exceptions will occur."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata",
+          "numpy>=1.22.0",
+          "pytest>=7.1.2",
+          "pytest-cov>=2.9.0",
+          "meson-python>=0.16.0",
+          "cython>=3.0.10",
+          "pooch>=1.6.0"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2025-03-31T08:49:03+02:00",
+      "fixed_commit_date": "2025-03-31T11:25:50+02:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2025-03-31T11:25:50+02:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.10/site-packages/sklearn/__init__.py",
+          "build_requires": [
+            "meson-python>=0.16.0",
+            "Cython>=3.0.10",
+            "scipy>=1.8.0"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.2.4",
+            "pandas": "2.2.3",
+            "matplotlib": "3.10.1",
+            "pyparsing": "3.2.3",
+            "llvmlite": "0.44.0",
+            "meson-python": "0.17.1",
+            "cython": "3.0.12",
+            "scipy": "1.15.2"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.1"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "matplotlib>=3.5.0",
+            "scikit-image>=0.19.0",
+            "pandas>=1.4.0",
+            "pytest>=7.1.2",
+            "pytest-cov>=2.9.0",
+            "pyamg>=5.0.0",
+            "polars>=0.20.30",
+            "pyarrow>=12.0.0",
+            "numpydoc>=1.2.0",
+            "pooch>=1.6.0"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nCollecting threadpoolctl>=3.1.0\n  Downloading threadpoolctl-3.7.0-py3-none-any.whl (26 kB)\nCollecting joblib>=1.2.0\n  Downloading joblib-1.6.0-py3-none-any.whl (306 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 306.1/306.1 kB 33.8 MB/s eta 0:00:00\nRequirement already satisfied: scipy>=1.8.0 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from scikit-learn==1.7.dev0) (1.15.2)\nRequirement already satisfied: numpy>=1.22.0 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from scikit-learn==1.7.dev0) (2.2.4)\nCollecting cloudpickle>=3.0\n  Downloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nBuilding wheels for collected packages: scikit-learn\n  Building wheel for scikit-learn (pyproject.toml): started\n  Building wheel for scikit-learn (pyproject.toml): finished with status 'done'\n  Created wheel for scikit-learn: filename=scikit_learn-1.7.dev0-cp310-cp310-linux_x86_64.whl size=14112690 sha256=9e56843131b2caea7a622f91cf6d0fc271e3de06ee76cc77dbce0c288acb6e8c\n  Stored in directory: /tmp/pip-ephem-wheel-cache-irykzuni/wheels/ed/f7/86/c0f1039ac56a217e74c3b8eda25eb10695c47995525191ed3e\nSuccessfully built scikit-learn\nInstalling collected packages: threadpoolctl, cloudpickle, joblib, scikit-learn\nSuccessfully installed cloudpickle-3.1.2 joblib-1.6.0 scikit-learn-1.7.dev0 threadpoolctl-3.7.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.10/site-packages/sklearn/__init__.py",
+          "build_requires": [
+            "meson-python>=0.16.0",
+            "Cython>=3.0.10",
+            "scipy>=1.8.0"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.2.4",
+            "pandas": "2.2.3",
+            "matplotlib": "3.10.1",
+            "pyparsing": "3.2.3",
+            "llvmlite": "0.44.0",
+            "meson-python": "0.17.1",
+            "cython": "3.0.12",
+            "scipy": "1.15.2"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.1"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "matplotlib>=3.5.0",
+            "scikit-image>=0.19.0",
+            "pandas>=1.4.0",
+            "pytest>=7.1.2",
+            "pytest-cov>=2.9.0",
+            "pyamg>=5.0.0",
+            "polars>=0.20.30",
+            "pyarrow>=12.0.0",
+            "numpydoc>=1.2.0",
+            "pooch>=1.6.0"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nCollecting joblib>=1.2.0\n  Downloading joblib-1.6.0-py3-none-any.whl (306 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 306.1/306.1 kB 4.5 MB/s eta 0:00:00\nRequirement already satisfied: numpy>=1.22.0 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from scikit-learn==1.7.dev0) (2.2.4)\nCollecting threadpoolctl>=3.1.0\n  Downloading threadpoolctl-3.7.0-py3-none-any.whl (26 kB)\nRequirement already satisfied: scipy>=1.8.0 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from scikit-learn==1.7.dev0) (1.15.2)\nCollecting cloudpickle>=3.0\n  Downloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nBuilding wheels for collected packages: scikit-learn\n  Building wheel for scikit-learn (pyproject.toml): started\n  Building wheel for scikit-learn (pyproject.toml): finished with status 'done'\n  Created wheel for scikit-learn: filename=scikit_learn-1.7.dev0-cp310-cp310-linux_x86_64.whl size=14112983 sha256=c47f52f10170950a9ced7bcbb0bcecab5f3b87f5dcf615e7f75a7001f1f51391\n  Stored in directory: /tmp/pip-ephem-wheel-cache-7rj7ccao/wheels/e7/d9/e6/2becdd66929be2a2e7d7caf6055a3b033c7fa76967b6c0543a\nSuccessfully built scikit-learn\nInstalling collected packages: threadpoolctl, cloudpickle, joblib, scikit-learn\nSuccessfully installed cloudpickle-3.1.2 joblib-1.6.0 scikit-learn-1.7.dev0 threadpoolctl-3.7.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 6,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce multiple non-metric MDS bugs including incorrect stress reporting, disparities matrix handling, isotonic regression timing, NaN errors, and normalized_stress restrictions.",
+          "milestones": [
+            "buggy_environment_ready [buggy] \u2014 Prepare the buggy revision for testing by building and verifying the environment. (2 steps, verify: steps_succeeded)",
+            "buggy_tests_fail [buggy] \u2014 Demonstrate that the reproducing tests fail on the buggy revision. (1 steps, verify: test_ran, test_fails)",
+            "buggy_additional_tests [buggy] \u2014 Run additional reproducing tests to show multiple manifestations of the bugs. (3 steps, verify: test_ran)",
+            "buggy_stress_probe [buggy] \u2014 Capture numerical stress values on buggy revision to show incorrect calculations. (1 steps, verify: steps_succeeded)",
+            "fixed_environment_ready [fixed] \u2014 Prepare the fixed revision for testing. (2 steps, verify: steps_succeeded)",
+            "fixed_tests_pass [fixed] \u2014 Demonstrate that the reproducing tests pass on the fixed revision. (4 steps, verify: test_ran, test_passes)",
+            "fixed_stress_probe [fixed] \u2014 Capture numerical stress values on fixed revision to show correct calculations. (1 steps, verify: steps_succeeded)",
+            "revisions_differ [buggy] \u2014 Verify that buggy and fixed revisions exhibit different behavior. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -m pip install -q pytest matplotlib 2>&1 | head -20",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 2.9
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c \"import sklearn; print(f'sklearn version: {sklearn.__version__}'); from sklearn.manifold import _mds; print('_mds module imports successfully')\"",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 0.17
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_ready",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -c \"import sklearn; print(f'sklearn version: {skle` exited 1: earn.org/dev/developers/advanced_installation.html#building-from-source\n\nIf you have used an installer, please check that it is suited for your\nPython version, your operating system and your platform."
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce multiple non-metric MDS bugs (stress miscalculation, disparities matrix handling, isotonic regression timing, NaN errors, normalized_stress restrictions) using direct numerical probes on reported examples.",
+          "milestones": [
+            "buggy_environment_ready [buggy] \u2014 Build and verify the buggy revision environment, diagnosing any import issues. (2 steps, verify: steps_succeeded)",
+            "buggy_stress_calculation_probe [buggy] \u2014 Capture numerical stress values on buggy revision showing incorrect calculations compared to expected. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "buggy_normalized_stress_restriction [buggy] \u2014 Demonstrate that normalized_stress=True incorrectly raises ValueError for metric MDS in buggy revision. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "buggy_nan_isotonic_error [buggy] \u2014 Demonstrate NaN/isotonic regression errors in non-metric MDS on buggy revision. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "fixed_environment_ready [fixed] \u2014 Build and verify the fixed revision environment. (2 steps, verify: steps_succeeded)",
+            "fixed_stress_calculation_probe [fixed] \u2014 Capture numerical stress values on fixed revision showing correct calculations. (1 steps, verify: probe_ran, probe_clean)",
+            "fixed_normalized_stress_allowed [fixed] \u2014 Demonstrate that normalized_stress=True works correctly for metric MDS in fixed revision. (1 steps, verify: probe_ran, probe_clean)",
+            "fixed_nonmetric_nan_resolved [fixed] \u2014 Demonstrate that non-metric MDS handles edge cases without NaN errors on fixed revision. (1 steps, verify: probe_ran, probe_clean)",
+            "revisions_differ [buggy] \u2014 Verify that buggy and fixed revisions exhibit different behavior on the key bugs. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -m pip install -q pytest matplotlib scipy 2>&1 | tail -5",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 1.27
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c \"import sklearn; import sklearn.manifold._mds; print('sklearn import successful'); print(f'sklearn version: {sklearn.__version__}')\"",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 0.18
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_ready",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -c \"import sklearn; import sklearn.manifold._mds; ` exited 1: earn.org/dev/developers/advanced_installation.html#building-from-source\n\nIf you have used an installer, please check that it is suited for your\nPython version, your operating system and your platform."
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "buggy_environment_ready",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 2,
+          "detail": [
+            "`cd /workspace/buggy && python -c \"import sklearn; import sklearn.manifold._mds; ` exited 1: earn.org/dev/developers/advanced_installation.html#building-from-source\n\nIf you have used an installer, please check that it is suited for your\nPython version, your operating system and your platform."
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "mds_stress_mismatch",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(mds_stress_mismatch) \u2014 Reproduce stress mismatch bug: compare returned stress against manually calculated stress from embedding"
+      },
+      {
+        "verification": {
+          "milestone": "buggy_stress_calculation_probe",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce multiple non-metric MDS bugs by capturing numerical values from specific test cases on both revisions, showing defects on buggy and correctness on fixed.",
+          "milestones": [
+            "buggy_environment_diagnosis [buggy] \u2014 Diagnose and fix the import failure in the buggy revision environment. (2 steps, verify: steps_succeeded)",
+            "buggy_stress_mismatch_probe [buggy] \u2014 Capture numerical stress values on buggy revision showing mismatch between returned stress and manually calculated stress. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "buggy_nonmetric_nan_probe [buggy] \u2014 Capture NaN or error conditions that occur in non-metric MDS on buggy revision. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "buggy_normalized_stress_restriction [buggy] \u2014 Demonstrate that normalized_stress=True incorrectly raises ValueError for metric MDS in buggy revision. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "fixed_environment_ready [fixed] \u2014 Build and verify the fixed revision environment. (1 steps, verify: steps_succeeded)",
+            "fixed_stress_mismatch_probe [fixed] \u2014 Capture numerical stress values on fixed revision showing correct calculations (stress matches embedding). (1 steps, verify: probe_ran, probe_clean)",
+            "fixed_nonmetric_nan_probe [fixed] \u2014 Demonstrate that non-metric MDS handles edge cases without NaN errors on fixed revision. (1 steps, verify: probe_ran, probe_clean)",
+            "fixed_normalized_stress_allowed [fixed] \u2014 Demonstrate that normalized_stress=True works correctly for metric MDS in fixed revision. (1 steps, verify: probe_ran, probe_clean)",
+            "revisions_differ [buggy] \u2014 Verify that buggy and fixed revisions exhibit different behavior on the key bugs. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c \"import sys; print(f'Python: {sys.executable}'); import numpy; print(f'NumPy: {numpy.__version__}'); import scipy; print(f'SciPy: {scipy.__version__}')\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.32
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c \"import sklearn; print(f'sklearn path: {sklearn.__file__}'); from sklearn.manifold import _mds; print('_mds imported successfully')\"",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 0.16
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_diagnosis",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -c \"import sklearn; print(f'sklearn path: {sklearn` exited 1: earn.org/dev/developers/advanced_installation.html#building-from-source\n\nIf you have used an installer, please check that it is suited for your\nPython version, your operating system and your platform."
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "buggy_environment_diagnosis",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 3,
+          "detail": [
+            "`cd /workspace/buggy && python -c \"import sklearn; print(f'sklearn path: {sklearn` exited 1: earn.org/dev/developers/advanced_installation.html#building-from-source\n\nIf you have used an installer, please check that it is suited for your\nPython version, your operating system and your platform."
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "stress_mismatch_metric_mds",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: ValueError: not enough values to unpack (expected 3, got 2)"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_stress_mismatch_probe",
+          "verified": true,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'stress_mismatch_metric_mds': probe raised: ValueError: not enough values to unpack (expected 3, got 2)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "nonmetric_nan_handling",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_nonmetric_nan_probe",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "no probe exhibited the defect on buggy (values [1.0])"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce multiple non-metric MDS bugs by directly evaluating reported examples and measuring numerical values showing defects on buggy and correctness on fixed.",
+          "milestones": [
+            "buggy_stress_mismatch_direct [buggy] \u2014 Directly measure the stress mismatch on buggy revision using the reported example data. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "buggy_normalized_stress_restriction_direct [buggy] \u2014 Demonstrate that normalized_stress=True raises ValueError for metric MDS on buggy revision. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "buggy_nonmetric_nan_direct [buggy] \u2014 Demonstrate NaN or ValueError handling in non-metric MDS on buggy revision. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "fixed_stress_mismatch_direct [fixed] \u2014 Verify stress calculation is correct on fixed revision. (1 steps, verify: probe_ran, probe_clean)",
+            "fixed_normalized_stress_allowed [fixed] \u2014 Verify that normalized_stress=True works with metric MDS on fixed revision. (1 steps, verify: probe_ran, probe_clean)",
+            "fixed_nonmetric_nan_clean [fixed] \u2014 Verify non-metric MDS handles edge cases without NaN errors on fixed revision. (1 steps, verify: probe_ran, probe_clean)",
+            "revisions_differ [buggy] \u2014 Verify that buggy and fixed revisions exhibit different behavior on the key bugs. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "stress_mismatch_measurement",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: sklearn.utils._param_validation.InvalidParameterError: The 'init' parameter of smacof must be an array-like or None. Got 'random' instead.",
+          "values do not match the reference (length mismatch: 0 vs 3)"
+        ],
+        "expected": [
+          0.002,
+          0.002,
+          0.0
+        ],
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_stress_mismatch_direct",
+          "verified": true,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'stress_mismatch_measurement': probe raised: sklearn.utils._param_validation.InvalidParameterError: The 'init' parameter of smacof must be an array-like or None. Got 'random' instead.; values do not match the reference (length mismatch: 0 vs 3)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "normalized_stress_metric_error",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": [
+          1.0
+        ],
+        "observed": [
+          1.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_normalized_stress_restriction_direct",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "no probe exhibited the defect on buggy (values [1.0])"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "buggy_normalized_stress_restriction_direct",
+          "revision": "buggy",
+          "failed": [
+            "probe_shows_defect"
+          ],
+          "attempts": 2,
+          "detail": [
+            "no probe exhibited the defect on buggy (values [1.0])"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "nonmetric_nan_error",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "values do not match the reference (finite compare: abs_err=1.000e+00, tol=0.000e+00)"
+        ],
+        "expected": [
+          1.0
+        ],
+        "observed": [
+          0.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_nonmetric_nan_direct",
+          "verified": true,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'nonmetric_nan_error': values do not match the reference (finite compare: abs_err=1.000e+00, tol=0.000e+00)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "stress_mismatch_measurement",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: sklearn.utils._param_validation.InvalidParameterError: The 'init' parameter of smacof must be an array-like or None. Got 'random' instead.",
+          "values do not match the reference (length mismatch: 0 vs 3)"
+        ],
+        "expected": [
+          0.002,
+          0.002,
+          0.0
+        ],
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "fixed_stress_mismatch_direct",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "probe 'stress_mismatch_measurement' is not clean on fixed: probe raised: sklearn.utils._param_validation.InvalidParameterError: The 'init' parameter of smacof must be an array-like or None. Got 'random' instead.; values do not match the reference (length mismatch: 0 vs 3)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs sklearn.manifold.tests.test_mds -k test_nonmetric_lower_normalized_stress -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 4.41
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs sklearn.manifold.tests.test_mds -k test_nonmetric_lower_normalized_stress -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 3.37
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_nonmetric_lower_normalized_stress",
+          "command": "python -I -m pytest --pyargs sklearn.manifold.tests.test_mds -k test_nonmetric_lower_normalized_stress -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "sklearn",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_nonmetric_lower_normalized_stress",
+              "command": "python -I -m pytest --pyargs sklearn.manifold.tests.test_mds -k test_nonmetric_lower_normalized_stress -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1797.0,
+          2.0,
+          -0.6730443716191264,
+          0.6906550050546498,
+          0.34007000157985484,
+          0.33530299198250685,
+          0.004518404380378453,
+          0.004068428285057122,
+          3.0,
+          2.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1797.0,
+          2.0,
+          -0.8156549934945239,
+          0.8290668946625941,
+          0.4545939973735553,
+          0.45159919519437014,
+          0.004518404380378453,
+          0.009036808760756906,
+          3.0,
+          2.0
+        ]
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 4,
+            "recorded": 9,
+            "error": null,
+            "could_not_evaluate": 1
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 4,
+            "recorded": 10,
+            "error": null,
+            "could_not_evaluate": 0
+          },
+          "preamble": "generated probe",
+          "observed": 2
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "IEEE FP exception: invalid",
+          "IEEE FP exception: divide_by_zero"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          -0.28711381014135207,
+          -0.28711381014135207,
+          -0.29023224813355947,
+          -0.29023224813355947,
+          0.5773460582749116,
+          0.5773460582749116,
+          0.002205068650999826
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          -0.14712520888474012,
+          -0.3808493020678375,
+          0.4067647069565691,
+          0.06860249257686811,
+          -0.25731036972450894,
+          0.3113646408650059
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.3847574702519379,
+          -0.33302447911727096,
+          -0.3641405439878225,
+          -0.3591191700555896,
+          -0.020616926264115418,
+          0.6921436491728605
+        ]
+      },
+      {
+        "described_examples": {
+          "n_described": 1,
+          "buggy": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "repaired": 1,
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "incomplete",
+        "examples": "1/2"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 1/2 reported example(s) reproduce, but 2 of 4 reported example(s) could not be evaluated on either revision, so those values remain unchecked"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "claude-haiku-4-5-20251001",
+      "calls": 9,
+      "input_tokens": 29136,
+      "output_tokens": 20918,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.133726
+    }
+  }
+]

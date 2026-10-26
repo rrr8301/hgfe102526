@@ -1,0 +1,84 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index f7bd58a543954..a2852b4afc92a 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -1150,6 +1150,7 @@ Sparse
+ - Bug in :meth:`Series.any`, :meth:`Series.all`, :meth:`DataFrame.any`, :meth:`DataFrame.all`, :meth:`SparseArray.any`, and :meth:`SparseArray.all` mishandling missing values on :class:`SparseDtype` data: with ``skipna=True`` a missing value was reduced for its own truthiness instead of being skipped, and with ``skipna=False`` missing values were dropped instead of reduced; :meth:`SparseArray.any` and :meth:`SparseArray.all` also raised a ``TypeError`` when called with the ``skipna`` argument (:issue:`68390`)
+ - Bug in :meth:`Series.any`, :meth:`Series.all`, :meth:`DataFrame.any`, :meth:`DataFrame.all`, :meth:`SparseArray.any`, and :meth:`SparseArray.all` returning a result on datetime64 :class:`SparseDtype` data instead of raising ``TypeError`` the way the dense equivalents do (:issue:`68438`)
+ - Bug in :meth:`Series.argmin`, :meth:`Series.argmax`, :meth:`Series.idxmin`, :meth:`Series.idxmax`, :meth:`DataFrame.idxmin`, :meth:`DataFrame.idxmax`, :meth:`SparseArray.argmin`, and :meth:`SparseArray.argmax` raising ``ValueError: attempt to get argmin of an empty sequence`` on :class:`SparseDtype` data with no non-missing stored values, when the non-missing ``fill_value`` occupies at least one position, instead of returning the first such position (:issue:`68462`)
++- Bug in :meth:`Series.astype`, :meth:`DataFrame.astype`, :meth:`Index.astype`, and :meth:`SparseArray.astype` from a :class:`SparseDtype` to a dense dtype silently rounding ``uint64`` values above ``2**53``, and, for a datetime64 or timedelta64 subtype with a boxed :class:`Timestamp` or :class:`Timedelta` ``fill_value``, silently giving wrong values or raising ``TypeError`` (:issue:`68573`)
+ - Bug in :meth:`Series.cumsum`, :meth:`Series.cumprod`, :meth:`Series.cummin`, :meth:`Series.cummax` and their :class:`DataFrame` counterparts raising ``NotImplementedError`` on :class:`SparseDtype` data (:issue:`68187`)
+ - Bug in :meth:`Series.mean` with ``skipna=False`` ignoring missing values for :class:`SparseDtype`-backed :class:`Series` (:issue:`65478`)
+ - Bug in :meth:`Series.mean`, :meth:`DataFrame.mean`, and :meth:`SparseArray.mean` on :class:`SparseDtype` data with no non-missing values, an empty array included, emitting a numpy ``RuntimeWarning``, or raising ``ZeroDivisionError`` for an object subtype or ``TypeError`` for a non-numeric ``fill_value``; the missing value is now returned quietly (:issue:`68484`)
+diff --git a/pandas/core/arrays/sparse/array.py b/pandas/core/arrays/sparse/array.py
+index 87aa87e899aac..6f9f086c22fa5 100644
+--- a/pandas/core/arrays/sparse/array.py
++++ b/pandas/core/arrays/sparse/array.py
+@@ -1464,24 +1464,22 @@ def astype(self, dtype: AstypeArg | None = None, copy: bool = True):
+         """
+         Change the dtype of a SparseArray.
+ 
+-        The output will always be a SparseArray. To convert to a dense
+-        ndarray with a certain dtype, use :meth:`numpy.asarray`.
+-
+         Parameters
+         ----------
+         dtype : np.dtype or ExtensionDtype
+             For SparseDtype, this changes the dtype of
+             ``self.sp_values`` and the ``self.fill_value``.
+ 
+-            For other dtypes, this only changes the dtype of
+-            ``self.sp_values``.
++            For any other dtype, the array is densified and cast to it.
+ 
+         copy : bool, default True
+             Whether to ensure a copy is made, even if not necessary.
+ 
+         Returns
+         -------
+-        SparseArray
++        np.ndarray or pandas.api.extensions.ExtensionArray
++            A SparseArray for a SparseDtype, another ExtensionArray for any
++            other ExtensionDtype, otherwise a dense ndarray of ``dtype``.
+ 
+         Examples
+         --------
+@@ -1496,8 +1494,8 @@ def astype(self, dtype: AstypeArg | None = None, copy: bool = True):
+         [0, 0, 1, 2]
+         Length: 4, dtype: Sparse[int32, 0]
+ 
+-        Using a NumPy dtype with a different kind (e.g. float) will coerce
+-        just ``self.sp_values``.
++        Changing the subtype can change the fill value too -- here ``0``
++        becomes ``nan``, the default for ``float64``.
+ 
+         >>> arr.astype(pd.SparseDtype(np.dtype("float64")))
+         <SparseArray>
+@@ -1520,7 +1518,7 @@ def astype(self, dtype: AstypeArg | None = None, copy: bool = True):
+         future_dtype = pandas_dtype(dtype)
+         if not isinstance(future_dtype, SparseDtype):
+             # GH#34457
+-            values = np.asarray(self)
++            values = self._densify()
+             values = ensure_wrapped_if_datetimelike(values)
+             return astype_array(values, dtype=future_dtype, copy=False)
+ 
+@@ -1674,11 +1672,15 @@ def _densify(self) -> np.ndarray:
+         is no good either because it promotes on ``type(fill_value)`` and so widens
+         e.g. ``Sparse[uint64]`` to float64.
+ 
+-        With no gaps this is ``sp_values`` itself, not a copy, so callers must not
+-        write to the result.
++        With no gaps this is ``sp_values`` itself (or a read-only view of it), not
++        a copy, so callers must not write to the result.
+         """
+         if self.sp_index.ngaps == 0:
+-            return self.sp_values
++            result = self.sp_values
++            if self._readonly:
++                result = result.view()
++                result.flags.writeable = False
++            return result
+ 
+         npdtype = self.sp_values.dtype
+         fill_value = self.fill_value

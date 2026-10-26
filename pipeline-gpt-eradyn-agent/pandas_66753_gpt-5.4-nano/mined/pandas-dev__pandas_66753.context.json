@@ -1,0 +1,381 @@
+{
+  "repo": "pandas-dev/pandas",
+  "pr_number": 66753,
+  "reference": "https://github.com/pandas-dev/pandas/pull/66753",
+  "buggy_commit": "5faf9dff8f3f08462ce3e0f72b44731ca10ac291",
+  "fixed_commit": "f040cfd389619846a630107e1953e334f10b04ea",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "NumPy",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "README.md (Dependencies): \"NumPy\""
+      },
+      {
+        "name": "python-dateutil",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md (Dependencies): \"python-dateutil\""
+      },
+      {
+        "name": "tzdata",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md (Dependencies): \"tzdata (Only required on Windows/Emscripten)\""
+      },
+      {
+        "name": "Cython",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md (Installation from sources): \"To install pandas from source you need [Cython]\""
+      }
+    ],
+    "installation_commands": [
+      "pip install cython",
+      "pip install .",
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "build_commands": [
+      "pip install .",
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: NumPy \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: python-dateutil \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: tzdata \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: Cython \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "NumPy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "README.md (Dependencies): \"NumPy\""
+      },
+      {
+        "package": "python-dateutil",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md (Dependencies): \"python-dateutil\""
+      },
+      {
+        "package": "tzdata",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md (Dependencies): \"tzdata (Only required on Windows/Emscripten)\""
+      },
+      {
+        "package": "Cython",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md (Installation from sources): \"To install pandas from source you need [Cython]\""
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "pandas._libs.tslibs.tzconversion.Localizer.utc_val_to_local_val",
+    "observed_behavior": "When converting a UTC instant to local time, `Localizer.utc_val_to_local_val` silently wraps an int64 instead of raising, producing a local timestamp that is roughly 585 years off. In some iNaT-related cases, the wrapped value is stored as the NaT sentinel and then read back as NaT (breaking correctness for array/vectorized paths).",
+    "expected_behavior": "The UTC->local conversion should raise `OutOfBoundsDatetime` when the resulting local wall time is out of the representable range (instead of silently wrapping). For iNaT landing exactly on the NaT sentinel, the value should be left alone in the shift so it renders the correct wall time (and coarser callers should not regress).",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "UTC->local conversion where the wall time leaves the representable range (int64 would overflow/underflow).",
+      "Vectorized/array path that stores the result back into an i8 buffer without using the scalar overflow checking (described as an array/vectorized discrepancy versus the scalar path).",
+      "Cases where the shifted local value lands exactly on the NaT sentinel (i.e., `local value == iNaT`), so a wrapped store can cause the value to read back as NaT."
+    ],
+    "input_output_examples": [
+      {
+        "input": "dti = pd.DatetimeIndex([pd.Timestamp.min], tz=\"UTC\").tz_convert(\"US/Pacific\"); dti.tz_localize(None)",
+        "buggy_output": "DatetimeIndex([\"2262-04-11 15:54:18.854775809\"], dtype=\"datetime64[ns]\")  # 585 years off",
+        "expected_output": "OutOfBoundsDatetime: Converting 2262-04-11 15:54:18 overflows past ...",
+        "value_kind": "string",
+        "source": "pr_body:PR#66753"
+      },
+      {
+        "input": "pd.Timestamp(\"1677-09-21 09:31:42.145224192\").tz_localize(\"Asia/Tokyo\")",
+        "buggy_output": "1677-09-21 00:12:43.145224193 (shows an underflowed/wrapped time instead of rejecting)",
+        "expected_output": "OutOfBoundsDatetime: Converting 1677-09-21 09:31:42.145224192 underflows past ...",
+        "value_kind": "string",
+        "source": "issue:issue#66550"
+      },
+      {
+        "input": "dti = pd.DatetimeIndex([pd.Timestamp(iNaT + 3600 * 10**9, tz=\"UTC\")]).tz_convert(timezone(timedelta(hours=-1)))",
+        "buggy_output": "Local value == iNaT (sentinel); discrepancy noted that UTC value is representable but local value lands on the NaT sentinel",
+        "expected_output": "The local value should render the correct wall time; the shift special-cases landing exactly on the NaT sentinel to leave it alone in the shift",
+        "value_kind": "unknown",
+        "source": "issue:issue#66550"
+      }
+    ],
+    "oracle_clues": [
+      "Array/vectorized path previously differed from scalar: scalar already refuses the same conversion via `conversion.check_overflows`.",
+      "Incorrect correctness criterion: `.tz_localize(None)`, `.year`, and `.strftime` agreed with the wrapped value, showing the wrong stored int64 was used.",
+      "Correctness criterion: should raise `OutOfBoundsDatetime` for out-of-bounds local wall times, using the checked-add path (`checked_add` + `raise_out_of_bounds`).",
+      "Special-case correctness: a local value landing exactly on the NaT sentinel is left alone in the shift so it renders the correct wall time; only the callers that store it back into an i8 buffer check for it."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": "datetime64[ns]",
+    "precision": null,
+    "magnitude": "past the representable Timestamp bounds (wraps by roughly 585 years instead of raising)",
+    "tolerance": null,
+    "category_specific_evidence": [
+      "Bug: \u201cUTC to local conversion wrapped int64 silently (GH#66550)\u201d and \u201cLocalizer.utc_val_to_local_val added the UTC offset with a bare add, so a UTC instant whose wall time leaves the representable range came back roughly 585 years off. \u2026 scalar path already refuses the same conversion via conversion.check_overflows.\u201d",
+      "PR repro: `pd.Timestamp(pd.Timestamp.min._value, tz=\"UTC\").tz_convert(\"US/Pacific\")` raises `OutOfBoundsDatetime: Converting 2262-04-11 15:54:18.854775809 overflows past ...` while the array conversion path returns `DatetimeIndex([\"2262-04-11 15:54:18.854775809\"], dtype=\"datetime64[ns]\")` after `tz_convert` + `tz_localize(None)`.",
+      "Issue repro: `dti = pd.DatetimeIndex([pd.Timestamp(iNaT + 3600 * 10**9, tz=\"UTC\")]).tz_convert(timezone(timedelta(hours=-1)))` is described as \u201cUTC value representable, local value == iNaT\u201d.",
+      "Test fix/behavior: in `dt64arr_to_periodarr`, it adds a check \u201cif res_val == NPY_NAT \u2026 raise_out_of_bounds(local_val, BS_UNDERFLOW, reso)\u201d with comment: \u201cGH#66550 at nanosecond freq the ordinal *is* the local i8 value, so a local time on the sentinel would be stored as NaT\u201d.",
+      "Test: `_utc_dti(Timestamp.max._value).tz_convert(tz)` should raise `OutOfBoundsDatetime` with match \u201coverflows past\u201d, and the test comment says the UTC->local shift \u201cwas a bare add \u2026 wrapped \u2026 by 585 years instead of raising.\u201d",
+      "Additional numerical scenario from issue text: for zones east of UTC, bisect compares wall time against UTC instants and can apply the post-transition offset \u201can hour out, in roughly 90 zones\u201d, with example \u201cAsia/Anadyr at 2011-03-27 02:30 with nonexistent=\"shift_backward\"\u201d.",
+      "Fix note in commit: \u201cA local value landing exactly on the NaT sentinel is left alone in the shift \u2026 Only the two callers that store it back into an i8 buffer check for it.\u201d"
+    ],
+    "reproduction_risks": [
+      "Repro behavior may depend on using the vectorized/DatetimeIndex conversion path that bypasses the eager scalar constructor (as stated in the test helper `_utc_dti`).",
+      "Out-of-bounds triggering depends on choosing UTC instants whose wall time leaves the representable range (scalar path refuses; vectorized path previously wrapped).",
+      "The behavior can differ by timezone transition rules (e.g., zoneinfo fast path vs dateutil vs fixed offset), as the test parametrizes `Europe/Berlin` (both string and `gettz`) and `Etc/GMT-9`.",
+      "Edge cases involving the NaT sentinel (`NPY_NAT` / `iNaT`) are explicitly special-cased: \u201conly the two callers that store it back into an i8 buffer check for it,\u201d so reproductions that don\u2019t hit those storage points may not raise."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "pip install cython",
+        "pip install .",
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.build_commands",
+      "value": [
+        "pip install .",
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "NumPy",
+      "source": "README.md (Dependencies): \"NumPy\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "python-dateutil",
+      "source": "README.md (Dependencies): \"python-dateutil\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "tzdata",
+      "source": "README.md (Dependencies): \"tzdata (Only required on Windows/Emscripten)\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "Cython",
+      "source": "README.md (Installation from sources): \"To install pandas from source you need [Cython]\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "pandas._libs.tslibs.tzconversion.Localizer.utc_val_to_local_val",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "When converting a UTC instant to local time, `Localizer.utc_val_to_local_val` silently wraps an int64 instead of raising, producing a local timestamp that is roughly 585 years off. In some iNaT-related cases, the wrapped value is stored as the NaT sentinel and then read back as NaT (breaking correctness for array/vectorized paths).",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "The UTC->local conversion should raise `OutOfBoundsDatetime` when the resulting local wall time is out of the representable range (instead of silently wrapping). For iNaT landing exactly on the NaT sentinel, the value should be left alone in the shift so it renders the correct wall time (and coarser callers should not regress).",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 4,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.dtype",
+      "value": "datetime64[ns]",
+      "source": "issue",
+      "evidence_location": "issue:issue#66550"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "past the representable Timestamp bounds (wraps by roughly 585 years instead of raising)",
+      "source": "issue",
+      "evidence_location": "issue:issue#66550"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 7,
+      "source": "issue",
+      "evidence_location": "issue:issue#66550"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 4,
+      "source": "issue",
+      "evidence_location": "issue:issue#66550"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "readme:README.md",
+        "issue:issue#66550",
+        "pr_body:PR#66753",
+        "diff:pandas/_libs/tslibs/vectorized.pyx:36-46",
+        "commit:commits",
+        "readme:README.md",
+        "readme:README.md"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "diff:pandas/_libs/tslibs/vectorized.pyx:36-46",
+        "pr_body:PR#66753",
+        "issue:issue#66550",
+        "issue:issue#66550",
+        "diff:pandas/_libs/tslibs/tzconversion.pyx:151-200",
+        "diff:pandas/_libs/tslibs/tzconversion.pyx:580-599",
+        "diff:pandas/_libs/tslibs/vectorized.pyx:83-92"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "issue:issue#66550",
+        "diff:pandas/_libs/tslibs/vectorized.pyx:413-422",
+        "issue:issue#66550",
+        "test_diff:pandas/tests/indexes/datetimes/methods/test_tz_convert.py:301-429",
+        "commit:commits",
+        "pr_body:PR#66753",
+        "diff:pandas/_libs/tslibs/vectorized.pyx:36-46",
+        "diff:pandas/_libs/tslibs/vectorized.pyx:83-92"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          }
+        ],
+        "present": [
+          "environment.dependencies",
+          "environment.build_commands"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 1.0,
+        "required_total": 5,
+        "required_present": 5,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 6518,
+    "output_tokens": 2124,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.003958,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": []
+}

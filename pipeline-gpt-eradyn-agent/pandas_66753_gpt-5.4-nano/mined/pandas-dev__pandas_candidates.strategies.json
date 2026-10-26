@@ -1,0 +1,107 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_66753_gpt-5.4-nano/mined/pandas-dev__pandas_66753.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 11526,
+    "output_tokens": 3706,
+    "cost_usd": 0.006937,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66753,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66753",
+      "buggy_commit": "5faf9dff8f3f08462ce3e0f72b44731ca10ac291",
+      "fixed_commit": "f040cfd389619846a630107e1953e334f10b04ea",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 9090,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#66753 (related to GH#66550): on buggy pandas, vectorized DatetimeIndex tz conversion (UTC->local) may wrap on overflow/underflow instead of raising OutOfBoundsDatetime, because the UTC->local shift path performs a bare integer add and doesn\u2019t consistently apply the overflow guard before storing back into i8 buffers (including NaT-sentinel boundary cases). The reproduction succeeds when pandas\u2019 own regression test(s) fail on the buggy revision and pass on the fixed one.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "cython",
+            "python-dateutil",
+            "pytz",
+            "tzdata"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install cython",
+            "python -m pip install .",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "No explicit version constraints for NumPy/Cython/dateutil/tzdata are provided in the evidence. NumPy is numerically relevant but unbounded in the dataset, so the plan must avoid pinning versions and instead rely on using the exact pandas revisions and running the same tests."
+          ]
+        },
+        "test_command": "python -m pytest -q pandas/tests/indexes/datetimes/methods/test_tz_convert.py -k \"utc_to_local_overflow or utc_to_local_underflow or utc_to_local_overflow_message_names_the_target_tz or utc_to_local_at_the_boundary_still_converts or local_on_sentinel\"",
+        "reproducing_test": "pandas/tests/indexes/datetimes/methods/test_tz_convert.py::test_dti_utc_to_local_overflow (parametrized for tz in Europe/Berlin, gettz('Europe/Berlin'), Etc/GMT-9)\nAND\npandas/tests/indexes/datetimes/methods/test_tz_convert.py::test_dti_utc_to_local_underflow\nAND\npandas/tests/indexes/datetimes/methods/test_tz_convert.py::test_dti_local_on_sentinel_raises_where_stored",
+        "success_criterion": "On the buggy pandas revision (commit 5faf9dff8f3f), the selected tests should FAIL: they either do not raise OutOfBoundsDatetime for out-of-range UTC->local conversions (overflow/underflow) where the fixed version does, and/or they do not raise OutOfBoundsDatetime in consumers that store the NaT-sentinel-boundary local value back into an i8 buffer.\nOn the fixed pandas revision (the PR\u2019s merged commit; exact fixed SHA not provided in the evidence), the same tests should PASS by raising OutOfBoundsDatetime with the expected overflow/underflow behavior, and by only allowing rendering-only code paths to succeed at the NaT boundary.",
+        "numerical_probe": "The probe is whether tz conversion produces a wrapped int64 i8 value (leading to incorrect local timestamps or NaT mis-readback) rather than rejecting with OutOfBoundsDatetime when out of the representable datetime64[ns] range; the regression test enforces this by asserting the exception is raised, not by separately checking numeric outputs.",
+        "input_output_examples": [
+          {
+            "input": "dti = _utc_dti(Timestamp.max._value).tz_convert(\"Europe/Berlin\"); dti.tz_localize(None)",
+            "buggy_output": "No OutOfBoundsDatetime; conversion completes (wrapped/incorrect local datetime64[ns] stored).",
+            "expected_output": "OutOfBoundsDatetime: match \"overflows past\""
+          },
+          {
+            "input": "dti = _utc_dti(Timestamp.min._value).tz_convert(\"US/Pacific\"); dti.tz_localize(None)",
+            "buggy_output": "No OutOfBoundsDatetime; conversion completes (wrapped/incorrect local datetime64[ns] stored).",
+            "expected_output": "OutOfBoundsDatetime: match \"underflows past\""
+          },
+          {
+            "input": "dti_local_on_sentinel = DatetimeIndex(np.array([iNaT + 3600 * 10**9], dtype=\"i8\").view(\"M8[ns]\")).tz_localize(\"UTC\").tz_convert(timezone(timedelta(hours=-1))); func(dti_local_on_sentinel) where func is lambda dti: dti.tz_localize(None) (or dti.year / dti.floor('D') / dti.to_period('ns'))",
+            "buggy_output": "Either no OutOfBoundsDatetime or a different exception outcome because the stored i8 value reads as NaT rather than raising underflow.",
+            "expected_output": "OutOfBoundsDatetime: match \"underflows past\""
+          }
+        ],
+        "risks": [
+          "The evidence does not provide the exact fixed commit SHA; you must check out the pandas revision that includes the PR#66753 fix (or the subsequent merge commit) for the passing side. The buggy SHA 5faf9dff8f3f is provided and should be used for the failing side.",
+          "The reproducer depends on the vectorized/DatetimeIndex tz conversion path that bypasses the eager scalar constructor; the provided regression test uses the helper `_utc_dti` specifically to hit that path. If you only run ad-hoc operations without `_utc_dti`, you may not trigger the bug.",
+          "Timezone-transition handling varies by tz implementation (zoneinfo vs dateutil). The test parametrizes both string tz and `gettz(...)` for Europe/Berlin and also uses a fixed-offset zone `Etc/GMT-9`; keep those exact params to maximize transition-rule coverage.",
+          "Some tests in the diff are skipped on Windows/WASM/32-bit (`tm.set_timezone`, OverflowError past 2038). If your platform triggers these skips, only run the non-skipped tests listed in `reproducing_test` to ensure you still get a failing/passing transition.",
+          "NumPy version is unpinned in the evidence (unbounded). The bug should be reproducible without pinning, but if the overflow behavior changes with a particular NumPy build/runtime, you may need to align NumPy to the CI environment where pandas verified the fix.",
+          "Architecture/toolchain differences (32-bit) can alter overflow behavior; the evidence explicitly mentions 32-bit skip for a tzlocal branch. If running on 32-bit, expect partial coverage and adjust accordingly."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "pandas\u2019 own regression assertions in test_tz_convert.py: expecting OutOfBoundsDatetime with match substrings like \"overflows past\"/\"underflows past\"",
+          "why": "The task is to transition based on whether the project\u2019s test for this bug FAILS/PASSES; the regression test uses exception-raising and regex matching, not numeric comparison."
+        },
+        "fails_on_buggy": "For test_dti_utc_to_local_overflow and test_dti_utc_to_local_underflow, the buggy revision does not raise OutOfBoundsDatetime when calling `tz_localize(None)` after `_utc_dti(Timestamp.*._value).tz_convert(tz)`, because the UTC->local shift wraps int64 instead of guarding overflow before storing. For test_dti_local_on_sentinel_raises_where_stored, the buggy revision fails to raise OutOfBoundsDatetime for consumers that store the computed local i8 into an i8 buffer (NaT sentinel mis-readback), whereas the fixed version raises.",
+        "passes_on_fixed": "The fixed revision applies the overflow/underflow guards consistently in the vectorized conversion path (including the NaT-sentinel boundary storage cases), so the same tests raise OutOfBoundsDatetime with the expected \"overflows past\"/\"underflows past\" messages, while the rendering-only sentinel test remains correct."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 5008,
+        "output_tokens": 1582,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002979
+      },
+      "miner_usage": {
+        "input_tokens": 6518,
+        "output_tokens": 2124,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.003958,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

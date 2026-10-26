@@ -1,0 +1,106 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/numpy_31379_claude-haiku-5-5/mined/numpy__numpy_31379.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 16969,
+    "output_tokens": 5294,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "numpy/numpy",
+      "pr_number": 31379,
+      "reference": "https://github.com/numpy/numpy/pull/31379",
+      "buggy_commit": "b2b53f3c496366f92f2c10d6da8217b60dec4041",
+      "fixed_commit": "467eef599c87f816640ed12756d453266f25df53",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 4966,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the npy_gcd INT_MIN abs-overflow defect in NumPy at the buggy commit b2b53f3c4963 by building NumPy from source and running the developer's test_gcd_overflow. The test should fail on the buggy build and pass on the fixed build, but only where the UB actually manifests (reported on s390x with GCC 11.5 -O2 -march=z14). On x86-64 or newer GCC the transition may not occur, and that is a known risk, not something this plan can guarantee.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "pytest",
+            "hypothesis",
+            "meson-python",
+            "ninja",
+            "Cython"
+          ],
+          "system_packages": [
+            "gcc (version matching reporter if available, reported GCC 11.5)",
+            "git"
+          ],
+          "build_commands": [
+            "git clone https://github.com/numpy/numpy.git && cd numpy && git checkout b2b53f3c4963 && git submodule update --init",
+            "python -m pip install meson-python ninja Cython pytest hypothesis",
+            "CFLAGS='-O2' python -m pip install -e . --no-build-isolation -v",
+            "git checkout <fixed-parent-or-fix-commit> then rebuild with the same command to get the fixed build"
+          ],
+          "pinned_because": [
+            "numpy source pinned to buggy commit b2b53f3c4963 (the evidence names this commit explicitly)",
+            "pytest and hypothesis are documented in README Testing section but carry no version constraint, so latest compatible versions are used",
+            "python version is not stated by the evidence (null); NumPy at this era requires a modern CPython, so use the version the buggy commit's pyproject.toml requires",
+            "CFLAGS -O2 mirrors the reporter's optimization level; -march=z14 only applies on s390x and is not assumed elsewhere",
+            "numpy version 2.4.4 from issue#31359 is the reporter's runtime, not a build constraint, so it is not pinned"
+          ]
+        },
+        "test_command": "python -m pytest numpy/_core/tests/test_umath.py::TestRationalFunctions::test_gcd_overflow -v",
+        "reproducing_test": "numpy/_core/tests/test_umath.py::TestRationalFunctions::test_gcd_overflow (updated in the PR to loop over int8, int16, int32, int64 and to test INT_MIN as both first and second argument)",
+        "success_criterion": "On buggy b2b53f3c4963 built on s390x with GCC 11.5 -O2: test_gcd_overflow FAILS, because np.gcd(INT_MIN, q*3) returns -536870912 rather than q=536870912 for int32 and/or int64. On the fixed build (unsigned abs via utype): test_gcd_overflow PASSES for all four dtypes and both argument orders. The transition is the outcome of this single test; no separate value check is required.",
+        "numerical_probe": "np.gcd(np.int32(np.iinfo(np.int32).min), np.int32(-(np.int32(np.iinfo(np.int32).min)//4))*3)",
+        "input_output_examples": [
+          {
+            "input": "a = np.int32(np.iinfo(np.int32).min); q = -(a // 4); np.gcd(a, q * 3)",
+            "buggy_output": "-536870912",
+            "expected_output": "536870912"
+          }
+        ],
+        "risks": [
+          "Platform dependence: the defect was reported only on s390x with GCC 11.5 -O2 -march=z14 and reported not reproducible on other architectures or later GCC versions. On x86-64 the buggy build may pass test_gcd_overflow, giving no transition. Run on s390x or a matching toolchain to get a real fail-to-pass result.",
+          "Signed-overflow UB: the observed value depends on compiler optimization. -fwrapv masks the bug per the issue, so do not build the buggy revision with -fwrapv or the test will pass for the wrong reason.",
+          "Sanitiser sensitivity: UBSan would flag the overflow, but a sanitiser build is not stated in the evidence and is not assumed here.",
+          "The int8 and int16 additions in the test likely pass even on buggy code, because C promotes those operands to int before negation; the int32 and int64 cases carry the transition.",
+          "The fixed-build environment is not stated by the evidence (PR claims PASS but gives no platform), so the fixed-side result is inferred from the patch, not observed.",
+          "The provided test_commands are unreliable: 'numpy.test()' is not a dependable NumPy entry point and the second command is a one-liner, not the project test; the pytest command above is used instead.",
+          "Dependencies pytest and hypothesis are documented but unbounded, so a newer release than the PR era could change collection behaviour; this is a chosen default, not an evidence-backed constraint."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "assert_equal(np.gcd(a, q*3), q) in test_umath.TestRationalFunctions.test_gcd_overflow; expected value is the mathematically correct non-negative gcd q",
+          "why": "gcd is an integer function and the expected result is exact, so an exact comparison applies with no tolerance"
+        },
+        "fails_on_buggy": "On s390x GCC 11.5 -O2, the buggy npy_gcd computes abs(INT_MIN) with signed overflow, so assert_equal sees -536870912 where q=536870912 is expected, and the assertion fails. On x86 this may not occur and the test may pass, so the failure is architecture-dependent.",
+        "passes_on_fixed": "With the fix, abs is computed in unsigned arithmetic (utype), so gcd(INT_MIN, 3q) returns q for every tested dtype and argument order, and assert_equal succeeds."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4401,
+        "output_tokens": 3565,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 12568,
+        "output_tokens": 1729,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

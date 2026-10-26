@@ -1,0 +1,1502 @@
+[
+  {
+    "slug": "numpy_31085",
+    "bug_type": "special_value",
+    "image": "python:3.12",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/5 reported example(s))",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "not_reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import ctypes\nimport enum\nimport random\nimport textwrap\nimport warnings\nimport pytest\nimport numpy as np\nfrom numpy._core._multiarray_umath import _get_castingimpl as get_castingimpl\nfrom numpy.lib.stride_tricks import as_strided\nfrom numpy.testing import assert_array_equal, assert_equal\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')\", \"np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')\", [], \"OverflowError (pytest.raises(..., match='Overflow'))\"], [\"np.datetime64('3000-01-01', 's').astype('datetime64[ns]')\", \"np.datetime64('3000-01-01', 's').astype('datetime64[ns]')\", [], \"OverflowError with message matching 'Overflow'\"], [\"np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')\", \"np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')\", [], \"OverflowError with message matching 'Overflow'\"], [\"np.timedelta64(9223372037, 's').astype('timedelta64[ns]')\", \"np.timedelta64(9223372037, 's').astype('timedelta64[ns]')\", [], \"OverflowError with message matching 'Overflow'\"], [\"np.timedelta64(9223372036, 's').astype('timedelta64[ns]')\", \"np.timedelta64(9223372036, 's').astype('timedelta64[ns]')\", [], \"np.timedelta64(9223372036000000000, 'ns')\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "gh16352_overflow_datetime_reproducer": "import numpy as np\n\ncases = []\n\n# 1) gh-16352 example: should overflow when converting h -> ns\nexpr1 = lambda: np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')\ncases.append(('ex_h_to_ns_overflow', expr1))\n\n# 2) large scalar seconds -> ns should overflow\nexpr2 = lambda: np.datetime64('3000-01-01', 's').astype('datetime64[ns]')\ncases.append(('ex_s_to_ns_scalar_overflow', expr2))\n\n# 3) near int64 min seconds -> minutes/month conversion path should overflow somewhere\nexpr3 = lambda: np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')\ncases.append(('ex_int64min_plus_1_s_to_M8m_overflow', expr3))\n\n# 4) timedelta seconds -> ns overflow\nexpr4 = lambda: np.timedelta64(9223372037, 's').astype('timedelta64[ns]')\ncases.append(('ex_timedelta_s_to_ns_overflow', expr4))\n\n# 5) non-overflow sanity: should succeed\nexpr5 = lambda: np.timedelta64(9223372036, 's').astype('timedelta64[ns]')\ncases.append(('ex_timedelta_s_to_ns_valid', expr5))\n\nresults = {}\nfor name, fn in cases:\n    try:\n        v = fn()\n        # Convert to a repr-friendly value\n        if isinstance(v, np.ndarray):\n            results[name] = {'ok': True, 'repr': repr(v), 'dtype': str(v.dtype)}\n        else:\n            results[name] = {'ok': True, 'repr': repr(v), 'dtype': str(getattr(v, 'dtype', ''))}\n    except Exception as e:\n        results[name] = {'ok': False, 'exc_type': type(e).__name__, 'exc_msg': str(e)}\n\n# Emit individual probes so the harness records them per case\nfor k, v in results.items():\n    probe(k, v)\n",
+        "overflow_datetime_unit_conversion_reproducer": "import numpy as np\n\ncases = []\n# Overflow datetime conversion (hours -> ns)\ncases.append((\"dt_overflow_h_to_ns\", lambda: np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')))\n# Another overflow example (seconds -> ns)\ncases.append((\"dt_overflow_s_to_ns\", lambda: np.datetime64('3000-01-01', 's').astype('datetime64[ns]')))\n# Near int64 min seconds -> minutes conversion (dtype stability)\ncases.append((\"dt_overflow_int64min_s_to_m\", lambda: np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('datetime64[m]')))\n# Overflow timedelta conversion (seconds -> ns)\ncases.append((\"td_overflow_s_to_ns\", lambda: np.timedelta64(9223372037, 's').astype('timedelta64[ns]')))\n# Non-overflow conversion for control\ncases.append((\"td_nonoverflow_s_to_ns\", lambda: np.timedelta64(9223372036, 's').astype('timedelta64[ns]')))\n\n\ndef run_case(name, fn):\n    try:\n        out = fn()\n        # Convert to something JSON-ish: use repr plus, if possible, numeric backing\n        return {\"raised\": False, \"repr\": repr(out), \"kind\": str(type(out))}\n    except Exception as e:\n        return {\"raised\": True, \"exc\": type(e).__name__, \"msg\": str(e)[:200]}\n\nfor name, fn in cases:\n    res = run_case(name, fn)\n    # Numerical-probe expects a numerical value; encode by reporting deterministic indices for raised?\n    # We'll record both: a flag and (when not raised) a hash-like stable integer from the repr length.\n    # Primary signal comes from the repr/exc recorded as 'res' via probe's structured capture.\n    probe(name, res)\n"
+      },
+      "fixed": {
+        "gh16352_overflow_datetime_reproducer": "import numpy as np\n\ncases = []\nexpr1 = lambda: np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')\ncases.append(('ex_h_to_ns_overflow', expr1))\nexpr2 = lambda: np.datetime64('3000-01-01', 's').astype('datetime64[ns]')\ncases.append(('ex_s_to_ns_scalar_overflow', expr2))\nexpr3 = lambda: np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')\ncases.append(('ex_int64min_plus_1_s_to_M8m_overflow', expr3))\nexpr4 = lambda: np.timedelta64(9223372037, 's').astype('timedelta64[ns]')\ncases.append(('ex_timedelta_s_to_ns_overflow', expr4))\nexpr5 = lambda: np.timedelta64(9223372036, 's').astype('timedelta64[ns]')\ncases.append(('ex_timedelta_s_to_ns_valid', expr5))\n\nresults = {}\nfor name, fn in cases:\n    try:\n        v = fn()\n        if isinstance(v, np.ndarray):\n            results[name] = {'ok': True, 'repr': repr(v), 'dtype': str(v.dtype)}\n        else:\n            results[name] = {'ok': True, 'repr': repr(v), 'dtype': str(getattr(v, 'dtype', ''))}\n    except Exception as e:\n        results[name] = {'ok': False, 'exc_type': type(e).__name__, 'exc_msg': str(e)}\n\nfor k, v in results.items():\n    probe(k, v)\n",
+        "overflow_datetime_unit_conversion_reproducer": "import numpy as np\n\ncases = []\ncases.append((\"dt_overflow_h_to_ns\", lambda: np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')))\ncases.append((\"dt_overflow_s_to_ns\", lambda: np.datetime64('3000-01-01', 's').astype('datetime64[ns]')))\ncases.append((\"dt_overflow_int64min_s_to_m\", lambda: np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('datetime64[m]')))\ncases.append((\"td_overflow_s_to_ns\", lambda: np.timedelta64(9223372037, 's').astype('timedelta64[ns]')))\ncases.append((\"td_nonoverflow_s_to_ns\", lambda: np.timedelta64(9223372036, 's').astype('timedelta64[ns]')))\n\n\ndef run_case(name, fn):\n    try:\n        out = fn()\n        return {\"raised\": False, \"repr\": repr(out), \"kind\": str(type(out))}\n    except Exception as e:\n        return {\"raised\": True, \"exc\": type(e).__name__, \"msg\": str(e)[:200]}\n\nfor name, fn in cases:\n    res = run_case(name, fn)\n    probe(name, res)\n",
+        "reported_examples": "import ctypes\nimport enum\nimport random\nimport textwrap\nimport warnings\nimport pytest\nimport numpy as np\nfrom numpy._core._multiarray_umath import _get_castingimpl as get_castingimpl\nfrom numpy.lib.stride_tricks import as_strided\nfrom numpy.testing import assert_array_equal, assert_equal\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')\", \"np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')\", [], \"OverflowError (pytest.raises(..., match='Overflow'))\"], [\"np.datetime64('3000-01-01', 's').astype('datetime64[ns]')\", \"np.datetime64('3000-01-01', 's').astype('datetime64[ns]')\", [], \"OverflowError with message matching 'Overflow'\"], [\"np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')\", \"np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')\", [], \"OverflowError with message matching 'Overflow'\"], [\"np.timedelta64(9223372037, 's').astype('timedelta64[ns]')\", \"np.timedelta64(9223372037, 's').astype('timedelta64[ns]')\", [], \"OverflowError with message matching 'Overflow'\"], [\"np.timedelta64(9223372036, 's').astype('timedelta64[ns]')\", \"np.timedelta64(9223372036, 's').astype('timedelta64[ns]')\", [], \"np.timedelta64(9223372036000000000, 'ns')\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/5 reported example(s))",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "not_reproduced",
+      "success_criterion": "Running the selected regression test at buggy commit 6a85991 exits nonzero because OverflowError is not raised for the overflowing datetime64/timedelta64 conversions; the same test exits zero only after the PR fix is applied.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 1,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 1,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "gh16352_overflow_datetime_reproducer",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (length mismatch: 0 vs 1)"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (length mismatch: 0 vs 1)"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "ex_h_to_ns_overflow": {
+                "ok": true,
+                "repr": "array(['1783-06-11T12:25:26.290448384'], dtype='datetime64[ns]')",
+                "dtype": "datetime64[ns]"
+              },
+              "ex_s_to_ns_scalar_overflow": {
+                "ok": true,
+                "repr": "np.datetime64('1830-11-23T00:50:52.580896768')",
+                "dtype": "datetime64[ns]"
+              },
+              "ex_int64min_plus_1_s_to_M8m_overflow": {
+                "ok": true,
+                "repr": "np.datetime64('292277026596-12-04T15:29')",
+                "dtype": "datetime64[m]"
+              },
+              "ex_timedelta_s_to_ns_overflow": {
+                "ok": true,
+                "repr": "np.timedelta64(-9223372036709551616,'ns')",
+                "dtype": "timedelta64[ns]"
+              },
+              "ex_timedelta_s_to_ns_valid": {
+                "ok": true,
+                "repr": "np.timedelta64(9223372036000000000,'ns')",
+                "dtype": "timedelta64[ns]"
+              }
+            },
+            "fixed_values": {
+              "ex_h_to_ns_overflow": {
+                "ok": false,
+                "exc_type": "OverflowError",
+                "exc_msg": "Overflow when converting between datetime64 units"
+              },
+              "ex_s_to_ns_scalar_overflow": {
+                "ok": false,
+                "exc_type": "OverflowError",
+                "exc_msg": "Overflow when converting between datetime64 units"
+              },
+              "ex_int64min_plus_1_s_to_M8m_overflow": {
+                "ok": false,
+                "exc_type": "OverflowError",
+                "exc_msg": "Overflow when converting between datetime64 units"
+              },
+              "ex_timedelta_s_to_ns_overflow": {
+                "ok": false,
+                "exc_type": "OverflowError",
+                "exc_msg": "Overflow when converting between datetime64 units"
+              },
+              "ex_timedelta_s_to_ns_valid": {
+                "ok": true,
+                "repr": "np.timedelta64(9223372036000000000,'ns')",
+                "dtype": "timedelta64[ns]"
+              }
+            }
+          },
+          {
+            "label": "overflow_datetime_unit_conversion_reproducer",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "dt_overflow_h_to_ns": {
+                "raised": false,
+                "repr": "array(['1783-06-11T12:25:26.290448384'], dtype='datetime64[ns]')",
+                "kind": "<class 'numpy.ndarray'>"
+              },
+              "dt_overflow_s_to_ns": {
+                "raised": false,
+                "repr": "np.datetime64('1830-11-23T00:50:52.580896768')",
+                "kind": "<class 'numpy.datetime64'>"
+              },
+              "dt_overflow_int64min_s_to_m": {
+                "raised": false,
+                "repr": "np.datetime64('292277026596-12-04T15:29')",
+                "kind": "<class 'numpy.datetime64'>"
+              },
+              "td_overflow_s_to_ns": {
+                "raised": false,
+                "repr": "np.timedelta64(-9223372036709551616,'ns')",
+                "kind": "<class 'numpy.timedelta64'>"
+              },
+              "td_nonoverflow_s_to_ns": {
+                "raised": false,
+                "repr": "np.timedelta64(9223372036000000000,'ns')",
+                "kind": "<class 'numpy.timedelta64'>"
+              }
+            },
+            "fixed_values": {
+              "dt_overflow_h_to_ns": {
+                "raised": true,
+                "exc": "OverflowError",
+                "msg": "Overflow when converting between datetime64 units"
+              },
+              "dt_overflow_s_to_ns": {
+                "raised": true,
+                "exc": "OverflowError",
+                "msg": "Overflow when converting between datetime64 units"
+              },
+              "dt_overflow_int64min_s_to_m": {
+                "raised": true,
+                "exc": "OverflowError",
+                "msg": "Overflow when converting between datetime64 units"
+              },
+              "td_overflow_s_to_ns": {
+                "raised": true,
+                "exc": "OverflowError",
+                "msg": "Overflow when converting between datetime64 units"
+              },
+              "td_nonoverflow_s_to_ns": {
+                "raised": false,
+                "repr": "np.timedelta64(9223372036000000000,'ns')",
+                "kind": "<class 'numpy.timedelta64'>"
+              }
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')": [
+                -5887164873709551616
+              ],
+              "np.datetime64('3000-01-01', 's').astype('datetime64[ns]')": -4389808147419103232,
+              "np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')": 153722867280912929,
+              "np.timedelta64(9223372037, 's').astype('timedelta64[ns]')": -9223372036709551616,
+              "np.timedelta64(9223372036, 's').astype('timedelta64[ns]')": 9223372036000000000,
+              "expected::np.timedelta64(9223372036, 's').astype('timedelta64[ns]')": 9223372036000000000
+            },
+            "fixed_values": {
+              "np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "np.datetime64('3000-01-01', 's').astype('datetime64[ns]')": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "np.timedelta64(9223372037, 's').astype('timedelta64[ns]')": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "np.timedelta64(9223372036, 's').astype('timedelta64[ns]')": 9223372036000000000,
+              "expected::np.timedelta64(9223372036, 's').astype('timedelta64[ns]')": 9223372036000000000
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')",
+            "expected_output": "OverflowError (pytest.raises(..., match='Overflow'))",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "array(['1783-06-11T12:25:26.290448384'], dtype='datetime64[ns]')",
+            "outcome": "inverted",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')",
+              "observed": [
+                -5887164873709551616
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')",
+              "observed": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "evaluation_error": "OverflowError: Overflow when converting between datetime64 units",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "np.datetime64('3000-01-01', 's').astype('datetime64[ns]')",
+            "expected_output": "OverflowError with message matching 'Overflow'",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "silent overflow/wrong value; no OverflowError",
+            "outcome": "inverted",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "np.datetime64('3000-01-01', 's').astype('datetime64[ns]')",
+              "observed": -4389808147419103232,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.datetime64('3000-01-01', 's').astype('datetime64[ns]')",
+              "observed": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "evaluation_error": "OverflowError: Overflow when converting between datetime64 units",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')",
+            "expected_output": "OverflowError with message matching 'Overflow'",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "no OverflowError; silently wrong near-INT64_MIN date",
+            "outcome": "inverted",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')",
+              "observed": 153722867280912929,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')",
+              "observed": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "evaluation_error": "OverflowError: Overflow when converting between datetime64 units",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "np.timedelta64(9223372037, 's').astype('timedelta64[ns]')",
+            "expected_output": "OverflowError with message matching 'Overflow'",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "no OverflowError; wrong wrapped timedelta",
+            "outcome": "inverted",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "np.timedelta64(9223372037, 's').astype('timedelta64[ns]')",
+              "observed": -9223372036709551616,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.timedelta64(9223372037, 's').astype('timedelta64[ns]')",
+              "observed": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "evaluation_error": "OverflowError: Overflow when converting between datetime64 units",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "np.timedelta64(9223372036, 's').astype('timedelta64[ns]')",
+            "expected_output": "np.timedelta64(9223372036000000000, 'ns')",
+            "expected_value": 9223372036000000000,
+            "expected_from": "evaluated",
+            "buggy_output_reported": "valid conversion; could be wrong if overflow handling is broken",
+            "outcome": "fix_only",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "np.timedelta64(9223372036, 's').astype('timedelta64[ns]')",
+              "observed": 9223372036000000000,
+              "evaluation_error": "",
+              "matches_expected": true,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.timedelta64(9223372036, 's').astype('timedelta64[ns]')",
+              "observed": 9223372036000000000,
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 7,
+            "n_failed": 2,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 7,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "cython>=3.0.6",
+            "meson-python>=0.18.0",
+            "setuptools==65.5.1"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-04-09T11:00:34-06:00",
+        "fixed_commit_date": "2026-04-09T11:33:46-06:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev",
+            "python3-pip",
+            "python3-dev"
+          ],
+          "unavailable": [
+            "python3.12"
+          ]
+        },
+        "era": "2026-04-09T11:33:46-06:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.12/site-packages/numpy/__init__.py",
+            "build_requires": [
+              "meson-python>=0.18.0",
+              "Cython>=3.0.6"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "pandas": "3.0.2",
+              "matplotlib": "3.10.8",
+              "pyparsing": "3.3.2"
+            },
+            "test_extras": [],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nBuilding wheels for collected packages: numpy\n  Building wheel for numpy (pyproject.toml): started\n  Building wheel for numpy (pyproject.toml): finished with status 'done'\n  Created wheel for numpy: filename=numpy-2.5.0.dev0-cp312-cp312-linux_x86_64.whl size=8130894 sha256=391f2715d9e792499fffa49d8787b9a3d34fb62c4c08ff6e71e9be76f22680b1\n  Stored in directory: /tmp/pip-ephem-wheel-cache-6didxs6c/wheels/7a/8e/f6/6361a05021faea16c41b60355501cb8542c208befbd0798736\nSuccessfully built numpy\nInstalling collected packages: numpy\n  Attempting uninstall: numpy\n    Found existing installation: numpy 2.5.3\n    Uninstalling numpy-2.5.3:\n      Successfully uninstalled numpy-2.5.3\nSuccessfully installed numpy-2.5.0.dev0\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.12/site-packages/numpy/__init__.py",
+            "build_requires": [
+              "meson-python>=0.18.0",
+              "Cython>=3.0.6"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "pandas": "3.0.2",
+              "matplotlib": "3.10.8",
+              "pyparsing": "3.3.2"
+            },
+            "test_extras": [],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nBuilding wheels for collected packages: numpy\n  Building wheel for numpy (pyproject.toml): started\n  Building wheel for numpy (pyproject.toml): finished with status 'done'\n  Created wheel for numpy: filename=numpy-2.5.0.dev0-cp312-cp312-linux_x86_64.whl size=8131042 sha256=4889e7536edc580d79fcd276f39dfa7d14992efaf1c03a2999f81f7a0bf1a3f6\n  Stored in directory: /tmp/pip-ephem-wheel-cache-kscot1md/wheels/71/38/20/6358bc83d061b0e5b7f2ca1588a2c1d520ab055cf84e576666\nSuccessfully built numpy\nInstalling collected packages: numpy\n  Attempting uninstall: numpy\n    Found existing installation: numpy 2.5.3\n    Uninstalling numpy-2.5.3:\n      Successfully uninstalled numpy-2.5.3\nSuccessfully installed numpy-2.5.0.dev0\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 1,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 1,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 3,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "gh16352_overflow_datetime_reproducer",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (length mismatch: 0 vs 1)"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (length mismatch: 0 vs 1)"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "ex_h_to_ns_overflow": {
+                "ok": true,
+                "repr": "array(['1783-06-11T12:25:26.290448384'], dtype='datetime64[ns]')",
+                "dtype": "datetime64[ns]"
+              },
+              "ex_s_to_ns_scalar_overflow": {
+                "ok": true,
+                "repr": "np.datetime64('1830-11-23T00:50:52.580896768')",
+                "dtype": "datetime64[ns]"
+              },
+              "ex_int64min_plus_1_s_to_M8m_overflow": {
+                "ok": true,
+                "repr": "np.datetime64('292277026596-12-04T15:29')",
+                "dtype": "datetime64[m]"
+              },
+              "ex_timedelta_s_to_ns_overflow": {
+                "ok": true,
+                "repr": "np.timedelta64(-9223372036709551616,'ns')",
+                "dtype": "timedelta64[ns]"
+              },
+              "ex_timedelta_s_to_ns_valid": {
+                "ok": true,
+                "repr": "np.timedelta64(9223372036000000000,'ns')",
+                "dtype": "timedelta64[ns]"
+              }
+            },
+            "fixed_values": {
+              "ex_h_to_ns_overflow": {
+                "ok": false,
+                "exc_type": "OverflowError",
+                "exc_msg": "Overflow when converting between datetime64 units"
+              },
+              "ex_s_to_ns_scalar_overflow": {
+                "ok": false,
+                "exc_type": "OverflowError",
+                "exc_msg": "Overflow when converting between datetime64 units"
+              },
+              "ex_int64min_plus_1_s_to_M8m_overflow": {
+                "ok": false,
+                "exc_type": "OverflowError",
+                "exc_msg": "Overflow when converting between datetime64 units"
+              },
+              "ex_timedelta_s_to_ns_overflow": {
+                "ok": false,
+                "exc_type": "OverflowError",
+                "exc_msg": "Overflow when converting between datetime64 units"
+              },
+              "ex_timedelta_s_to_ns_valid": {
+                "ok": true,
+                "repr": "np.timedelta64(9223372036000000000,'ns')",
+                "dtype": "timedelta64[ns]"
+              }
+            }
+          },
+          {
+            "label": "overflow_datetime_unit_conversion_reproducer",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "dt_overflow_h_to_ns": {
+                "raised": false,
+                "repr": "array(['1783-06-11T12:25:26.290448384'], dtype='datetime64[ns]')",
+                "kind": "<class 'numpy.ndarray'>"
+              },
+              "dt_overflow_s_to_ns": {
+                "raised": false,
+                "repr": "np.datetime64('1830-11-23T00:50:52.580896768')",
+                "kind": "<class 'numpy.datetime64'>"
+              },
+              "dt_overflow_int64min_s_to_m": {
+                "raised": false,
+                "repr": "np.datetime64('292277026596-12-04T15:29')",
+                "kind": "<class 'numpy.datetime64'>"
+              },
+              "td_overflow_s_to_ns": {
+                "raised": false,
+                "repr": "np.timedelta64(-9223372036709551616,'ns')",
+                "kind": "<class 'numpy.timedelta64'>"
+              },
+              "td_nonoverflow_s_to_ns": {
+                "raised": false,
+                "repr": "np.timedelta64(9223372036000000000,'ns')",
+                "kind": "<class 'numpy.timedelta64'>"
+              }
+            },
+            "fixed_values": {
+              "dt_overflow_h_to_ns": {
+                "raised": true,
+                "exc": "OverflowError",
+                "msg": "Overflow when converting between datetime64 units"
+              },
+              "dt_overflow_s_to_ns": {
+                "raised": true,
+                "exc": "OverflowError",
+                "msg": "Overflow when converting between datetime64 units"
+              },
+              "dt_overflow_int64min_s_to_m": {
+                "raised": true,
+                "exc": "OverflowError",
+                "msg": "Overflow when converting between datetime64 units"
+              },
+              "td_overflow_s_to_ns": {
+                "raised": true,
+                "exc": "OverflowError",
+                "msg": "Overflow when converting between datetime64 units"
+              },
+              "td_nonoverflow_s_to_ns": {
+                "raised": false,
+                "repr": "np.timedelta64(9223372036000000000,'ns')",
+                "kind": "<class 'numpy.timedelta64'>"
+              }
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')": [
+                -5887164873709551616
+              ],
+              "np.datetime64('3000-01-01', 's').astype('datetime64[ns]')": -4389808147419103232,
+              "np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')": 153722867280912929,
+              "np.timedelta64(9223372037, 's').astype('timedelta64[ns]')": -9223372036709551616,
+              "np.timedelta64(9223372036, 's').astype('timedelta64[ns]')": 9223372036000000000,
+              "expected::np.timedelta64(9223372036, 's').astype('timedelta64[ns]')": 9223372036000000000
+            },
+            "fixed_values": {
+              "np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "np.datetime64('3000-01-01', 's').astype('datetime64[ns]')": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "np.timedelta64(9223372037, 's').astype('timedelta64[ns]')": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "np.timedelta64(9223372036, 's').astype('timedelta64[ns]')": 9223372036000000000,
+              "expected::np.timedelta64(9223372036, 's').astype('timedelta64[ns]')": 9223372036000000000
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 5,
+        "n_judged": 5,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 0,
+        "n_contested": 4,
+        "unobserved": [],
+        "verdict": "not_reproduced",
+        "examples": [
+          {
+            "input": "np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')",
+            "expected_output": "OverflowError (pytest.raises(..., match='Overflow'))",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "array(['1783-06-11T12:25:26.290448384'], dtype='datetime64[ns]')",
+            "outcome": "inverted",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')",
+              "observed": [
+                -5887164873709551616
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]')",
+              "observed": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "evaluation_error": "OverflowError: Overflow when converting between datetime64 units",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "np.datetime64('3000-01-01', 's').astype('datetime64[ns]')",
+            "expected_output": "OverflowError with message matching 'Overflow'",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "silent overflow/wrong value; no OverflowError",
+            "outcome": "inverted",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "np.datetime64('3000-01-01', 's').astype('datetime64[ns]')",
+              "observed": -4389808147419103232,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.datetime64('3000-01-01', 's').astype('datetime64[ns]')",
+              "observed": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "evaluation_error": "OverflowError: Overflow when converting between datetime64 units",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')",
+            "expected_output": "OverflowError with message matching 'Overflow'",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "no OverflowError; silently wrong near-INT64_MIN date",
+            "outcome": "inverted",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')",
+              "observed": 153722867280912929,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')",
+              "observed": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "evaluation_error": "OverflowError: Overflow when converting between datetime64 units",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "np.timedelta64(9223372037, 's').astype('timedelta64[ns]')",
+            "expected_output": "OverflowError with message matching 'Overflow'",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "no OverflowError; wrong wrapped timedelta",
+            "outcome": "inverted",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "np.timedelta64(9223372037, 's').astype('timedelta64[ns]')",
+              "observed": -9223372036709551616,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.timedelta64(9223372037, 's').astype('timedelta64[ns]')",
+              "observed": "__error__: OverflowError: Overflow when converting between datetime64 units",
+              "evaluation_error": "OverflowError: Overflow when converting between datetime64 units",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "np.timedelta64(9223372036, 's').astype('timedelta64[ns]')",
+            "expected_output": "np.timedelta64(9223372036000000000, 'ns')",
+            "expected_value": 9223372036000000000,
+            "expected_from": "evaluated",
+            "buggy_output_reported": "valid conversion; could be wrong if overflow handling is broken",
+            "outcome": "fix_only",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "np.timedelta64(9223372036, 's').astype('timedelta64[ns]')",
+              "observed": 9223372036000000000,
+              "evaluation_error": "",
+              "matches_expected": true,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.timedelta64(9223372036, 's').astype('timedelta64[ns]')",
+              "observed": 9223372036000000000,
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 7,
+          "n_failed": 2,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 7,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "Running the selected regression test at buggy commit 6a85991 exits nonzero because OverflowError is not raised for the overflowing datetime64/timedelta64 conversions; the same test exits zero only after the PR fix is applied."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "cython>=3.0.6",
+          "meson-python>=0.18.0",
+          "setuptools==65.5.1"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-04-09T11:00:34-06:00",
+      "fixed_commit_date": "2026-04-09T11:33:46-06:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev",
+          "python3-pip",
+          "python3-dev"
+        ],
+        "unavailable": [
+          "python3.12"
+        ]
+      },
+      "era": "2026-04-09T11:33:46-06:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.12/site-packages/numpy/__init__.py",
+          "build_requires": [
+            "meson-python>=0.18.0",
+            "Cython>=3.0.6"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "pandas": "3.0.2",
+            "matplotlib": "3.10.8",
+            "pyparsing": "3.3.2"
+          },
+          "test_extras": [],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nBuilding wheels for collected packages: numpy\n  Building wheel for numpy (pyproject.toml): started\n  Building wheel for numpy (pyproject.toml): finished with status 'done'\n  Created wheel for numpy: filename=numpy-2.5.0.dev0-cp312-cp312-linux_x86_64.whl size=8130894 sha256=391f2715d9e792499fffa49d8787b9a3d34fb62c4c08ff6e71e9be76f22680b1\n  Stored in directory: /tmp/pip-ephem-wheel-cache-6didxs6c/wheels/7a/8e/f6/6361a05021faea16c41b60355501cb8542c208befbd0798736\nSuccessfully built numpy\nInstalling collected packages: numpy\n  Attempting uninstall: numpy\n    Found existing installation: numpy 2.5.3\n    Uninstalling numpy-2.5.3:\n      Successfully uninstalled numpy-2.5.3\nSuccessfully installed numpy-2.5.0.dev0\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.12/site-packages/numpy/__init__.py",
+          "build_requires": [
+            "meson-python>=0.18.0",
+            "Cython>=3.0.6"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "pandas": "3.0.2",
+            "matplotlib": "3.10.8",
+            "pyparsing": "3.3.2"
+          },
+          "test_extras": [],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nBuilding wheels for collected packages: numpy\n  Building wheel for numpy (pyproject.toml): started\n  Building wheel for numpy (pyproject.toml): finished with status 'done'\n  Created wheel for numpy: filename=numpy-2.5.0.dev0-cp312-cp312-linux_x86_64.whl size=8131042 sha256=4889e7536edc580d79fcd276f39dfa7d14992efaf1c03a2999f81f7a0bf1a3f6\n  Stored in directory: /tmp/pip-ephem-wheel-cache-kscot1md/wheels/71/38/20/6358bc83d061b0e5b7f2ca1588a2c1d520ab055cf84e576666\nSuccessfully built numpy\nInstalling collected packages: numpy\n  Attempting uninstall: numpy\n    Found existing installation: numpy 2.5.3\n    Uninstalling numpy-2.5.3:\n      Successfully uninstalled numpy-2.5.3\nSuccessfully installed numpy-2.5.0.dev0\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 4,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the datetime64/timedelta64 overflow special-value bug on the buggy NumPy revision and confirm it is fixed on the fixed revision using the targeted regression test and reported issue examples.",
+          "milestones": [
+            "buggy_build_ready [buggy] \u2014 Build NumPy from the buggy commit so the regression test can be executed against that build. (4 steps, verify: steps_succeeded)",
+            "buggy_regression_observable [buggy] \u2014 Run the targeted regression tests on the buggy build to show the overflow does not raise OverflowError. (1 steps, verify: test_ran, test_fails)",
+            "buggy_value_repro_examples [buggy] \u2014 Evaluate the reported issue/test expressions on the buggy revision to confirm silent overflow/wrong wrapped values instead of OverflowError. (1 steps, verify: steps_succeeded, examples_reproduced, probe_shows_defect)",
+            "fixed_build_ready [fixed] \u2014 Build NumPy from the fixed commit so the same regression tests can be executed and compared. (4 steps, verify: steps_succeeded)",
+            "fixed_regression_passes [fixed] \u2014 Run the targeted datetime regression tests on the fixed build and confirm OverflowError is raised where expected. (1 steps, verify: test_ran, test_passes)",
+            "fixed_value_matches_expected [fixed] \u2014 Evaluate the reported issue/test expressions on the fixed revision to confirm OverflowError is raised for overflow cases and valid conversions remain correct. (1 steps, verify: steps_succeeded, examples_reproduced, probe_clean)",
+            "revisions_differ_and_bug_reproduced [fixed] \u2014 Confirm that buggy and fixed revisions behave differently for the overflow special-value conversions. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && git rev-parse HEAD",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.14
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c \"import sys; print(sys.version)\" && pip install --upgrade pip && pip install -r requirements/build_requirements.txt -r requirements/test_requirements.txt",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 17.02
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && pip install \"cython>=3.0.6\" \"meson-python>=0.18.0\" \"spin==0.15\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 1.45
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && spin build --clean",
+        "purpose": "build",
+        "exit_code": 0,
+        "runtime_s": 111.58
+      },
+      {
+        "verification": {
+          "milestone": "buggy_build_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs numpy._core.tests.test_datetime -k \"test_cast_overflow_safe_unit_conversion or test_pyobject_roundtrip\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.71
+      },
+      {
+        "verification": {
+          "milestone": "buggy_regression_observable",
+          "verified": true,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          -5.887164873709552e+18,
+          -4.389808147419103e+18,
+          1.5372286728091293e+17,
+          -9.223372036709552e+18,
+          9.223372036e+18,
+          9.223372036e+18
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_value_repro_examples",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/5 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 5 never evaluated \u2014 the preamble does not bind everything they need: np.array(['2367-12-31 12:00:00'], dtype='datetime64[h]').astype('datetime64[ns]'); np.datetime64('3000-01-01', 's').astype('datetime64[ns]'); np.datetime64(np.iinfo(np.int64).min + 1, 's').astype('M8[m]')"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failed example-evaluation milestone by running a fixed, self-contained reproducer probe on both revisions, then verify the targeted overflow regression test actually fails on buggy and passes on fixed (without relying on the PR-inserted test file).",
+          "milestones": [
+            "fixed_build_ready [fixed] \u2014 Build the fixed NumPy commit in its own venv so we can run the same reproducer and datetime tests there. (4 steps, verify: steps_succeeded)",
+            "buggy_reproducer_probe_on_reported_values [buggy] \u2014 Directly evaluate the reported overflow-conversion inputs on the buggy revision and record whether they raise OverflowError vs silently wrap (and the resulting values if no error). (1 steps, verify: steps_succeeded, probe_ran)",
+            "fixed_reproducer_probe_on_reported_values [fixed] \u2014 Evaluate the same reported overflow-conversion inputs on the fixed revision and confirm OverflowError is raised for the overflow cases while the non-overflow conversion remains correct. (1 steps, verify: steps_succeeded, probe_ran)",
+            "targeted_regression_test_fixed_and_buggy [buggy] \u2014 Run the already-present targeted tests on both revisions to confirm buggy fails and fixed passes (without depending on example bindings that previously didn't execute). (1 steps, verify: test_ran, test_fails)",
+            "targeted_regression_test_fixed [fixed] \u2014 Run the selected datetime tests on fixed build and confirm they pass. (1 steps, verify: test_ran, test_passes)",
+            "revisions_differ_buggy_vs_fixed_overflow [fixed] \u2014 Conclude that behavior differs: buggy does not raise OverflowError for overflow conversions while fixed does, and/or the produced wrapped values differ from overflow/expected outcomes. (1 steps, verify: revisions_differ, probe_ran, probe_shows_defect, probe_clean)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && git rev-parse HEAD",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.13
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && pip install -r requirements/build_requirements.txt -r requirements/test_requirements.txt",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 7.98
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && pip install \"cython>=3.0.6\" \"meson-python>=0.18.0\" \"spin==0.15\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 1.21
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && spin build --clean",
+        "purpose": "build",
+        "exit_code": 0,
+        "runtime_s": 110.77
+      },
+      {
+        "verification": {
+          "milestone": "fixed_build_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "gh16352_overflow_datetime_reproducer",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(gh16352_overflow_datetime_reproducer) \u2014 Run a Python probe that executes the 5 reported expressions, capturing (a) whether OverflowError is raised and (b) the produced value or exception type/message."
+      },
+      {
+        "verification": {
+          "milestone": "buggy_reproducer_probe_on_reported_values",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(gh16352_overflow_datetime_reproducer) \u2014 Run a Python probe that executes the 5 reported expressions, capturing (a) whether OverflowError is raised and (b) the produced value or exception type/message. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Re-run probes and the targeted regression test (without relying on the PR-inserted test file) to establish that datetime64/timedelta64 unit conversions overflow without raising on buggy but raise on fixed, and that the two revisions differ on those specific cases.",
+          "milestones": [
+            "buggy_self_contained_overflow_probe_runs [buggy] \u2014 Run a fixed, self-contained numerical probe that evaluates the overflow-conversion expressions (including OverflowError detection) on the buggy revision and records the outcomes. (1 steps, verify: steps_succeeded, probe_ran)",
+            "fixed_self_contained_overflow_probe_runs [fixed] \u2014 Run the same self-contained overflow-conversion numerical probe on the fixed revision and record that the overflow cases raise (OverflowError) while the non-overflow case succeeds. (1 steps, verify: steps_succeeded, probe_ran)",
+            "targeted_overflow_regression_test_without_pr_insertion [buggy] \u2014 Run the existing targeted datetime regression tests on both revisions to confirm the buggy revision fails the overflow-safe conversion test and the fixed revision passes, without editing or inserting any test files. (1 steps, verify: test_ran, test_fails)",
+            "targeted_overflow_regression_test_fixed [fixed] \u2014 Run the same targeted overflow-related regression test on the fixed revision to confirm it passes. (1 steps, verify: test_ran, test_passes)",
+            "revisions_differ_overflow_behavior [fixed] \u2014 Conclude that behavior differs between buggy and fixed on the overflow conversions: buggy does not raise OverflowError for overflow cases while fixed does, and/or the produced values differ from overflow-safe behavior, while the non-overflow case remains correct. (1 steps, verify: revisions_differ, probe_ran, probe_shows_defect, probe_clean)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "gh16352_overflow_datetime_reproducer",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "values do not match the reference (length mismatch: 0 vs 1)"
+        ],
+        "expected": [
+          0
+        ],
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_self_contained_overflow_probe_runs",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "gh16352_overflow_datetime_reproducer",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "values do not match the reference (length mismatch: 0 vs 1)"
+        ],
+        "expected": [
+          0
+        ],
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "fixed_self_contained_overflow_probe_runs",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs numpy._core.tests.test_datetime -k \"test_cast_overflow_safe_unit_conversion\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 0.95
+      },
+      {
+        "verification": {
+          "milestone": "targeted_overflow_regression_test_without_pr_insertion",
+          "verified": true,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -m pytest --pyargs numpy._core.tests.test_datetime -k \"test_cast_overflow_safe_unit_conversion\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.57
+      },
+      {
+        "verification": {
+          "milestone": "targeted_overflow_regression_test_fixed",
+          "verified": true,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on fixed"
+            },
+            {
+              "check": "test_passes",
+              "passed": true,
+              "detail": "test pass on fixed (milestone required pass)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "echo 'Behavior comparison is performed automatically from the recorded probe/test artifacts.'",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.12
+      },
+      {
+        "verification": {
+          "milestone": "revisions_differ_overflow_behavior",
+          "verified": false,
+          "results": [
+            {
+              "check": "revisions_differ",
+              "passed": true,
+              "detail": "the reproducing test goes FAIL -> PASS"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Demonstrate, without relying on the PR-inserted test file, that datetime64/timedelta64 unit conversions overflow/produce wrong wrapped results on the buggy revision and raise OverflowError on the fixed revision, using direct reproducer probes aligned across both revisions.",
+          "milestones": [
+            "overflow_probe_direct_reproducer_ready [buggy] \u2014 Run a direct numerical probe (not the PR test) on both revisions to capture whether OverflowError is raised for the overflow conversions and what values are produced when no exception occurs. (1 steps, verify: steps_succeeded)",
+            "overflow_probe_on_buggy [buggy] \u2014 Record outcomes for a set of overflow and non-overflow datetime64/timedelta64 unit conversion expressions on the buggy revision using the same probe code/label. (1 steps, verify: steps_succeeded)",
+            "overflow_probe_on_fixed [fixed] \u2014 Record the same reproducer probe outcomes on the fixed revision and ensure the overflow cases raise OverflowError while the control conversion succeeds with the expected ns value. (1 steps, verify: steps_succeeded)",
+            "revisions_differ_overflow_behavior_direct [fixed] \u2014 Conclude that buggy vs fixed differ on overflow conversions (exceptions raised and/or produced wrapped results differ) while the non-overflow control behaves correctly, based on the recorded probe outputs across revisions. (1 steps, verify: probe_ran, probe_shows_defect, probe_clean, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import numpy as np; print(np.__version__)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.29
+      },
+      {
+        "verification": {
+          "milestone": "overflow_probe_direct_reproducer_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "overflow_datetime_unit_conversion_reproducer",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "overflow_probe_on_buggy",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "overflow_datetime_unit_conversion_reproducer",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "overflow_probe_on_fixed",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && true",
+        "purpose": "debug",
+        "exit_code": 0,
+        "runtime_s": 0.12
+      },
+      {
+        "verification": {
+          "milestone": "revisions_differ_overflow_behavior_direct",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": true,
+              "detail": "the reproducing test goes FAIL -> PASS"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "revisions_differ_overflow_behavior_direct",
+          "revision": "fixed",
+          "failed": [
+            "probe_ran",
+            "probe_shows_defect",
+            "probe_clean"
+          ],
+          "attempts": 2,
+          "detail": [
+            "the milestone ran no probe",
+            "the milestone ran no probe"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          -5.887164873709552e+18,
+          -4.389808147419103e+18,
+          1.5372286728091293e+17,
+          -9.223372036709552e+18,
+          9.223372036e+18,
+          9.223372036e+18
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          9.223372036e+18,
+          9.223372036e+18
+        ]
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 5,
+            "recorded": 5,
+            "error": null,
+            "could_not_evaluate": 0
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 5,
+            "recorded": 5,
+            "error": null,
+            "could_not_evaluate": 4
+          },
+          "preamble": "from the reproducing test"
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "not_reproduced",
+        "examples": "0/5"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/5 reported example(s))"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 4,
+      "input_tokens": 15821,
+      "output_tokens": 5962,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.010617
+    }
+  }
+]

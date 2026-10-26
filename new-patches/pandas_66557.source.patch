@@ -1,0 +1,84 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index cc941019aef3f..df753991b1849 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -496,6 +496,7 @@ I/O
+ - :func:`read_csv` with ``memory_map=True`` and an in-memory buffer (e.g. ``BytesIO``) now raises a clear ``ValueError`` instead of a cryptic ``UnsupportedOperation: fileno`` (:issue:`45630`)
+ - :func:`read_json` with ``engine="pyarrow"`` now raises ``ValueError`` when passed an option the engine cannot apply -- such as ``typ="series"``, ``convert_dates``, ``keep_default_dates``, ``date_unit``, ``precise_float``, ``convert_axes``, ``encoding``, ``encoding_errors``, ``storage_options``, an explicit ``compression``, or a non-``ArrowDtype`` ``dtype`` -- instead of silently ignoring it and returning an incorrect result (:issue:`66144`)
+ - :func:`read_sas` now raises an informative ``ValueError`` for a SAS7BDAT file whose column metadata does not fit the rows it describes -- a column extending past the end of a row, or a numeric column wider than 8 bytes -- instead of reading or writing past the end of the row buffer and returning unrelated memory as data or crashing (:issue:`47339`)
++- :func:`read_sas` now raises an informative ``ValueError`` for a SAS7BDAT file whose header declares a ``row_length`` larger than the page size, instead of segfaulting (:issue:`66475`)
+ - :func:`read_sas` now recognizes more of the encodings a SAS7BDAT file can record, including the "no encoding" and "US-ASCII" markers written by most SAS sessions (:issue:`66470`)
+ - :func:`read_sql_table` now raises an informative ``NotImplementedError`` (instead of one with no message) when passed a DBAPI connection such as ``sqlite3``, and reading from a URI string without a usable ``sqlalchemy`` install now raises a clearer ``ImportError`` (:issue:`41237`)
+ - :func:`read_sql` now raises an informative ``DatabaseError`` explaining that reading a table by name requires a SQLAlchemy connection when a bare table name is passed with a DBAPI connection (e.g. ``sqlite3``), instead of a cryptic SQL syntax error (:issue:`54233`)
+diff --git a/pandas/_libs/sas.pyx b/pandas/_libs/sas.pyx
+index 8651727e8d792..56ae778209237 100644
+--- a/pandas/_libs/sas.pyx
++++ b/pandas/_libs/sas.pyx
+@@ -548,7 +548,7 @@ cdef class Parser:
+         int64_t[::1] data_subheader_offsets
+         int64_t[::1] data_subheader_lengths
+         uint8_t *cached_page
+-        int cached_page_len
++        Py_ssize_t cached_page_len
+         int current_row_on_page_index
+         int current_page_block_count
+         int n_data_subheaders
+@@ -557,7 +557,7 @@ cdef class Parser:
+         int current_row_in_file_index
+         bint blank_missing
+         int header_length
+-        int row_length
++        Py_ssize_t row_length
+         int bit_offset
+         int subheader_pointer_length
+         int current_page_type
+@@ -752,7 +752,8 @@ cdef class Parser:
+     cdef bint readline(self) except? True:
+ 
+         cdef:
+-            int offset, length, bit_offset, align_correction
++            Py_ssize_t offset, length
++            int bit_offset, align_correction
+             int subheader_pointer_length, mn
+             bint done, flag
+ 
+@@ -775,10 +776,10 @@ cdef class Parser:
+                     if done:
+                         return True
+                     continue
+-                offset = <int>self.data_subheader_offsets[
++                offset = <Py_ssize_t>self.data_subheader_offsets[
+                     self.current_row_on_page_index
+                 ]
+-                length = <int>self.data_subheader_lengths[
++                length = <Py_ssize_t>self.data_subheader_lengths[
+                     self.current_row_on_page_index
+                 ]
+                 self.process_byte_array_with_data(offset, length)
+@@ -819,7 +820,9 @@ cdef class Parser:
+ 
+     @cython.wraparound(False)
+     @cython.boundscheck(False)
+-    cdef void process_byte_array_with_data(self, int offset, int length) except *:
++    cdef void process_byte_array_with_data(
++        self, Py_ssize_t offset, Py_ssize_t length
++    ) except *:
+ 
+         cdef:
+             Py_ssize_t j
+diff --git a/pandas/io/sas/sas7bdat.py b/pandas/io/sas/sas7bdat.py
+index c778712c4f8e5..af7c41fce8111 100644
+--- a/pandas/io/sas/sas7bdat.py
++++ b/pandas/io/sas/sas7bdat.py
+@@ -614,6 +614,11 @@ def _process_rowsize_subheader(self, offset: int, length: int) -> None:
+             offset + const.row_length_offset_multiplier * int_len,
+             int_len,
+         )
++        if self.row_length > self._page_length:
++            raise ValueError(
++                f"row_length ({self.row_length}) exceeds the page size "
++                f"({self._page_length}); the file is corrupt"
++            )
+         self.row_count = self._read_uint(
+             offset + const.row_count_offset_multiplier * int_len,
+             int_len,

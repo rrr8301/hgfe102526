@@ -1,0 +1,101 @@
+{
+  "input": "pipeline-gpt-5.4-nano/numba_10088_gpt-5.4-nano/mined/numba__numba_10088.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 10671,
+    "output_tokens": 3054,
+    "cost_usd": 0.005951,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "numba/numba",
+      "pr_number": 10088,
+      "reference": "https://github.com/numba/numba/pull/10088",
+      "buggy_commit": "934a8e4426ffa0029e8056d416442b29a3cdbcb0",
+      "fixed_commit": "30753de862637512baafb68d6b722c9d419c2fa3",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 5105,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce numba/numba#10088: incorrect special-value handling (NaN) in the np.unique/np.union1d overload used by @njit, causing union1d to return an extra 1.0 element alongside NaN instead of only [nan]. Build a targeted test that compares jitted output to non-jitted output via np.testing.assert_equal, with a NaN-containing input that triggers the tail/deduplication logic.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.10.16",
+          "pip_packages": [
+            "numpy==2.1.3",
+            "numba==0.61.0"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m venv .venv",
+            "source .venv/bin/activate",
+            "python -m pip install --upgrade pip",
+            "python -m pip install numpy==2.1.3 llvmlite==0.44.*",
+            "python -m pip install -e ."
+          ],
+          "pinned_because": [
+            "numpy 2.1.3 (explicit and numerically relevant; provided by issue#10069 environment)",
+            "numba 0.61.0 (explicit and numerically relevant; provided by issue#10069 environment)"
+          ]
+        },
+        "test_command": "python -m pytest numba/tests/test_array_methods.py -k \"union1d\" -q",
+        "reproducing_test": "# Place this test (or ensure it is included) in numba/tests/test_array_methods.py\n# within the same check()/union1d-related coverage that compares njit vs python.\n\nimport numpy as np\nimport numba\n\n\ndef py_union1d(a, b):\n    return np.union1d(a, b)\n\n\n@numba.njit\ndef union1d_njit(a, b):\n    return np.union1d(a, b)\n\n\ndef test_union1d_nan_dedup_matches_python():\n    a = np.array([np.nan])\n    b = np.array([np.nan])\n    got = union1d_njit(a, b)\n    expected = py_union1d(a, b)\n    # Transition is decided by this assertion: buggy revision will fail\n    np.testing.assert_equal(got, expected)\n\n\n# Also include the additional coverage mentioned by the PR note:\n@numba.njit\ndef unique_like_for_trigger(x):\n    # Ensure the relevant overload path is exercised; using union1d is sufficient,\n    # but including the exact 'nan,nan' case used in the PR coverage is safer.\n    return np.unique(x)\n\n\ndef test_unique_nan_nan_triggers_dedup():\n    x = np.array([np.nan, np.nan])\n    got = unique_like_for_trigger(x)\n    expected = np.unique(x)\n    np.testing.assert_equal(got, expected)\n",
+        "success_criterion": "On the buggy revision (commit 934a8e4426ff on top of the pinned environment: Python 3.10.16, numpy 2.1.3, numba 0.61.0 build), the test `test_union1d_nan_dedup_matches_python` fails with an assertion mismatch because the jitted result includes an extra element (e.g. actual `array([ 1., nan])` with shape (2,) instead of expected `array([nan])` with shape (1,)). On the fixed revision for PR #10088, the same test passes because the NaN-aware deduplication change propagates to the np.union1d overload so the jitted output matches the non-jitted output (expected only `array([nan])`).",
+        "numerical_probe": "Using NaN special-value comparisons indirectly through union1d/unique dedup logic under @njit; the probe is whether NaNs are treated as equal for uniqueness/deduplication so union1d does not incorrectly retain extra distinct tail values.",
+        "input_output_examples": [
+          {
+            "input": "@njit: np.union1d(np.array([np.nan]), np.array([np.nan]))",
+            "buggy_output": "array([ 1., nan])",
+            "expected_output": "array([nan])"
+          },
+          {
+            "input": "non-jitted: np.union1d(np.array([np.nan]), np.array([np.nan]))",
+            "buggy_output": null,
+            "expected_output": "array([nan])"
+          }
+        ],
+        "risks": [
+          "This bug is specific to the njit compilation path that uses numba\u2019s overloads for np.unique/np.union1d; if the test does not run under @njit, the mismatch may not appear.",
+          "The behavior is tied to NaN handling; if inputs don\u2019t contain np.nan (including the 'nan,nan' case), the NaN-aware deduplication logic may not trigger.",
+          "If reproduction is done on a different numpy version than 2.1.3, the overload behavior and/or reference outputs may differ, so the test might not transition.",
+          "If the fixed commit is not actually incorporated (i.e., you build without the PR\u2019s change), the buggy behavior will persist and the test will keep failing; ensure you build/test both buggy and fixed revisions.",
+          "Potential architecture/toolchain sensitivity: if your LLVM/backend differs materially, edge-case codegen differences could affect whether the incorrect element appears; if that happens, run on the same platform/CI image used to validate #10088."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "numpy reference (non-jitted) behavior for np.union1d/np.unique under the same numpy==2.1.3",
+          "why": "The test relies on np.testing.assert_equal comparing shapes and values exactly, and the mismatch is described as a wrong shape/value inclusion (e.g. (2,) vs (1,) and presence of 1.0 alongside nan)."
+        },
+        "fails_on_buggy": "Assertion sees a shape/value mismatch: jitted `np.union1d([nan],[nan])` returns an array containing both `1.0` and `nan` (e.g. `array([ 1., nan])`, shape (2,)), while the non-jitted `np.union1d([nan],[nan])` returns only `array([nan])` (shape (1,)).",
+        "passes_on_fixed": "jitted `np.union1d([nan],[nan])` matches the non-jitted result exactly: `array([nan])` only (shape (1,)), because the NaN-aware deduplication fix in the np.unique overload propagates to the np.union1d overload."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 2366,
+        "output_tokens": 1371,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002187
+      },
+      "miner_usage": {
+        "input_tokens": 8305,
+        "output_tokens": 1683,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.003764,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

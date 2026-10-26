@@ -1,0 +1,914 @@
+[
+  {
+    "slug": "burn_4194",
+    "bug_type": "correctness",
+    "image": "rust:1-slim",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "the reproducing test does not BUILD on buggy and PASSES on fixed (the buggy revision cannot compile the test target) \u2014 a real transition, but no numerical difference was observed; the numerical probes did not complete on both revisions",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "inconclusive",
+    "examples_verdict": "not_observed",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "dtype_examples_probe": "// Rust numerical probe entrypoint. The harness provides the correct context/recording APIs.\n// We avoid parsing report text; we directly build the tensors.\n\nuse burn::tensor::{DType, Tensor, Shape};\nuse burn::tensor::backend::Backend;\nuse burn::tensor::{Int, Float};\nuse burn::tensor::TensorData;\n\n// Many burn crates use a specific backend for tests; use the crate's test backend if available.\n// If multiple backends exist, rely on the re-exported TestBackend from the onnx-tests crate when compiling as that revision.\nuse crate::backend::TestBackend;\n\nfn dump_i32(t: &Tensor<TestBackend, 2, Int>) {\n    // record some deterministic elements\n    let data = t.clone().into_data().value;\n    // assume row-major contiguous\n    let v0 = data[0] as i64;\n    let v1 = data[1] as i64;\n    probe_scalar(\"matmul_i32_v0\", v0 as f64);\n    probe_scalar(\"matmul_i32_v1\", v1 as f64);\n}\n\nfn probe_dtype_tag(name: &str, dtype: DType) {\n    let tag = match dtype {\n        DType::I32 => 32,\n        DType::I64 => 64,\n        DType::F64 => 64_0,\n        DType::F32 => 32_0,\n        DType::F16 => 16,\n        DType::BF16 => 0,\n        _ => -1,\n    };\n    probe_scalar(&format!(\"{}__dtype_tag\", name), tag as f64);\n}\n\nfn body() {\n    // CASE 1: matmulinteger integer I32 -> expect [[70,80,90],[700,800,900]] for I32.\n    // Build inputs as I32 tensors.\n    let a = Tensor::<TestBackend, 2, Int>::from_int_data(\n        TensorData::new([[1i32,2,3,4],[10,20,30,40]]),\n    );\n    let b = Tensor::<TestBackend, 2, Int>::from_int_data(\n        TensorData::new([[1i32,2,3],[4,5,6],[7,8,9],[10,11,12]]),\n    );\n    // Execute matmulinteger semantics: (a - zp_a) * (b - zp_b) with zp=0 and transpose_b=true (ONNX default).\n    let _zero_points = 0i32;\n    let out = TestBackend::matmul_integer_i32(&a, &b, 0, 0);\n    probe_dtype_tag(\"matmul_i32\", out.dtype());\n    // record a couple scalar values\n    let data = out.clone().into_data().value;\n    probe_scalar(\"matmul_i32_v0\", data[0] as f64);\n    probe_scalar(\"matmul_i32_v_last\", data[data.len()-1] as f64);\n\n    // CASE 2: constant_tensor_i32 -> y = input + constant multiplied elementwise? (from report: expected [[11,22,33],[44,55,66]])\n    let x = Tensor::<TestBackend, 2, Int>::from_int_data(TensorData::new([[1i32,2,3],[4,5,6]]));\n    let c = Tensor::<TestBackend, 2, Int>::from_int_data(TensorData::new([[10i32,20,30],[40,50,60]]));\n    let y = x + c; // corresponds to expected\n    probe_dtype_tag(\"constant_i32\", y.dtype());\n    let ydata = y.clone().into_data().value;\n    probe_scalar(\"constant_i32_v0\", ydata[0] as f64);\n    probe_scalar(\"constant_i32_v_last\", ydata[ydata.len()-1] as f64);\n\n    // CASE 3: burn-store save/load round-trip for TensorData with F64.\n    let f64_data = TensorData::<TestBackend, 2, f64>::new([[1.0f64,2.0],[3.0,4.0]]).reshape([2,2]);\n    // Save/load simulation using Tensor::from_data/to_data.\n    let t = Tensor::<TestBackend, 2, Float>::from_data(f64_data.clone());\n    let loaded = Tensor::<TestBackend, 2, Float>::from_data(t.to_data());\n    probe_dtype_tag(\"roundtrip_f64\", loaded.dtype());\n    let ldata = loaded.to_data().value;\n    probe_scalar(\"roundtrip_f64_v0\", ldata[0] as f64);\n    probe_scalar(\"roundtrip_f64_v_last\", ldata[ldata.len()-1] as f64);\n}\n"
+      },
+      "fixed": {
+        "dtype_examples_probe": "// Rust numerical probe entrypoint. The harness provides the correct context/recording APIs.\n// We avoid parsing report text; we directly build the tensors.\n\nuse burn::tensor::{DType, Tensor, Shape};\nuse burn::tensor::{Int, Float};\nuse burn::tensor::TensorData;\nuse crate::backend::TestBackend;\n\nfn probe_dtype_tag(name: &str, dtype: DType) {\n    let tag = match dtype {\n        DType::I32 => 32,\n        DType::I64 => 64,\n        DType::F64 => 64_0,\n        DType::F32 => 32_0,\n        DType::F16 => 16,\n        DType::BF16 => 0,\n        _ => -1,\n    };\n    probe_scalar(&format!(\"{}__dtype_tag\", name), tag as f64);\n}\n\nfn body() {\n    // CASE 1\n    let a = Tensor::<TestBackend, 2, Int>::from_int_data(\n        TensorData::new([[1i32,2,3,4],[10,20,30,40]]),\n    );\n    let b = Tensor::<TestBackend, 2, Int>::from_int_data(\n        TensorData::new([[1i32,2,3],[4,5,6],[7,8,9],[10,11,12]]),\n    );\n    let out = TestBackend::matmul_integer_i32(&a, &b, 0, 0);\n    probe_dtype_tag(\"matmul_i32\", out.dtype());\n    let data = out.clone().into_data().value;\n    probe_scalar(\"matmul_i32_v0\", data[0] as f64);\n    probe_scalar(\"matmul_i32_v_last\", data[data.len()-1] as f64);\n\n    // CASE 2\n    let x = Tensor::<TestBackend, 2, Int>::from_int_data(TensorData::new([[1i32,2,3],[4,5,6]]));\n    let c = Tensor::<TestBackend, 2, Int>::from_int_data(TensorData::new([[10i32,20,30],[40,50,60]]));\n    let y = x + c;\n    probe_dtype_tag(\"constant_i32\", y.dtype());\n    let ydata = y.clone().into_data().value;\n    probe_scalar(\"constant_i32_v0\", ydata[0] as f64);\n    probe_scalar(\"constant_i32_v_last\", ydata[ydata.len()-1] as f64);\n\n    // CASE 3\n    let f64_data = TensorData::<TestBackend, 2, f64>::new([[1.0f64,2.0],[3.0,4.0]]).reshape([2,2]);\n    let t = Tensor::<TestBackend, 2, Float>::from_data(f64_data.clone());\n    let loaded = Tensor::<TestBackend, 2, Float>::from_data(t.to_data());\n    probe_dtype_tag(\"roundtrip_f64\", loaded.dtype());\n    let ldata = loaded.to_data().value;\n    probe_scalar(\"roundtrip_f64_v0\", ldata[0] as f64);\n    probe_scalar(\"roundtrip_f64_v_last\", ldata[ldata.len()-1] as f64);\n}\n"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "the reproducing test does not BUILD on buggy and PASSES on fixed (the buggy revision cannot compile the test target) \u2014 a real transition, but no numerical difference was observed; the numerical probes did not complete on both revisions",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "inconclusive",
+      "examples_verdict": "not_observed",
+      "success_criterion": "At the buggy commit, at least one of the three reproduction commands exits non-zero due to a dtype-preservation assertion failure. The same commands with the source-only fix from 5898e6fe applied must all exit 0.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 101,
+            "failure_kind": "build",
+            "passed": null,
+            "failed": null,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 1,
+            "failed": 0,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "dtype_examples_probe",
+            "outcome": "unusable",
+            "buggy": {
+              "present": null,
+              "reasons": [
+                "probe produced no structured output"
+              ]
+            },
+            "fixed": {
+              "present": null,
+              "reasons": [
+                "probe produced no structured output"
+              ]
+            },
+            "buggy_status": "harness_error",
+            "fixed_status": "harness_error",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          }
+        ],
+        "examples": [
+          {
+            "input": "matmulinteger ONNX test: a = [[1,2,3,4],[10,20,30,40]] (I32), b = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]] (I32), zero-points are zero",
+            "expected_output": "[[70,80,90],[700,800,900]] with DType::I32",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Generated tensors use backend IntElem (I64) instead of I32; dtype mismatch assertion fires, so no correct I32 result is produced",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "constant_tensor_i32 model: I32 input tensor [[1,2,3],[4,5,6]] plus I32 model constant [[10,20,30],[40,50,60]]",
+            "expected_output": "[[11,22,33],[44,55,66]] with DType::I32",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Model constant is materialized as backend IntElem (e.g. I64), so the expected I32 tensor equality fails",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "burn-store save/load round trip of TensorData::new(vec![1.0_f64,2.0,3.0,4.0],[2,2]) with DType::F64",
+            "expected_output": "Same values [1.0,2.0,3.0,4.0] with DType::F64 preserved",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Loaded via Tensor::from_data, values are coerced to backend default FloatElem (e.g. F32), losing F64 dtype",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 14,
+            "n_failed": 6,
+            "ran_test": true,
+            "failed_setup_or_build": [
+              "cd /workspace/buggy && git checkout 5898e6fe138a66a379456c609493ecf301262950 -- crates/burn-import/onnx-tests/tests/constant/mod.rs crates/burn-import/onnx-tests/tests/constant_of_shape/mod.rs crates/burn-import/onnx-tests/tests/matmulinteger/mod.rs"
+            ]
+          },
+          "fixed": {
+            "n_commands": 7,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [],
+          "skipped": "the spec names no test dependencies"
+        },
+        "error": "",
+        "buggy_commit_date": "2025-12-16T08:21:31-05:00",
+        "fixed_commit_date": "2025-12-16T09:58:28-05:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [],
+          "skipped": "the instance names no system packages"
+        },
+        "era": "2025-12-16T09:58:28-05:00",
+        "build": {
+          "skipped": "not a compiled Python instance"
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": true,
+            "reason": ""
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": true,
+            "reason": ""
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 101,
+        "failure_kind": "build",
+        "passed": null,
+        "failed": null,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 1,
+        "failed": 0,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 1,
+        "verdict": "inconclusive",
+        "pairs": [
+          {
+            "label": "dtype_examples_probe",
+            "outcome": "unusable",
+            "buggy": {
+              "present": null,
+              "reasons": [
+                "probe produced no structured output"
+              ]
+            },
+            "fixed": {
+              "present": null,
+              "reasons": [
+                "probe produced no structured output"
+              ]
+            },
+            "buggy_status": "harness_error",
+            "fixed_status": "harness_error",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 3,
+        "n_judged": 0,
+        "n_reproduced": 0,
+        "evaluable": false,
+        "n_diverged": 0,
+        "n_unobserved": 3,
+        "n_contested": 0,
+        "unobserved": [
+          "matmulinteger ONNX test: a = [[1,2,3,4],[10,20,30,40]] (I32), b = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]] (I32), zero-points are zero",
+          "constant_tensor_i32 model: I32 input tensor [[1,2,3],[4,5,6]] plus I32 model constant [[10,20,30],[40,50,60]]",
+          "burn-store save/load round trip of TensorData::new(vec![1.0_f64,2.0,3.0,4.0],[2,2]) with DType::F64"
+        ],
+        "verdict": "not_observed",
+        "examples": [
+          {
+            "input": "matmulinteger ONNX test: a = [[1,2,3,4],[10,20,30,40]] (I32), b = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]] (I32), zero-points are zero",
+            "expected_output": "[[70,80,90],[700,800,900]] with DType::I32",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Generated tensors use backend IntElem (I64) instead of I32; dtype mismatch assertion fires, so no correct I32 result is produced",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "constant_tensor_i32 model: I32 input tensor [[1,2,3],[4,5,6]] plus I32 model constant [[10,20,30],[40,50,60]]",
+            "expected_output": "[[11,22,33],[44,55,66]] with DType::I32",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Model constant is materialized as backend IntElem (e.g. I64), so the expected I32 tensor equality fails",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "burn-store save/load round trip of TensorData::new(vec![1.0_f64,2.0,3.0,4.0],[2,2]) with DType::F64",
+            "expected_output": "Same values [1.0,2.0,3.0,4.0] with DType::F64 preserved",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Loaded via Tensor::from_data, values are coerced to backend default FloatElem (e.g. F32), losing F64 dtype",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 14,
+          "n_failed": 6,
+          "ran_test": true,
+          "failed_setup_or_build": [
+            "cd /workspace/buggy && git checkout 5898e6fe138a66a379456c609493ecf301262950 -- crates/burn-import/onnx-tests/tests/constant/mod.rs crates/burn-import/onnx-tests/tests/constant_of_shape/mod.rs crates/burn-import/onnx-tests/tests/matmulinteger/mod.rs"
+          ]
+        },
+        "fixed": {
+          "n_commands": 7,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "At the buggy commit, at least one of the three reproduction commands exits non-zero due to a dtype-preservation assertion failure. The same commands with the source-only fix from 5898e6fe applied must all exit 0."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [],
+        "skipped": "the spec names no test dependencies"
+      },
+      "error": "",
+      "buggy_commit_date": "2025-12-16T08:21:31-05:00",
+      "fixed_commit_date": "2025-12-16T09:58:28-05:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [],
+        "skipped": "the instance names no system packages"
+      },
+      "era": "2025-12-16T09:58:28-05:00",
+      "build": {
+        "skipped": "not a compiled Python instance"
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": true,
+          "reason": ""
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": true,
+          "reason": ""
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 4,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the dtype-preservation correctness bug in burn-import/burn-store by running the specified ONNX tests on the buggy and fixed revisions and confirming outputs differ.",
+          "milestones": [
+            "buggy_toolchain_and_test_setup [buggy] \u2014 Ensure the buggy revision builds and the targeted dtype-preservation tests can be run (expected to fail). (5 steps, verify: steps_succeeded)",
+            "buggy_tests_observe_failure [buggy] \u2014 Run the specified reproducing test selectors on the buggy revision and observe failing dtype assertions. (3 steps, verify: test_ran, test_fails)",
+            "fixed_toolchain_and_test_setup [fixed] \u2014 Ensure the fixed revision builds and the targeted dtype-preservation tests can be run (expected to pass). (4 steps, verify: steps_succeeded)",
+            "fixed_tests_observe_pass [fixed] \u2014 Run the specified reproducing test selectors on the fixed revision and confirm they pass. (3 steps, verify: test_ran, test_passes)",
+            "examples_dont_match_without_fix [buggy] \u2014 Confirm the reported buggy vs expected numerical outputs by evaluating the report's own example expressions on both revisions. (1 steps, verify: examples_reproduced)",
+            "examples_match_with_fix [fixed] \u2014 Confirm the expected numerical outputs from the report in the fixed revision for the same example expressions. (1 steps, verify: examples_reproduced)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && git rev-parse HEAD",
+        "purpose": "inspect",
+        "exit_code": 127,
+        "runtime_s": 0.17
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "rustup toolchain install nightly --profile minimal && rustup override set nightly",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 16.27
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && git checkout 5898e6fe138a66a379456c609493ecf301262950 -- crates/burn-import/onnx-tests/tests/constant/mod.rs crates/burn-import/onnx-tests/tests/constant_of_shape/mod.rs crates/burn-import/onnx-tests/tests/matmulinteger/mod.rs",
+        "purpose": "setup",
+        "exit_code": 127,
+        "runtime_s": 0.17
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && cargo +nightly fetch --manifest-path crates/burn-import/onnx-tests/Cargo.toml",
+        "purpose": "build",
+        "exit_code": 0,
+        "runtime_s": 2.67
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && cargo +nightly test --manifest-path crates/burn-import/onnx-tests/Cargo.toml --no-run",
+        "purpose": "build",
+        "exit_code": 0,
+        "runtime_s": 58.83
+      },
+      {
+        "verification": {
+          "milestone": "buggy_toolchain_and_test_setup",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && git rev-parse HEAD` exited 127: bash: line 1: git: command not found; `cd /workspace/buggy && git checkout 5898e6fe138a66a379456c609493ecf301262950 -- ` exited 127: bash: line 1: git: command not found"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Establish a reliable repro of the dtype-preservation bug by running a non-git-dependent setup and then executing dtype-targeted ONNX tests and report examples on both buggy and fixed revisions.",
+          "milestones": [
+            "buggy_toolchain_and_test_setup_revised [buggy] \u2014 Make sure the buggy and fixed revisions are build-ready for running the dtype-preservation tests, without relying on git availability. (3 steps, verify: steps_succeeded)",
+            "buggy_tests_observe_failure [buggy] \u2014 Run the specified dtype-preservation test selectors on the buggy revision and confirm at least one fails. (3 steps, verify: test_ran, test_fails)",
+            "fixed_toolchain_and_test_setup_revised [fixed] \u2014 Make sure the fixed revision is build-ready for running the dtype-preservation tests. (3 steps, verify: steps_succeeded)",
+            "fixed_tests_observe_pass [fixed] \u2014 Run the specified dtype-preservation test selectors on the fixed revision and confirm they pass. (3 steps, verify: test_ran, test_passes)",
+            "examples_dont_match_with_fix [buggy] \u2014 Verify the reported example expressions reproduce the buggy output on buggy and the expected output on fixed by evaluating the report's own examples on both revisions. (1 steps, verify: examples_reproduced)",
+            "examples_match_with_fix [fixed] \u2014 Check that the same report examples match the expected outputs on the fixed revision. (1 steps, verify: examples_reproduced)",
+            "revisions_differ_on_bug [fixed] \u2014 Confirm that the buggy and fixed revisions differ in the observed outcomes for the dtype-preservation examples and/or tests, establishing the regression. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "rustup toolchain list && rustup override set nightly",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 0.47
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && cargo +nightly fetch --manifest-path crates/burn-import/onnx-tests/Cargo.toml",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 0.62
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && cargo +nightly test --manifest-path crates/burn-import/onnx-tests/Cargo.toml --no-run",
+        "purpose": "build",
+        "exit_code": 0,
+        "runtime_s": 0.62
+      },
+      {
+        "verification": {
+          "milestone": "buggy_toolchain_and_test_setup_revised",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && cargo +nightly test --manifest-path crates/burn-import/onnx-tests/Cargo.toml constant_tensor_i32_test -- --nocapture",
+        "purpose": "test",
+        "exit_code": 101,
+        "runtime_s": 0.67
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && cargo +nightly test --manifest-path crates/burn-import/onnx-tests/Cargo.toml constant_of_shape_full_like -- --nocapture",
+        "purpose": "test",
+        "exit_code": 101,
+        "runtime_s": 0.67
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && cargo +nightly test --manifest-path crates/burn-import/onnx-tests/Cargo.toml 'matmulinteger::tests' -- --nocapture",
+        "purpose": "test",
+        "exit_code": 101,
+        "runtime_s": 0.62
+      },
+      {
+        "verification": {
+          "milestone": "buggy_tests_observe_failure",
+          "verified": true,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "rustup toolchain list && rustup override set nightly",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 1.02
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && cargo +nightly fetch --manifest-path crates/burn-import/onnx-tests/Cargo.toml",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 0.67
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && cargo +nightly test --manifest-path crates/burn-import/onnx-tests/Cargo.toml --no-run",
+        "purpose": "build",
+        "exit_code": 0,
+        "runtime_s": 58.85
+      },
+      {
+        "verification": {
+          "milestone": "fixed_toolchain_and_test_setup_revised",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && cargo +nightly test --manifest-path crates/burn-import/onnx-tests/Cargo.toml constant_tensor_i32_test -- --nocapture",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 0.67
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && cargo +nightly test --manifest-path crates/burn-import/onnx-tests/Cargo.toml constant_of_shape_full_like -- --nocapture",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 0.67
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && cargo +nightly test --manifest-path crates/burn-import/onnx-tests/Cargo.toml 'matmulinteger::tests' -- --nocapture",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 0.67
+      },
+      {
+        "verification": {
+          "milestone": "fixed_tests_observe_pass",
+          "verified": true,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on fixed"
+            },
+            {
+              "check": "test_passes",
+              "passed": true,
+              "detail": "test pass on fixed (milestone required pass)"
+            }
+          ]
+        }
+      },
+      {
+        "step_error": "the reported examples cannot be evaluated in 'rust' (only python, javascript, typescript can evaluate an expression given as text) \u2014 record them with run_numerical_probe instead, naming each record exactly as the example's input",
+        "step": "[buggy] check_reported_examples(the reported examples) \u2014 Evaluate report examples (matmulinteger I32, constant_tensor_i32, and burn-store F64 round-trip) to capture observed values on the buggy revision."
+      },
+      {
+        "verification": {
+          "milestone": "examples_dont_match_with_fix",
+          "verified": false,
+          "results": [
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/3 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 3 never evaluated \u2014 the preamble does not bind everything they need: matmulinteger ONNX test: a = [[1,2,3,4],[10,20,30,40]] (I32), b = [[1,2,3],[4,5,6],[7,8,9],[10,11,12]] (I32), zero-points are zero; constant_tensor_i32 model: I32 input tensor [[1,2,3],[4,5,6]] plus I32 model constant [[10,20,30],[40,50,60]]; burn-store save/load round trip of TensorData::new(vec![1.0_f64,2.0,3.0,4.0],[2,2]) with DType::F64"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failed report-example evaluation with a dtype-targeted numerical repro probe by directly executing the strategy\u2019s I/O examples on both buggy and fixed revisions, ensuring each example\u2019s record is actually computed and compared.",
+          "milestones": [
+            "direct_dtype_repro_probed [buggy] \u2014 Run numerical probes that directly reproduce the dtype-preservation issue using the strategy\u2019s three I/O examples (matmulinteger, constant_tensor_i32, burn-store F64 round-trip) on both buggy and fixed revisions. (2 steps, verify: steps_succeeded)",
+            "direct_dtype_repro_probed_fixed [fixed] \u2014 Run the exact same dtype_examples_probe code on the fixed revision to capture the corrected dtype-preserving outputs and compare to buggy later. (1 steps, verify: steps_succeeded)",
+            "revisions_differ_on_dtype_examples [fixed] \u2014 Confirm the dtype-probe recordings differ between buggy and fixed on at least one of the dtype-related examples (values and/or dtype tag). (1 steps, verify: steps_succeeded, probe_ran, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && ls -R crates/burn-import/onnx-tests | head",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.17
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "dtype_examples_probe",
+        "language": "rust",
+        "status": "probe_generation_error",
+        "errors": [
+          "a Rust probe must define `fn body()` \u2014 the harness calls it.",
+          "do not define `fn main()`; the harness owns the entry point.",
+          "record at least one observation with `probe_scalar(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: rust\n\nProblems:\n  - a Rust probe must define `fn body()` \u2014 the harness calls it.\n  - do not define `fn main()`; the harness owns the entry point.\n  - record at least one observation with `probe_scalar(name, value)`.\n\nThe rust probe contract: Rust items that define `fn body()` \u2014 NOT fn main. `use` lines are fine; the probe is built as an example of the crate, so `use <crate_name>::\u2026` resolves to THIS revision's public API. Record with probe_scalar(name, v), probe_values(name, &[..]), probe_text(name, s), probe_iteration(&[(\"residual\", r)]).\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(dtype_examples_probe) \u2014 Build a Rust probe that reproduces the three cases by constructing tensors/models as in the tests; record key observed outputs (values + dtype tag) so we can compare to expected behavior."
+      },
+      {
+        "verification": {
+          "milestone": "direct_dtype_repro_probed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(dtype_examples_probe) \u2014 Build a Rust probe that reproduces the three cases by constructing tensors/models as in the tests; record key observed outputs (values + dtype tag) so we can compare to expected behavior. did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "direct_dtype_repro_probed",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 2,
+          "detail": [
+            "[buggy] run_numerical_probe(dtype_examples_probe) \u2014 Build a Rust probe that reproduces the three cases by constructing tensors/models as in the tests; record key observed outputs (values + dtype tag) so we can compare to expected behavior. did not execute"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "dtype_examples_probe",
+        "language": "rust",
+        "status": "probe_generation_error",
+        "errors": [
+          "a Rust probe must define `fn body()` \u2014 the harness calls it.",
+          "do not define `fn main()`; the harness owns the entry point.",
+          "record at least one observation with `probe_scalar(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: rust\n\nProblems:\n  - a Rust probe must define `fn body()` \u2014 the harness calls it.\n  - do not define `fn main()`; the harness owns the entry point.\n  - record at least one observation with `probe_scalar(name, value)`.\n\nThe rust probe contract: Rust items that define `fn body()` \u2014 NOT fn main. `use` lines are fine; the probe is built as an example of the crate, so `use <crate_name>::\u2026` resolves to THIS revision's public API. Record with probe_scalar(name, v), probe_values(name, &[..]), probe_text(name, s), probe_iteration(&[(\"residual\", r)]).\n\nRegenerate only the probe, following that contract.",
+        "step": "[fixed] run_numerical_probe(dtype_examples_probe) \u2014 Run the same numerical probe (same label+code) on fixed revision to record dtype+values for the three examples."
+      },
+      {
+        "verification": {
+          "milestone": "direct_dtype_repro_probed_fixed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[fixed] run_numerical_probe(dtype_examples_probe) \u2014 Run the same numerical probe (same label+code) on fixed revision to record dtype+values for the three examples. did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the broken dtype probe milestone with a Rust probe that directly executes dtype-focused I/O examples on both buggy and fixed revisions and records dtype+values for comparison.",
+          "milestones": [
+            "dtype_examples_probe_rust [buggy] \u2014 Run a corrected Rust numerical probe on both revisions that constructs the three dtype-sensitive scenarios and records at least one scalar plus a dtype tag/value dump, ensuring the probe contract is satisfied (fn body(), probe_scalar calls). (2 steps, verify: steps_succeeded)",
+            "dtype_examples_probe_rust_fixed [fixed] \u2014 Run the same Rust dtype examples probe on fixed revision with identical label+code, so we can compare dtype+values recordings. (1 steps, verify: steps_succeeded, probe_ran)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "ls -la /workspace/buggy && find /workspace/buggy -maxdepth 3 -type d -name probes -o -name examples | head",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.17
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "dtype_examples_probe",
+        "language": "rust",
+        "status": "harness_error",
+        "pathology": null,
+        "reasons": [
+          "probe produced no structured output"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "dtype_examples_probe_rust",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "probe 'dtype_examples_probe' did not complete: harness_error"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "dtype_examples_probe_rust",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 3,
+          "detail": [
+            "probe 'dtype_examples_probe' did not complete: harness_error"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "dtype_examples_probe",
+        "language": "rust",
+        "status": "harness_error",
+        "pathology": null,
+        "reasons": [
+          "probe produced no structured output"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "dtype_examples_probe_rust_fixed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "probe 'dtype_examples_probe' did not complete: harness_error"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "1 of 1 probe(s) did not complete: 'dtype_examples_probe' (harness_error): probe produced no structured output | error: could not compile `burn-import` (example \"numagent_probe\") due to 8 previous errors; 2 warnings emitted"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cargo test -p burn-store dtype_preservation_f64 -- --nocapture",
+        "purpose": "test",
+        "exit_code": 101,
+        "runtime_s": 21.49
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cargo test -p burn-store dtype_preservation_f64 -- --nocapture",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 28.86
+      },
+      {
+        "reproducing_test_run": {
+          "case": "dtype_preservation_f64",
+          "command": "cargo test -p burn-store dtype_preservation_f64 -- --nocapture",
+          "package": "burn-store",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 101,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "dtype_preservation_f64",
+              "command": "cargo test -p burn-store dtype_preservation_f64 -- --nocapture",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "inconclusive",
+        "examples_verdict": "not_observed",
+        "examples": "0/0"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "the reproducing test does not BUILD on buggy and PASSES on fixed (the buggy revision cannot compile the test target) \u2014 a real transition, but no numerical difference was observed; the numerical probes did not complete on both revisions"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 4,
+      "input_tokens": 15875,
+      "output_tokens": 6278,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.011023
+    }
+  }
+]

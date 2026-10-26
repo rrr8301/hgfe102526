@@ -1,0 +1,534 @@
+diff --git a/doc/release/upcoming_changes/32296.change.rst b/doc/release/upcoming_changes/32296.change.rst
+new file mode 100644
+index 000000000000..5ac87cc7b284
+--- /dev/null
++++ b/doc/release/upcoming_changes/32296.change.rst
+@@ -0,0 +1,4 @@
++* Casting a fixed-width byte string array (``np.bytes_``) to ``StringDType``
++  now raises ``TypeError`` when the bytes are not valid UTF-8. Previously the
++  invalid bytes were stored as-is and later caused undefined behavior in
++  string operations.
+diff --git a/doc/source/reference/c-api/strings.rst b/doc/source/reference/c-api/strings.rst
+index e338685742d6..ced68d610b8c 100644
+--- a/doc/source/reference/c-api/strings.rst
++++ b/doc/source/reference/c-api/strings.rst
+@@ -267,3 +267,6 @@ Functions
+ 
+    Copy and pack the first ``size`` entries of the buffer pointed to by ``buf``
+    into the ``packed_string``. Returns 0 on success and -1 on failure.
++
++   The ``buf`` pointer must store valid, complete UTF-8. The ``NpyString_pack``
++   function does not validate it.
+diff --git a/numpy/_core/src/multiarray/stringdtype/casts.cpp b/numpy/_core/src/multiarray/stringdtype/casts.cpp
+index 08f50b449ea9..c0cb275dc705 100644
+--- a/numpy/_core/src/multiarray/stringdtype/casts.cpp
++++ b/numpy/_core/src/multiarray/stringdtype/casts.cpp
+@@ -2040,17 +2040,19 @@ bytes_to_string(PyArrayMethod_Context *context, char *const data[],
+     npy_intp out_stride = strides[1];
+ 
+     while(N--) {
+-        size_t out_num_bytes = max_in_size;
+-
+-        // ignore trailing nulls
+-        while (out_num_bytes > 0 && in[out_num_bytes - 1] == 0) {
+-            out_num_bytes--;
++        // reject non-UTF-8 input; readers of the stored bytes assume validity
++        Py_ssize_t out_num_bytes = utf8_buffer_size(in, max_in_size);
++        if (out_num_bytes < 0) {
++            npy_gil_error(PyExc_TypeError,
++                          "Invalid UTF-8 bytes found, cannot convert to "
++                          "StringDType");
++            goto fail;
+         }
+ 
+         npy_static_string out_ss = {0, NULL};
+         if (load_new_string((npy_packed_static_string *)out,
+-                            &out_ss, out_num_bytes, allocator,
+-                            "void to string cast") == -1) {
++                            &out_ss, (size_t)out_num_bytes, allocator,
++                            "bytes to string cast") == -1) {
+             goto fail;
+         }
+ 
+diff --git a/numpy/_core/src/multiarray/stringdtype/static_string.c b/numpy/_core/src/multiarray/stringdtype/static_string.c
+index a8396d96075c..3f388a1834bf 100644
+--- a/numpy/_core/src/multiarray/stringdtype/static_string.c
++++ b/numpy/_core/src/multiarray/stringdtype/static_string.c
+@@ -813,6 +813,10 @@ NpyString_size(const npy_packed_static_string *packed_string)
+  *
+  * Copy and pack the first *size* entries of the buffer pointed to by *buf*
+  * into the *packed_string*. Returns 0 on success and -1 on failure.
++ *
++ * *buf* must be valid, complete UTF-8: StringDType readers decode the stored
++ * bytes without validating them, so malformed input can make them stall or
++ * read out of bounds. This function does not validate *buf*.
+ */
+ NPY_NO_EXPORT int
+ NpyString_pack(npy_string_allocator *allocator,
+diff --git a/numpy/_core/src/multiarray/stringdtype/utf8_utils.c b/numpy/_core/src/multiarray/stringdtype/utf8_utils.c
+index 49f23765266a..918e6ae19642 100644
+--- a/numpy/_core/src/multiarray/stringdtype/utf8_utils.c
++++ b/numpy/_core/src/multiarray/stringdtype/utf8_utils.c
+@@ -210,8 +210,9 @@ utf8_decode(uint32_t* state, uint32_t* codep, uint32_t byte) {
+ 
+ /*******************************************************************************/
+ 
+-// calculate the size in bytes required to store a UTF-8 encoded version of the
+-// UTF-32 encoded string stored in **s**, which is **max_bytes** long.
++// calculate the number of bytes, excluding trailing null bytes, needed to
++// store the UTF-8 encoded buffer **s**, which is **max_bytes** long. Returns
++// -1 if **s** is not valid, complete UTF-8.
+ NPY_NO_EXPORT Py_ssize_t
+ utf8_buffer_size(const uint8_t *s, size_t max_bytes)
+ {
+@@ -295,7 +296,8 @@ find_start_end_locs(char* buf, size_t buffer_size, npy_int64 start_index, npy_in
+         *end_loc = buf;
+     }
+     while (bytes_consumed < buffer_size && num_codepoints < (size_t) end_index) {
+-        size_t num_bytes = num_bytes_for_utf8_character((const unsigned char*)buf);
++        size_t num_bytes = num_bytes_for_utf8_character_bounded(
++                (const unsigned char*)buf, buffer_size - bytes_consumed);
+         num_codepoints += 1;
+         bytes_consumed += num_bytes;
+         buf += num_bytes;
+@@ -318,7 +320,8 @@ utf8_character_index(
+     size_t bytes_consumed = 0;
+     size_t cur_index = start_index;
+     while (bytes_consumed < buffer_size && bytes_consumed < search_byte_offset) {
+-        size_t num_bytes = num_bytes_for_utf8_character((const unsigned char*)start_loc);
++        size_t num_bytes = num_bytes_for_utf8_character_bounded(
++                (const unsigned char*)start_loc, buffer_size - bytes_consumed);
+         cur_index += 1;
+         bytes_consumed += num_bytes;
+         start_loc += num_bytes;
+diff --git a/numpy/_core/src/multiarray/stringdtype/utf8_utils.h b/numpy/_core/src/multiarray/stringdtype/utf8_utils.h
+index 7901afb02bed..cf99ad7860a6 100644
+--- a/numpy/_core/src/multiarray/stringdtype/utf8_utils.h
++++ b/numpy/_core/src/multiarray/stringdtype/utf8_utils.h
+@@ -19,6 +19,25 @@ static inline int num_bytes_for_utf8_character(const unsigned char *c)
+     return LENGTHS_LUT[c[0] >> 3];
+ }
+ 
++// like num_bytes_for_utf8_character, but clamps the result to [1, max_bytes]
++// (0 if max_bytes is 0) so a walk over invalid UTF-8 cannot stall on a
++// malformed lead byte or advance past the end of the buffer
++static inline int
++num_bytes_for_utf8_character_bounded(const unsigned char *c, size_t max_bytes)
++{
++    if (max_bytes == 0) {
++        return 0;
++    }
++    int num_bytes = num_bytes_for_utf8_character(c);
++    if (num_bytes < 1) {
++        num_bytes = 1;
++    }
++    if ((size_t)num_bytes > max_bytes) {
++        num_bytes = (int)max_bytes;
++    }
++    return num_bytes;
++}
++
+ NPY_NO_EXPORT const unsigned char*
+ find_previous_utf8_character(const unsigned char *c, size_t nchar);
+ 
+diff --git a/numpy/_core/src/umath/string_buffer.h b/numpy/_core/src/umath/string_buffer.h
+index da6b568f1e3f..04962683d619 100644
+--- a/numpy/_core/src/umath/string_buffer.h
++++ b/numpy/_core/src/umath/string_buffer.h
+@@ -320,11 +320,12 @@ struct Buffer {
+             buf += rhs;
+             break;
+         case ENCODING::UTF32:
+-            buf += rhs * sizeof(npy_ucs4);
++            buf += rhs * (npy_int64)sizeof(npy_ucs4);
+             break;
+         case ENCODING::UTF8:
+-            for (int i=0; i<rhs; i++) {
+-                buf += num_bytes_for_utf8_character((unsigned char *)buf);
++            for (npy_int64 i = 0; i < rhs && buf < after; i++) {
++                buf += num_bytes_for_utf8_character_bounded(
++                        (unsigned char *)buf, (size_t)(after - buf));
+             }
+             break;
+         }
+@@ -339,7 +340,7 @@ struct Buffer {
+             buf -= rhs;
+             break;
+         case ENCODING::UTF32:
+-            buf -= rhs * sizeof(npy_ucs4);
++            buf -= rhs * (npy_int64)sizeof(npy_ucs4);
+             break;
+         case ENCODING::UTF8:
+             buf = (char *) find_previous_utf8_character((unsigned char *)buf, (size_t) rhs);
+@@ -482,7 +483,8 @@ struct Buffer {
+             case ENCODING::UTF32:
+                 return 4;
+             case ENCODING::UTF8:
+-                return num_bytes_for_utf8_character((unsigned char *)(*this).buf);
++                return num_bytes_for_utf8_character_bounded(
++                        (unsigned char *)buf, (size_t)(after - buf));
+         }
+     }
+ 
+@@ -720,12 +722,13 @@ operator+(Buffer<enc> lhs, npy_int64 rhs)
+         case ENCODING::ASCII:
+             return Buffer<enc>(lhs.buf + rhs, lhs.after - lhs.buf - rhs);
+         case ENCODING::UTF32:
+-            return Buffer<enc>(lhs.buf + rhs * sizeof(npy_ucs4),
+-                          lhs.after - lhs.buf - rhs * sizeof(npy_ucs4));
++            return Buffer<enc>(lhs.buf + rhs * (npy_int64)sizeof(npy_ucs4),
++                          lhs.after - lhs.buf - rhs * (npy_int64)sizeof(npy_ucs4));
+         case ENCODING::UTF8:
+             char* buf = lhs.buf;
+-            for (int i=0; i<rhs; i++) {
+-                buf += num_bytes_for_utf8_character((unsigned char *)buf);
++            for (npy_int64 i = 0; i < rhs && buf < lhs.after; i++) {
++                buf += num_bytes_for_utf8_character_bounded(
++                        (unsigned char *)buf, (size_t)(lhs.after - buf));
+             }
+             return Buffer<enc>(buf, (npy_int64)(lhs.after - buf));
+     }
+@@ -756,8 +759,8 @@ operator-(Buffer<enc> lhs, npy_int64 rhs)
+         case ENCODING::ASCII:
+             return Buffer<enc>(lhs.buf - rhs, lhs.after - lhs.buf + rhs);
+         case ENCODING::UTF32:
+-            return Buffer<enc>(lhs.buf - rhs * sizeof(npy_ucs4),
+-                          lhs.after - lhs.buf + rhs * sizeof(npy_ucs4));
++            return Buffer<enc>(lhs.buf - rhs * (npy_int64)sizeof(npy_ucs4),
++                          lhs.after - lhs.buf + rhs * (npy_int64)sizeof(npy_ucs4));
+         case ENCODING::UTF8:
+             char* buf = lhs.buf;
+             buf = (char *)find_previous_utf8_character((unsigned char *)buf, rhs);
+@@ -1632,13 +1635,18 @@ string_zfill(Buffer<enc> buf, npy_int64 width, Buffer<enc> out)
+         return -1;
+     }
+ 
+-    size_t offset = final_width - buf.num_codepoints();
+-    Buffer<enc> tmp = out + offset;
+-
+-    npy_ucs4 c = *tmp;
+-    if (c == '+' || c == '-') {
+-        tmp.buffer_memset(fill, 1);
+-        out.buffer_memset(c, 1);
++    // when no padding was added there is no sign to move, and the sign
++    // position below would be out of bounds
++    size_t len = buf.num_codepoints();
++    if (len > 0 && final_width > len) {
++        size_t offset = final_width - len;
++        Buffer<enc> tmp = out + offset;
++
++        npy_ucs4 c = *tmp;
++        if (c == '+' || c == '-') {
++            tmp.buffer_memset(fill, 1);
++            out.buffer_memset(c, 1);
++        }
+     }
+ 
+     return new_len;
+diff --git a/numpy/_core/src/umath/string_ufuncs.cpp b/numpy/_core/src/umath/string_ufuncs.cpp
+index 18ed4534ea04..e60cad0ce66c 100644
+--- a/numpy/_core/src/umath/string_ufuncs.cpp
++++ b/numpy/_core/src/umath/string_ufuncs.cpp
+@@ -686,10 +686,16 @@ string_slice_loop(PyArrayMethod_Context *context,
+         npy_intp stop = *(npy_intp*)stop_ptr;
+         npy_intp step = *(npy_intp*)step_ptr;
+ 
++        if (step == 0) {
++            npy_gil_error(PyExc_ValueError, "slice step cannot be zero");
++            return -1;
++        }
++
+         // adjust slice to string length in codepoints
+         // and handle negative indices
+         size_t num_codepoints = inbuf.num_codepoints();
+-        npy_intp slice_length = PySlice_AdjustIndices(num_codepoints, &start, &stop, step);
++        npy_intp slice_length = PySlice_AdjustIndices(num_codepoints, &start, &stop,
++                                                      step < -NPY_MAX_INTP ? -NPY_MAX_INTP : step);
+ 
+         // iterate over slice and copy each character of the string
+         inbuf.advance_chars_or_bytes(start);
+@@ -697,11 +703,13 @@ string_slice_loop(PyArrayMethod_Context *context,
+             // copy one codepoint
+             inbuf.buffer_memcpy(outbuf, 1);
+ 
+-            // Move in inbuf by step.
+-            inbuf += step;
+-
+             // Move in outbuf by the number of chars or bytes written
+             outbuf.advance_chars_or_bytes(1);
++
++            // an extreme step overflows the pointer on the final advance
++            if (i + 1 < slice_length) {
++                inbuf += step;
++            }
+         }
+ 
+         // fill remaining outbuf with zero bytes
+diff --git a/numpy/_core/src/umath/stringdtype_ufuncs.cpp b/numpy/_core/src/umath/stringdtype_ufuncs.cpp
+index 82f5fa78900f..e9e30263e73f 100644
+--- a/numpy/_core/src/umath/stringdtype_ufuncs.cpp
++++ b/numpy/_core/src/umath/stringdtype_ufuncs.cpp
+@@ -21,6 +21,7 @@
+ #include "string_buffer.h"
+ #include "string_fastsearch.h"
+ #include "templ_common.h" /* for npy_mul_size_with_overflow_size_t */
++#include "npy_extint128.h" /* for safe_add, safe_mul */
+ 
+ #include "stringdtype/static_string.h"
+ #include "stringdtype/dtype.h"
+@@ -134,6 +135,17 @@ static int multiply_loop_core(
+         }
+         T factor = *(T *)iin;
+         size_t cursize = is.size;
++        // the overflow check below passes for an empty input regardless of
++        // factor, but the copy loop still runs factor times
++        if (factor < 1 || cursize == 0) {
++            factor = 0;
++        }
++        // on 32-bit platforms size_t truncates a 64-bit factor
++        else if ((npy_uint64)factor > (npy_uint64)PY_SSIZE_T_MAX) {
++            npy_gil_error(PyExc_OverflowError,
++                      "Overflow encountered in string multiply");
++            goto fail;
++        }
+         size_t newsize;
+         int overflowed = npy_mul_with_overflow_size_t(
+                 &newsize, cursize, factor);
+@@ -175,6 +187,7 @@ static int multiply_loop_core(
+             if (NpyString_pack(oallocator, ops, buf, newsize) < 0) {
+                 npy_gil_error(PyExc_MemoryError,
+                               "Failed to pack string in multiply");
++                PyMem_RawFree(buf);
+                 goto fail;
+             }
+ 
+@@ -370,6 +383,7 @@ add_strided_loop(PyArrayMethod_Context *context, char *const data[],
+             if (NpyString_pack(oallocator, ops, buf, newsize) < 0) {
+                 npy_gil_error(PyExc_MemoryError,
+                           "Failed to pack output string in add");
++                PyMem_RawFree(buf);
+                 goto fail;
+             }
+ 
+@@ -1753,28 +1767,33 @@ center_ljust_rjust_strided_loop(PyArrayMethod_Context *context,
+             Buffer<ENCODING::UTF8> fill((char *)s2.buf, s2.size);
+ 
+             size_t num_codepoints = inbuf.num_codepoints();
+-            npy_intp width = (npy_intp)*(npy_int64*)in2;
++            npy_int64 width = *(npy_int64 *)in2;
+ 
+-            if ((npy_intp)num_codepoints > width) {
+-                width = num_codepoints;
++            if ((npy_int64)num_codepoints > width) {
++                width = (npy_int64)num_codepoints;
+             }
+ 
+             char *buf = NULL;
+-            npy_intp newsize;
+-            int overflowed = npy_mul_sizes_with_overflow(
+-                    &(newsize),
+-                    (npy_intp)num_bytes_for_utf8_character((unsigned char *)s2.buf),
+-                    width - num_codepoints);
+-            newsize += s1.size;
+-
+-            if (overflowed || newsize > PY_SSIZE_T_MAX) {
++            char overflowed = 0;
++            // size the pad with the same encoded length buffer_memset writes
++            char fill_utf8[4];
++            npy_int64 fill_nbytes =
++                    (npy_int64)ucs4_code_to_utf8_char(*fill, fill_utf8);
++            npy_int64 pad_nbytes = safe_mul(
++                    fill_nbytes, width - (npy_int64)num_codepoints, &overflowed);
++            npy_int64 newsize = safe_add(pad_nbytes, (npy_int64)s1.size,
++                                         &overflowed);
++            // also bounds width: the fill is at least one byte per pad
++            // character and s1.size >= num_codepoints, so width <= newsize
++            if (overflowed || newsize > NPY_MAX_INTP) {
+                 npy_gil_error(PyExc_OverflowError,
+                               "Overflow encountered in %s", ufunc_name);
+                 goto fail;
+             }
+ 
+-            if (context->descriptors[0] == context->descriptors[3]) {
+-                // in-place
++            int in_place = context->descriptors[0] == context->descriptors[3] ||
++                           context->descriptors[2] == context->descriptors[3];
++            if (in_place) {
+                 buf = (char *)PyMem_RawMalloc(newsize);
+                 if (buf == NULL) {
+                     npy_gil_error(PyExc_MemoryError,
+@@ -1792,17 +1811,21 @@ center_ljust_rjust_strided_loop(PyArrayMethod_Context *context,
+ 
+             Buffer<ENCODING::UTF8> outbuf(buf, newsize);
+ 
+-            npy_intp len = string_pad(inbuf, *(npy_int64*)in2, *fill, pos, outbuf);
++            npy_intp len = string_pad(inbuf, width, *fill, pos, outbuf);
+ 
+             if (len < 0) {
+-                return -1;
++                if (in_place) {
++                    PyMem_RawFree(buf);
++                }
++                goto fail;
+             }
+ 
+             // in-place operations need to clean up temp buffer
+-            if (context->descriptors[0] == context->descriptors[3]) {
++            if (in_place) {
+                 if (NpyString_pack(oallocator, ops, buf, newsize) < 0) {
+                     npy_gil_error(PyExc_MemoryError,
+                                   "Failed to pack string in %s", ufunc_name);
++                    PyMem_RawFree(buf);
+                     goto fail;
+                 }
+ 
+@@ -1885,13 +1908,21 @@ zfill_strided_loop(PyArrayMethod_Context *context,
+         {
+             Buffer<ENCODING::UTF8> inbuf((char *)is.buf, is.size);
+             size_t in_codepoints = inbuf.num_codepoints();
+-            npy_intp width = (npy_intp)*(npy_int64*)in2;
+-            if ((npy_intp)in_codepoints > width) {
+-                width = in_codepoints;
++            npy_int64 width = *(npy_int64 *)in2;
++            if ((npy_int64)in_codepoints > width) {
++                width = (npy_int64)in_codepoints;
+             }
+             // number of leading one-byte characters plus the size of the
+             // original string
+-            size_t outsize = (width - in_codepoints) + is.size;
++            char overflowed = 0;
++            npy_int64 outsize = safe_add(width - (npy_int64)in_codepoints,
++                                         (npy_int64)is.size, &overflowed);
++            // also bounds width: is.size >= in_codepoints, so width <= outsize
++            if (overflowed || outsize > NPY_MAX_INTP) {
++                npy_gil_error(PyExc_OverflowError,
++                              "Overflow encountered in zfill");
++                goto fail;
++            }
+             char *buf = NULL;
+             if (context->descriptors[0] == context->descriptors[2]) {
+                 // in-place
+@@ -1911,7 +1942,10 @@ zfill_strided_loop(PyArrayMethod_Context *context,
+             }
+ 
+             Buffer<ENCODING::UTF8> outbuf(buf, outsize);
+-            if (string_zfill(inbuf, (npy_int64)width, outbuf) < 0) {
++            if (string_zfill(inbuf, width, outbuf) < 0) {
++                if (context->descriptors[0] == context->descriptors[2]) {
++                    PyMem_RawFree(buf);
++                }
+                 goto fail;
+             }
+ 
+@@ -1920,6 +1954,7 @@ zfill_strided_loop(PyArrayMethod_Context *context,
+                 if (NpyString_pack(oallocator, ops, buf, outsize) < 0) {
+                     npy_gil_error(PyExc_MemoryError,
+                                   "Failed to pack string in zfill");
++                    PyMem_RawFree(buf);
+                     goto fail;
+                 }
+ 
+@@ -2237,6 +2272,11 @@ slice_strided_loop(PyArrayMethod_Context *context, char *const data[],
+         npy_intp stop = *(npy_intp *)stop_ptr;
+         npy_intp step = *(npy_intp *)step_ptr;
+ 
++        if (step == 0) {
++            npy_gil_error(PyExc_ValueError, "slice step cannot be zero");
++            goto fail;
++        }
++
+         npy_static_string is = {0, NULL};
+         const npy_packed_static_string *ips = (npy_packed_static_string *)iptr;
+         npy_static_string os = {0, NULL};
+@@ -2264,24 +2304,32 @@ slice_strided_loop(PyArrayMethod_Context *context, char *const data[],
+                 num_codepoints++;
+                 int num_bytes = num_bytes_for_utf8_character(
+                         ((unsigned char *)inbuf_ptr));
++                // num_bytes is 0 for a malformed lead byte
++                if (num_bytes < 1) {
++                    // keep forward progress
++                    num_bytes = 1;
++                }
++                // never advance past the end
++                if (num_bytes > inbuf_ptr_end - inbuf_ptr) {
++                    num_bytes = (int)(inbuf_ptr_end - inbuf_ptr);
++                }
+                 codepoint_offsets.push_back((unsigned char *)inbuf_ptr);
+                 inbuf_ptr += num_bytes;
+             }
++            // trailing offset so offsets[i + 1] - offsets[i] is codepoint i's
++            // byte length below, including for the last codepoint
++            codepoint_offsets.push_back((unsigned char *)inbuf_ptr_end);
+         }
+ 
+         // adjust slice to string length in codepoints
+         // and handle negative indices
+-        npy_intp slice_length =
+-                PySlice_AdjustIndices(num_codepoints, &start, &stop, step);
++        npy_intp slice_length = PySlice_AdjustIndices(num_codepoints, &start, &stop,
++                                                      step < -NPY_MAX_INTP ? -NPY_MAX_INTP : step);
+ 
+         if (step == 1) {
+             // step == 1 is the easy case, we can just use memcpy
+-            unsigned char *start_bounded = ((size_t)start < num_codepoints
+-                                            ? codepoint_offsets[start]
+-                                            : (unsigned char *)is.buf + is.size);
+-            unsigned char *stop_bounded = ((size_t)stop < num_codepoints
+-                                           ? codepoint_offsets[stop]
+-                                           : (unsigned char *)is.buf + is.size);
++            unsigned char *start_bounded = codepoint_offsets[start];
++            unsigned char *stop_bounded = codepoint_offsets[stop];
+             npy_intp outsize = stop_bounded - start_bounded;
+             outsize = outsize < 0 ? 0 : outsize;
+ 
+@@ -2295,11 +2343,16 @@ slice_strided_loop(PyArrayMethod_Context *context, char *const data[],
+             memcpy(buf, start_bounded, outsize);
+         }
+         else {
+-            // handle step != 1
+-            // compute outsize
++            // step != 1. Only add step when another iteration remains: for an
++            // extreme step the final i_idx += step would overflow npy_intp and
++            // index codepoint_offsets out of bounds.
+             npy_intp outsize = 0;
+-            for (int i = start; step > 0 ? i < stop : i > stop; i += step) {
+-                outsize += num_bytes_for_utf8_character(codepoint_offsets[i]);
++            npy_intp i_idx = start;
++            for (npy_intp o_idx = 0; o_idx < slice_length; o_idx++) {
++                outsize += codepoint_offsets[i_idx + 1] - codepoint_offsets[i_idx];
++                if (o_idx + 1 < slice_length) {
++                    i_idx += step;
++                }
+             }
+ 
+             if (outsize > 0) {
+@@ -2310,10 +2363,15 @@ slice_strided_loop(PyArrayMethod_Context *context, char *const data[],
+                 /* explicitly discard const; initializing new buffer */
+                 char *buf = (char *)os.buf;
+ 
+-                for (npy_intp i_idx = start, o_idx = 0; o_idx < slice_length; o_idx++, i_idx += step) {
+-                    int num_bytes = num_bytes_for_utf8_character(codepoint_offsets[i_idx]);
++                i_idx = start;
++                for (npy_intp o_idx = 0; o_idx < slice_length; o_idx++) {
++                    npy_intp num_bytes =
++                            codepoint_offsets[i_idx + 1] - codepoint_offsets[i_idx];
+                     memcpy(buf, codepoint_offsets[i_idx], num_bytes);
+                     buf += num_bytes;
++                    if (o_idx + 1 < slice_length) {
++                        i_idx += step;
++                    }
+                 }
+             }
+         }
+diff --git a/tools/ci/ubsan_suppressions_arm64.txt b/tools/ci/ubsan_suppressions_arm64.txt
+index 69de4a4c425f..2ca1ea515e51 100644
+--- a/tools/ci/ubsan_suppressions_arm64.txt
++++ b/tools/ci/ubsan_suppressions_arm64.txt
+@@ -25,7 +25,6 @@ pointer-overflow:_core/src/umath/loops_arithm_fp.dispatch.c.src
+ pointer-overflow:_core/src/umath/loops_unary.dispatch.c.src
+ pointer-overflow:_core/src/umath/loops_unary_complex.dispatch.c.src
+ pointer-overflow:_core/src/umath/loops_unary_fp_le.dispatch.c.src
+-pointer-overflow:_core/src/umath/string_buffer.h
+ pointer-overflow:linalg/umath_linalg.cpp
+ pointer-overflow:numpy/random/bit_generator.pyx.c
+ 

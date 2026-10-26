@@ -1,0 +1,1439 @@
+[
+  {
+    "slug": "pandas_68559",
+    "bug_type": "special_value",
+    "image": "python:3.11",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 3/3 reported example(s) reproduce, but 2 of 5 reported example(s) could not be evaluated on either revision, so those values remain unchecked",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "incomplete",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import numpy as np\nimport pytest\nimport pandas as pd\nimport pandas._testing as tm\nfrom pandas.core.arrays.sparse import SparseArray\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"SparseArray(pd.array([1, None], dtype=\\\"Int64\\\")).any(skipna=False)\", \"SparseArray(pd.array([1, None], dtype=\\\"Int64\\\")).any(skipna=False)\", [], \"True (equals pd.Series(arr._densify()).any(skipna=False); the None gap densifies to a truthy NaN)\"], [\"SparseArray(pd.array([1, None], dtype=\\\"Int64\\\")).all(skipna=False)\", \"SparseArray(pd.array([1, None], dtype=\\\"Int64\\\")).all(skipna=False)\", [], \"Equals pd.Series(arr._densify()).all(skipna=False) (dense result for [1, NaN])\"], [\"SparseArray(pd.array([1, 0, None], dtype=\\\"Float64\\\")).all(skipna=False)\", \"SparseArray(pd.array([1, 0, None], dtype=\\\"Float64\\\")).all(skipna=False)\", [], \"Equals getattr(pd.Series(arr._densify()), \\\"all\\\")(skipna=False); [1, 0, None] covers all() falling through to a False value\"], [\"SparseArray(np.array([1, 0, 0], dtype=subtype), fill_value=0).astype(pd.SparseDtype(subtype, pd.NA)); any/all(skipna=False) for subtype in int64, uint64, float64, complex128, m8[ns]\", \"SparseArray(np.array([1, 0, 0], dtype=subtype), fill_value=0).astype(pd.SparseDtype(subtype, pd.NA)); any/all(skipna=False) for subtype in int64, uint64, float64, complex128, m8[ns]\", [], \"Truthy (assert getattr(arr, name)(skipna=False)); each subtype densifies to its own NaN or NaT, both truthy\"], [\"SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA)); any/all(skipna=False)\", \"any/all(skipna=False)\", [\"SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA))\"], \"Still raises TypeError: boolean value of NA is ambiguous (unchanged; bool subtype densifies to object holding pd.NA, so it keeps raising like dense)\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "sparse_any_all_skipna_false_na_fill": "import numpy as np\nimport pandas as pd\nfrom pandas.arrays import SparseArray\n\n\ndef rec(name, thunk, defect_if_error=True):\n    # defect_if_error=True: an exception is the reported defect -> NaN.\n    # defect_if_error=False: an exception is the expected outcome -> 1.0, no exception -> 0.0,\n    # so a case that raises on BOTH revisions never injects a NaN into the fixed probe.\n    try:\n        v = float(thunk())\n    except Exception:\n        v = float(\"nan\") if defect_if_error else 1.0\n    else:\n        if not defect_if_error:\n            v = 0.0\n    probe(name, v)\n\n\narr_i = SparseArray(pd.array([1, None], dtype=\"Int64\"))\narr_f = SparseArray(pd.array([1, 0, None], dtype=\"Float64\"))\n\n# reported example 1 and 2: Int64 NA fill\nrec(\"int64_nafill_any\", lambda: arr_i.any(skipna=False))\nrec(\"int64_nafill_all\", lambda: arr_i.all(skipna=False))\nrec(\"int64_nafill_dense_any\", lambda: pd.Series(arr_i._densify()).any(skipna=False))\nrec(\"int64_nafill_dense_all\", lambda: pd.Series(arr_i._densify()).all(skipna=False))\n\n# reported example 3: Float64 NA fill covering all() falling through to False\nrec(\"float64_nafill_any\", lambda: arr_f.any(skipna=False))\nrec(\"float64_nafill_all\", lambda: arr_f.all(skipna=False))\nrec(\"float64_nafill_dense_any\", lambda: pd.Series(arr_f._densify()).any(skipna=False))\nrec(\"float64_nafill_dense_all\", lambda: pd.Series(arr_f._densify()).all(skipna=False))\n\n# Series and DataFrame reduce paths reach the same gate\nrec(\"series_int64_nafill_any\", lambda: pd.Series(arr_i).any(skipna=False))\nrec(\"series_int64_nafill_all\", lambda: pd.Series(arr_i).all(skipna=False))\nrec(\"frame_int64_nafill_any\", lambda: pd.DataFrame({\"A\": arr_i}).any(skipna=False).iloc[0])\nrec(\"frame_int64_nafill_all\", lambda: pd.DataFrame({\"A\": arr_i}).all(skipna=False).iloc[0])\n\n# reported example 4: astype to an NA fill for each numeric/timedelta subtype\nfor st in [\"int64\", \"uint64\", \"float64\", \"complex128\", \"m8[ns]\"]:\n    a = SparseArray(np.array([1, 0, 0], dtype=st), fill_value=0).astype(pd.SparseDtype(st, pd.NA))\n    tag = st.replace(\"[\", \"_\").replace(\"]\", \"\")\n    rec(\"astype_\" + tag + \"_any\", lambda a=a: a.any(skipna=False))\n    rec(\"astype_\" + tag + \"_all\", lambda a=a: a.all(skipna=False))\n\n# reported example 5: bool subtype keeps raising on BOTH revisions -> finite indicator, never NaN\na_bool = SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA))\nrec(\"bool_subtype_nafill_any_raises\", lambda: a_bool.any(skipna=False), defect_if_error=False)\nrec(\"bool_subtype_nafill_all_raises\", lambda: a_bool.all(skipna=False), defect_if_error=False)",
+        "described_examples": "import numpy as np\nimport pandas as pd\nfrom pandas import SparseArray\n\n_NAME = (\n    \"SparseArray(np.array([1, 0, 0], dtype=subtype), fill_value=0)\"\n    \".astype(pd.SparseDtype(subtype, pd.NA)); any/all(skipna=False) \"\n    \"for subtype in int64, uint64, float64, complex128, m8[ns]\"\n)\n\n_subtypes = [\"int64\", \"uint64\", \"float64\", \"complex128\", \"m8[ns]\"]\n\n\ndef _run():\n    results = {}\n    for subtype in _subtypes:\n        arr = SparseArray(\n            np.array([1, 0, 0], dtype=subtype), fill_value=0\n        ).astype(pd.SparseDtype(subtype, pd.NA))\n        results[subtype] = {\n            \"any(skipna=False)\": arr.any(skipna=False),\n            \"all(skipna=False)\": arr.all(skipna=False),\n        }\n    return results\n\n\ntry:\n    probe(_NAME, _run())\nexcept Exception as e:\n    probe_exception(_NAME, e)"
+      },
+      "fixed": {
+        "sparse_any_all_skipna_false_na_fill": "import numpy as np\nimport pandas as pd\nfrom pandas.arrays import SparseArray\n\n\ndef rec(name, thunk, defect_if_error=True):\n    # defect_if_error=True: an exception is the reported defect -> NaN.\n    # defect_if_error=False: an exception is the expected outcome -> 1.0, no exception -> 0.0,\n    # so a case that raises on BOTH revisions never injects a NaN into the fixed probe.\n    try:\n        v = float(thunk())\n    except Exception:\n        v = float(\"nan\") if defect_if_error else 1.0\n    else:\n        if not defect_if_error:\n            v = 0.0\n    probe(name, v)\n\n\narr_i = SparseArray(pd.array([1, None], dtype=\"Int64\"))\narr_f = SparseArray(pd.array([1, 0, None], dtype=\"Float64\"))\n\n# reported example 1 and 2: Int64 NA fill\nrec(\"int64_nafill_any\", lambda: arr_i.any(skipna=False))\nrec(\"int64_nafill_all\", lambda: arr_i.all(skipna=False))\nrec(\"int64_nafill_dense_any\", lambda: pd.Series(arr_i._densify()).any(skipna=False))\nrec(\"int64_nafill_dense_all\", lambda: pd.Series(arr_i._densify()).all(skipna=False))\n\n# reported example 3: Float64 NA fill covering all() falling through to False\nrec(\"float64_nafill_any\", lambda: arr_f.any(skipna=False))\nrec(\"float64_nafill_all\", lambda: arr_f.all(skipna=False))\nrec(\"float64_nafill_dense_any\", lambda: pd.Series(arr_f._densify()).any(skipna=False))\nrec(\"float64_nafill_dense_all\", lambda: pd.Series(arr_f._densify()).all(skipna=False))\n\n# Series and DataFrame reduce paths reach the same gate\nrec(\"series_int64_nafill_any\", lambda: pd.Series(arr_i).any(skipna=False))\nrec(\"series_int64_nafill_all\", lambda: pd.Series(arr_i).all(skipna=False))\nrec(\"frame_int64_nafill_any\", lambda: pd.DataFrame({\"A\": arr_i}).any(skipna=False).iloc[0])\nrec(\"frame_int64_nafill_all\", lambda: pd.DataFrame({\"A\": arr_i}).all(skipna=False).iloc[0])\n\n# reported example 4: astype to an NA fill for each numeric/timedelta subtype\nfor st in [\"int64\", \"uint64\", \"float64\", \"complex128\", \"m8[ns]\"]:\n    a = SparseArray(np.array([1, 0, 0], dtype=st), fill_value=0).astype(pd.SparseDtype(st, pd.NA))\n    tag = st.replace(\"[\", \"_\").replace(\"]\", \"\")\n    rec(\"astype_\" + tag + \"_any\", lambda a=a: a.any(skipna=False))\n    rec(\"astype_\" + tag + \"_all\", lambda a=a: a.all(skipna=False))\n\n# reported example 5: bool subtype keeps raising on BOTH revisions -> finite indicator, never NaN\na_bool = SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA))\nrec(\"bool_subtype_nafill_any_raises\", lambda: a_bool.any(skipna=False), defect_if_error=False)\nrec(\"bool_subtype_nafill_all_raises\", lambda: a_bool.all(skipna=False), defect_if_error=False)",
+        "reported_examples": "import numpy as np\nimport pytest\nimport pandas as pd\nimport pandas._testing as tm\nfrom pandas.core.arrays.sparse import SparseArray\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"SparseArray(pd.array([1, None], dtype=\\\"Int64\\\")).any(skipna=False)\", \"SparseArray(pd.array([1, None], dtype=\\\"Int64\\\")).any(skipna=False)\", [], \"True (equals pd.Series(arr._densify()).any(skipna=False); the None gap densifies to a truthy NaN)\"], [\"SparseArray(pd.array([1, None], dtype=\\\"Int64\\\")).all(skipna=False)\", \"SparseArray(pd.array([1, None], dtype=\\\"Int64\\\")).all(skipna=False)\", [], \"Equals pd.Series(arr._densify()).all(skipna=False) (dense result for [1, NaN])\"], [\"SparseArray(pd.array([1, 0, None], dtype=\\\"Float64\\\")).all(skipna=False)\", \"SparseArray(pd.array([1, 0, None], dtype=\\\"Float64\\\")).all(skipna=False)\", [], \"Equals getattr(pd.Series(arr._densify()), \\\"all\\\")(skipna=False); [1, 0, None] covers all() falling through to a False value\"], [\"SparseArray(np.array([1, 0, 0], dtype=subtype), fill_value=0).astype(pd.SparseDtype(subtype, pd.NA)); any/all(skipna=False) for subtype in int64, uint64, float64, complex128, m8[ns]\", \"SparseArray(np.array([1, 0, 0], dtype=subtype), fill_value=0).astype(pd.SparseDtype(subtype, pd.NA)); any/all(skipna=False) for subtype in int64, uint64, float64, complex128, m8[ns]\", [], \"Truthy (assert getattr(arr, name)(skipna=False)); each subtype densifies to its own NaN or NaT, both truthy\"], [\"SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA)); any/all(skipna=False)\", \"any/all(skipna=False)\", [\"SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA))\"], \"Still raises TypeError: boolean value of NA is ambiguous (unchanged; bool subtype densifies to object holding pd.NA, so it keeps raising like dense)\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nimport pandas as pd\nfrom pandas import SparseArray\n\n_NAME = (\n    \"SparseArray(np.array([1, 0, 0], dtype=subtype), fill_value=0)\"\n    \".astype(pd.SparseDtype(subtype, pd.NA)); any/all(skipna=False) \"\n    \"for subtype in int64, uint64, float64, complex128, m8[ns]\"\n)\n\n_subtypes = [\"int64\", \"uint64\", \"float64\", \"complex128\", \"m8[ns]\"]\n\n\ndef _run():\n    results = {}\n    for subtype in _subtypes:\n        arr = SparseArray(\n            np.array([1, 0, 0], dtype=subtype), fill_value=0\n        ).astype(pd.SparseDtype(subtype, pd.NA))\n        results[subtype] = {\n            \"any(skipna=False)\": arr.any(skipna=False),\n            \"all(skipna=False)\": arr.all(skipna=False),\n        }\n    return results\n\n\ntry:\n    probe(_NAME, _run())\nexcept Exception as e:\n    probe_exception(_NAME, e)"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 3/3 reported example(s) reproduce, but 2 of 5 reported example(s) could not be evaluated on either revision, so those values remain unchecked",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "incomplete",
+      "success_criterion": "On the buggy commit ce741185, pytest pandas/tests/arrays/sparse/test_reductions.py -k \"skipna_false\" fails with TypeError: boolean value of NA is ambiguous in test_any_all_skipna_false_numeric_na_fill_value (all dtype/data/name params) and test_any_all_skipna_false_na_fill_value_astype (int64, uint64, float64, complex128, m8[ns]), while the same selection passes once the fix from a7eae5c is applied.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 8,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 8,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "unusable",
+            "buggy": {
+              "present": null,
+              "reasons": [
+                "the probe itself could not run (ImportError: cannot import name 'SparseArray' from 'pandas' (/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py)) \u2014 fix the probe, not the revision"
+              ]
+            },
+            "fixed": {
+              "present": null,
+              "reasons": [
+                "the probe itself could not run (ImportError: cannot import name 'SparseArray' from 'pandas' (/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py)) \u2014 fix the probe, not the revision"
+              ]
+            },
+            "buggy_status": "probe_error",
+            "fixed_status": "probe_error",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "SparseArray(pd.array([1, None], dtype=\"Int64\")).any(skipna=False)": "__error__: TypeError: boolean value of NA is ambiguous",
+              "SparseArray(pd.array([1, None], dtype=\"Int64\")).all(skipna=False)": "__error__: TypeError: boolean value of NA is ambiguous",
+              "SparseArray(pd.array([1, 0, None], dtype=\"Float64\")).all(skipna=False)": "__error__: TypeError: boolean value of NA is ambiguous",
+              "SparseArray(np.array([1, 0, 0], dtype=subtype), fill_value=0).astype(pd.SparseDtype(subtype, pd.NA)); any/all(skipna=False) for subtype in int64, uint64, float64, complex128, m8[ns]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA)); any/all(skipna=False)": "__error__: TypeError: all() takes no keyword arguments"
+            },
+            "fixed_values": {
+              "SparseArray(pd.array([1, None], dtype=\"Int64\")).any(skipna=False)": true,
+              "SparseArray(pd.array([1, None], dtype=\"Int64\")).all(skipna=False)": true,
+              "SparseArray(pd.array([1, 0, None], dtype=\"Float64\")).all(skipna=False)": false,
+              "SparseArray(np.array([1, 0, 0], dtype=subtype), fill_value=0).astype(pd.SparseDtype(subtype, pd.NA)); any/all(skipna=False) for subtype in int64, uint64, float64, complex128, m8[ns]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA)); any/all(skipna=False)": "__error__: TypeError: all() takes no keyword arguments"
+            }
+          },
+          {
+            "label": "sparse_any_all_skipna_false_na_fill",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: fill_value must be a valid value for the SparseDtype.subtype",
+                "produced NaN"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: fill_value must be a valid value for the SparseDtype.subtype"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": true,
+            "buggy_values": {
+              "int64_nafill_any": "nan",
+              "int64_nafill_all": "nan",
+              "int64_nafill_dense_any": 1.0,
+              "int64_nafill_dense_all": 1.0,
+              "float64_nafill_any": "nan",
+              "float64_nafill_all": "nan",
+              "float64_nafill_dense_any": 1.0,
+              "float64_nafill_dense_all": 0.0,
+              "series_int64_nafill_any": "nan",
+              "series_int64_nafill_all": "nan",
+              "frame_int64_nafill_any": "nan",
+              "frame_int64_nafill_all": "nan",
+              "astype_int64_any": "nan",
+              "astype_int64_all": "nan",
+              "astype_uint64_any": "nan",
+              "astype_uint64_all": "nan",
+              "astype_float64_any": "nan",
+              "astype_float64_all": "nan",
+              "astype_complex128_any": "nan",
+              "astype_complex128_all": "nan"
+            },
+            "fixed_values": {
+              "int64_nafill_any": 1.0,
+              "int64_nafill_all": 1.0,
+              "int64_nafill_dense_any": 1.0,
+              "int64_nafill_dense_all": 1.0,
+              "float64_nafill_any": 1.0,
+              "float64_nafill_all": 0.0,
+              "float64_nafill_dense_any": 1.0,
+              "float64_nafill_dense_all": 0.0,
+              "series_int64_nafill_any": 1.0,
+              "series_int64_nafill_all": 1.0,
+              "frame_int64_nafill_any": 1.0,
+              "frame_int64_nafill_all": 1.0,
+              "astype_int64_any": 1.0,
+              "astype_int64_all": 1.0,
+              "astype_uint64_any": 1.0,
+              "astype_uint64_all": 1.0,
+              "astype_float64_any": 1.0,
+              "astype_float64_all": 1.0,
+              "astype_complex128_any": 1.0,
+              "astype_complex128_all": 1.0
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "SparseArray(pd.array([1, None], dtype=\"Int64\")).any(skipna=False)",
+            "expected_output": "True (equals pd.Series(arr._densify()).any(skipna=False); the None gap densifies to a truthy NaN)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "TypeError: boolean value of NA is ambiguous",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "SparseArray(pd.array([1, None], dtype=\"Int64\")).any(skipna=False)",
+              "observed": "__error__: TypeError: boolean value of NA is ambiguous",
+              "evaluation_error": "TypeError: boolean value of NA is ambiguous",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(pd.array([1, None], dtype=\"Int64\")).any(skipna=False)",
+              "observed": true,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "SparseArray(pd.array([1, None], dtype=\"Int64\")).all(skipna=False)",
+            "expected_output": "Equals pd.Series(arr._densify()).all(skipna=False) (dense result for [1, NaN])",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "TypeError: boolean value of NA is ambiguous",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "SparseArray(pd.array([1, None], dtype=\"Int64\")).all(skipna=False)",
+              "observed": "__error__: TypeError: boolean value of NA is ambiguous",
+              "evaluation_error": "TypeError: boolean value of NA is ambiguous",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(pd.array([1, None], dtype=\"Int64\")).all(skipna=False)",
+              "observed": true,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "SparseArray(pd.array([1, 0, None], dtype=\"Float64\")).all(skipna=False)",
+            "expected_output": "Equals getattr(pd.Series(arr._densify()), \"all\")(skipna=False); [1, 0, None] covers all() falling through to a False value",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "TypeError: boolean value of NA is ambiguous",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "SparseArray(pd.array([1, 0, None], dtype=\"Float64\")).all(skipna=False)",
+              "observed": "__error__: TypeError: boolean value of NA is ambiguous",
+              "evaluation_error": "TypeError: boolean value of NA is ambiguous",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(pd.array([1, 0, None], dtype=\"Float64\")).all(skipna=False)",
+              "observed": false,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "SparseArray(np.array([1, 0, 0], dtype=subtype), fill_value=0).astype(pd.SparseDtype(subtype, pd.NA)); any/all(skipna=False) for subtype in int64, uint64, float64, complex128, m8[ns]",
+            "expected_output": "Truthy (assert getattr(arr, name)(skipna=False)); each subtype densifies to its own NaN or NaT, both truthy",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "TypeError: boolean value of NA is ambiguous",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA)); any/all(skipna=False)",
+            "expected_output": "Still raises TypeError: boolean value of NA is ambiguous (unchanged; bool subtype densifies to object holding pd.NA, so it keeps raising like dense)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "TypeError: boolean value of NA is ambiguous",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA)); any/all(skipna=False)",
+              "observed": "__error__: TypeError: all() takes no keyword arguments",
+              "evaluation_error": "TypeError: all() takes no keyword arguments",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA)); any/all(skipna=False)",
+              "observed": "__error__: TypeError: all() takes no keyword arguments",
+              "evaluation_error": "TypeError: all() takes no keyword arguments",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 6,
+            "n_failed": 4,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 4,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata",
+            "cython>=3.1.0",
+            "meson>=1.2.3",
+            "meson-python>=0.19.0",
+            "numpy>=2.0.0",
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1",
+            "pytest-cov",
+            "pytest-localserver",
+            "pytest-cython>=0.4.0"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-09-13T08:23:45-07:00",
+        "fixed_commit_date": "2026-09-13T08:24:14-07:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-09-13T08:24:14-07:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.2",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.49.0",
+              "meson-python": "0.21.1",
+              "meson": "1.12.0",
+              "wheel": "0.48.0",
+              "cython": "3.3.0",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.0",
+              "cython": "cython==3.3.0"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1889.gce741185c8.dirty) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1889.gce741185c8.dirty) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1889.gce741185c8.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1889.gce741185c8.dirty-cp311-cp311-linux_x86_64.whl size=16095218 sha256=079c169e3a046cc827d1e439b95d1853f45b97339e7612e98e33584de18f5e45\n  Stored in directory: /tmp/pip-ephem-wheel-cache-c85_hnq4/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1889.gce741185c8.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.2",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.49.0",
+              "meson-python": "0.21.1",
+              "meson": "1.12.0",
+              "wheel": "0.48.0",
+              "cython": "3.3.0",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.0",
+              "cython": "cython==3.3.0"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1890.ga7eae5cdbc) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1890.ga7eae5cdbc) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1890.ga7eae5cdbc) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1890.ga7eae5cdbc-cp311-cp311-linux_x86_64.whl size=16095016 sha256=89840c785e8b7c124a5609947ffd3fa4363436bfd77deb6d7756f4c3a618e8c3\n  Stored in directory: /tmp/pip-ephem-wheel-cache-br5phxu7/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1890.ga7eae5cdbc\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 8,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 8,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 3,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "unusable",
+            "buggy": {
+              "present": null,
+              "reasons": [
+                "the probe itself could not run (ImportError: cannot import name 'SparseArray' from 'pandas' (/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py)) \u2014 fix the probe, not the revision"
+              ]
+            },
+            "fixed": {
+              "present": null,
+              "reasons": [
+                "the probe itself could not run (ImportError: cannot import name 'SparseArray' from 'pandas' (/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py)) \u2014 fix the probe, not the revision"
+              ]
+            },
+            "buggy_status": "probe_error",
+            "fixed_status": "probe_error",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "SparseArray(pd.array([1, None], dtype=\"Int64\")).any(skipna=False)": "__error__: TypeError: boolean value of NA is ambiguous",
+              "SparseArray(pd.array([1, None], dtype=\"Int64\")).all(skipna=False)": "__error__: TypeError: boolean value of NA is ambiguous",
+              "SparseArray(pd.array([1, 0, None], dtype=\"Float64\")).all(skipna=False)": "__error__: TypeError: boolean value of NA is ambiguous",
+              "SparseArray(np.array([1, 0, 0], dtype=subtype), fill_value=0).astype(pd.SparseDtype(subtype, pd.NA)); any/all(skipna=False) for subtype in int64, uint64, float64, complex128, m8[ns]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA)); any/all(skipna=False)": "__error__: TypeError: all() takes no keyword arguments"
+            },
+            "fixed_values": {
+              "SparseArray(pd.array([1, None], dtype=\"Int64\")).any(skipna=False)": true,
+              "SparseArray(pd.array([1, None], dtype=\"Int64\")).all(skipna=False)": true,
+              "SparseArray(pd.array([1, 0, None], dtype=\"Float64\")).all(skipna=False)": false,
+              "SparseArray(np.array([1, 0, 0], dtype=subtype), fill_value=0).astype(pd.SparseDtype(subtype, pd.NA)); any/all(skipna=False) for subtype in int64, uint64, float64, complex128, m8[ns]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA)); any/all(skipna=False)": "__error__: TypeError: all() takes no keyword arguments"
+            }
+          },
+          {
+            "label": "sparse_any_all_skipna_false_na_fill",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: fill_value must be a valid value for the SparseDtype.subtype",
+                "produced NaN"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: fill_value must be a valid value for the SparseDtype.subtype"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": true,
+            "buggy_values": {
+              "int64_nafill_any": "nan",
+              "int64_nafill_all": "nan",
+              "int64_nafill_dense_any": 1.0,
+              "int64_nafill_dense_all": 1.0,
+              "float64_nafill_any": "nan",
+              "float64_nafill_all": "nan",
+              "float64_nafill_dense_any": 1.0,
+              "float64_nafill_dense_all": 0.0,
+              "series_int64_nafill_any": "nan",
+              "series_int64_nafill_all": "nan",
+              "frame_int64_nafill_any": "nan",
+              "frame_int64_nafill_all": "nan",
+              "astype_int64_any": "nan",
+              "astype_int64_all": "nan",
+              "astype_uint64_any": "nan",
+              "astype_uint64_all": "nan",
+              "astype_float64_any": "nan",
+              "astype_float64_all": "nan",
+              "astype_complex128_any": "nan",
+              "astype_complex128_all": "nan"
+            },
+            "fixed_values": {
+              "int64_nafill_any": 1.0,
+              "int64_nafill_all": 1.0,
+              "int64_nafill_dense_any": 1.0,
+              "int64_nafill_dense_all": 1.0,
+              "float64_nafill_any": 1.0,
+              "float64_nafill_all": 0.0,
+              "float64_nafill_dense_any": 1.0,
+              "float64_nafill_dense_all": 0.0,
+              "series_int64_nafill_any": 1.0,
+              "series_int64_nafill_all": 1.0,
+              "frame_int64_nafill_any": 1.0,
+              "frame_int64_nafill_all": 1.0,
+              "astype_int64_any": 1.0,
+              "astype_int64_all": 1.0,
+              "astype_uint64_any": 1.0,
+              "astype_uint64_all": 1.0,
+              "astype_float64_any": 1.0,
+              "astype_float64_all": 1.0,
+              "astype_complex128_any": 1.0,
+              "astype_complex128_all": 1.0
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 5,
+        "n_judged": 3,
+        "n_reproduced": 3,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 2,
+        "n_contested": 0,
+        "unobserved": [
+          "SparseArray(np.array([1, 0, 0], dtype=subtype), fill_value=0).astype(pd.SparseDtype(subtype, pd.NA)); any/all(skipna=False) for subtype in int64, uint64, float64, complex128, m8[ns]",
+          "SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA)); any/all(skipna=False)"
+        ],
+        "verdict": "incomplete",
+        "examples": [
+          {
+            "input": "SparseArray(pd.array([1, None], dtype=\"Int64\")).any(skipna=False)",
+            "expected_output": "True (equals pd.Series(arr._densify()).any(skipna=False); the None gap densifies to a truthy NaN)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "TypeError: boolean value of NA is ambiguous",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "SparseArray(pd.array([1, None], dtype=\"Int64\")).any(skipna=False)",
+              "observed": "__error__: TypeError: boolean value of NA is ambiguous",
+              "evaluation_error": "TypeError: boolean value of NA is ambiguous",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(pd.array([1, None], dtype=\"Int64\")).any(skipna=False)",
+              "observed": true,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "SparseArray(pd.array([1, None], dtype=\"Int64\")).all(skipna=False)",
+            "expected_output": "Equals pd.Series(arr._densify()).all(skipna=False) (dense result for [1, NaN])",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "TypeError: boolean value of NA is ambiguous",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "SparseArray(pd.array([1, None], dtype=\"Int64\")).all(skipna=False)",
+              "observed": "__error__: TypeError: boolean value of NA is ambiguous",
+              "evaluation_error": "TypeError: boolean value of NA is ambiguous",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(pd.array([1, None], dtype=\"Int64\")).all(skipna=False)",
+              "observed": true,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "SparseArray(pd.array([1, 0, None], dtype=\"Float64\")).all(skipna=False)",
+            "expected_output": "Equals getattr(pd.Series(arr._densify()), \"all\")(skipna=False); [1, 0, None] covers all() falling through to a False value",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "TypeError: boolean value of NA is ambiguous",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "SparseArray(pd.array([1, 0, None], dtype=\"Float64\")).all(skipna=False)",
+              "observed": "__error__: TypeError: boolean value of NA is ambiguous",
+              "evaluation_error": "TypeError: boolean value of NA is ambiguous",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(pd.array([1, 0, None], dtype=\"Float64\")).all(skipna=False)",
+              "observed": false,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "SparseArray(np.array([1, 0, 0], dtype=subtype), fill_value=0).astype(pd.SparseDtype(subtype, pd.NA)); any/all(skipna=False) for subtype in int64, uint64, float64, complex128, m8[ns]",
+            "expected_output": "Truthy (assert getattr(arr, name)(skipna=False)); each subtype densifies to its own NaN or NaT, both truthy",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "TypeError: boolean value of NA is ambiguous",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA)); any/all(skipna=False)",
+            "expected_output": "Still raises TypeError: boolean value of NA is ambiguous (unchanged; bool subtype densifies to object holding pd.NA, so it keeps raising like dense)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "TypeError: boolean value of NA is ambiguous",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA)); any/all(skipna=False)",
+              "observed": "__error__: TypeError: all() takes no keyword arguments",
+              "evaluation_error": "TypeError: all() takes no keyword arguments",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray([True, False, False], fill_value=False).astype(pd.SparseDtype(bool, pd.NA)); any/all(skipna=False)",
+              "observed": "__error__: TypeError: all() takes no keyword arguments",
+              "evaluation_error": "TypeError: all() takes no keyword arguments",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 6,
+          "n_failed": 4,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 4,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "On the buggy commit ce741185, pytest pandas/tests/arrays/sparse/test_reductions.py -k \"skipna_false\" fails with TypeError: boolean value of NA is ambiguous in test_any_all_skipna_false_numeric_na_fill_value (all dtype/data/name params) and test_any_all_skipna_false_na_fill_value_astype (int64, uint64, float64, complex128, m8[ns]), while the same selection passes once the fix from a7eae5c is applied."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata",
+          "cython>=3.1.0",
+          "meson>=1.2.3",
+          "meson-python>=0.19.0",
+          "numpy>=2.0.0",
+          "pytest>=8.3.4",
+          "pytest-xdist>=3.6.1",
+          "pytest-cov",
+          "pytest-localserver",
+          "pytest-cython>=0.4.0"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-09-13T08:23:45-07:00",
+      "fixed_commit_date": "2026-09-13T08:24:14-07:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-09-13T08:24:14-07:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.2",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.49.0",
+            "meson-python": "0.21.1",
+            "meson": "1.12.0",
+            "wheel": "0.48.0",
+            "cython": "3.3.0",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.0",
+            "cython": "cython==3.3.0"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1889.gce741185c8.dirty) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1889.gce741185c8.dirty) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1889.gce741185c8.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1889.gce741185c8.dirty-cp311-cp311-linux_x86_64.whl size=16095218 sha256=079c169e3a046cc827d1e439b95d1853f45b97339e7612e98e33584de18f5e45\n  Stored in directory: /tmp/pip-ephem-wheel-cache-c85_hnq4/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1889.gce741185c8.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.2",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.49.0",
+            "meson-python": "0.21.1",
+            "meson": "1.12.0",
+            "wheel": "0.48.0",
+            "cython": "3.3.0",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.0",
+            "cython": "cython==3.3.0"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1890.ga7eae5cdbc) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1890.ga7eae5cdbc) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1890.ga7eae5cdbc) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1890.ga7eae5cdbc-cp311-cp311-linux_x86_64.whl size=16095016 sha256=89840c785e8b7c124a5609947ffd3fa4363436bfd77deb6d7756f4c3a618e8c3\n  Stored in directory: /tmp/pip-ephem-wheel-cache-br5phxu7/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1890.ga7eae5cdbc\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 8,
+    "history": [
+      {
+        "planner": {
+          "goal": "Establish that SparseArray.any/all (and Series/DataFrame reduce paths) with skipna=False raise \"TypeError: boolean value of NA is ambiguous\" for numeric/timedelta NA fill values at the buggy commit, and behave like the densified array at the fixed commit.",
+          "milestones": [
+            "buggy_environment_ready [buggy] \u2014 Confirm the prebuilt buggy virtualenv imports this revision's pandas and that the NA fill-value gate (SparseArray with Int64 data + pd.NA fill) is present. (2 steps, verify: steps_succeeded)",
+            "bug_observed_on_buggy [buggy] \u2014 On the buggy revision the added reproductions fail with the reported TypeError, and the reported input/output examples show the same NA-ambiguity failure as numerical NaN records. (3 steps, verify: test_ran, test_fails, probe_ran, probe_shows_defect)",
+            "fixed_environment_ready [fixed] \u2014 Confirm the prebuilt fixed virtualenv imports the fixed revision's pandas and exposes the same NA fill-value setup (so the comparison is against the fix and not stray state). (2 steps, verify: steps_succeeded)",
+            "fixed_ok_and_revisions_differ [fixed] \u2014 On the fixed revision the same tests pass, the probe values match the densified-array references with no NaN, the reported examples yield the expected outputs, and the observable behavior differs from the buggy revision. (3 steps, verify: test_ran, test_passes, probe_ran, probe_clean, examples_reproduced, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import pandas as pd; print(pd.__version__, pd.__file__)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.53
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import pandas as pd; from pandas.arrays import SparseArray; a = SparseArray(pd.array([1, None], dtype='Int64')); print('fill_is_NA', a.fill_value is pd.NA, 'dtype', a.dtype)\"",
+        "purpose": "debug",
+        "exit_code": 0,
+        "runtime_s": 0.49
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_reductions -k \"skipna_false\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 2.64
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "sparse_any_all_skipna_false_na_fill",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(sparse_any_all_skipna_false_na_fill) \u2014 Probe the any/all skipna=False values directly (Int64 NA fill, Float64 NA fill, Series reduce path, and the astype-to-NA-fill path for int64/uint64/float64/complex128/m8[ns]); each NA-ambiguity TypeError is converted to NaN so the defect is recorded as a value"
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "bug_observed_on_buggy",
+          "verified": false,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Show, by the added regression tests and by a paired numerical probe, that SparseArray/Series/DataFrame any/all with skipna=False and a numeric/timedelta NA fill value raise \"TypeError: boolean value of NA is ambiguous\" on the buggy revision and match the densified-array result on the fixed revision.",
+          "milestones": [
+            "bug_observed_on_buggy [buggy] \u2014 On the buggy revision the added skipna_false reproductions fail with the reported TypeError, and a direct probe of any/all(skipna=False) records the NA-ambiguity failure as NaN values for the numeric/timedelta NA-fill cases. (3 steps, verify: steps_succeeded, test_ran, test_fails, probe_ran, probe_shows_defect)",
+            "fixed_environment_ready [fixed] \u2014 Confirm the prebuilt fixed virtualenv imports the fixed revision's pandas and exposes the same NA fill-value setup, so the comparison is against the fix and not stray state. (2 steps, verify: steps_succeeded)",
+            "fixed_ok_and_revisions_differ [fixed] \u2014 On the fixed revision the same tests pass, the probe records no NaN/Inf and the any/all(skipna=False) values match the densified-array references, the reported examples yield their expected outputs, and the observable behaviour differs from the buggy revision. (3 steps, verify: steps_succeeded, test_ran, test_passes, probe_ran, probe_clean, examples_reproduced, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_reductions -k \"skipna_false\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.91
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "sparse_any_all_skipna_false_na_fill",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced NaN"
+        ],
+        "expected": null,
+        "observed": [
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan"
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "bug_observed_on_buggy",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.arrays.sparse.t` exited 1: site-packages/pandas/tests/arrays/sparse/test_reductions.py::test_any_all_skipna_false_na_fill_value_astype[m8[ns]-all]\n================ 18 failed, 14 passed, 360 deselected in 1.12s ================="
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'sparse_any_all_skipna_false_na_fill': produced NaN"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Show, by the fix-added regression tests and an identical paired numerical probe on both revisions, that SparseArray/Series/DataFrame any/all with skipna=False and a numeric/timedelta NA fill raises \"TypeError: boolean value of NA is ambiguous\" on the buggy revision and matches the densified-array result on the fixed revision.",
+          "milestones": [
+            "buggy_repro_confirmed [buggy] \u2014 On the buggy revision the added skipna_false reproductions fail with the reported TypeError, and one direct probe of any/all(skipna=False) records NaN for the numeric/timedelta NA-fill cases alongside the finite densified-array references (which are recorded identically on both revisions). This mile (3 steps, verify: test_ran, test_fails, probe_ran, probe_shows_defect)",
+            "fixed_environment_ready [fixed] \u2014 Confirm the prebuilt fixed virtualenv imports the fixed revision's pandas and exposes the same NA fill-value setup, so the comparison is against the fix and not stray state. (2 steps, verify: steps_succeeded)",
+            "fixed_ok_and_revisions_differ [fixed] \u2014 On the fixed revision the same skipna_false tests pass, the identical paired probe records only finite values that match the densified-array references, the reported examples yield their expected outputs, and the observable any/all(skipna=False) behaviour differs from the buggy revision (NaN there,  (3 steps, verify: steps_succeeded, test_ran, test_passes, probe_ran, probe_clean, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_reductions -k \"skipna_false\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.89
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "sparse_any_all_skipna_false_na_fill",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: ValueError: fill_value must be a valid value for the SparseDtype.subtype",
+          "produced NaN"
+        ],
+        "expected": null,
+        "observed": [
+          "nan",
+          "nan",
+          1.0,
+          1.0,
+          "nan",
+          "nan",
+          1.0,
+          0.0,
+          "nan",
+          "nan"
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_repro_confirmed",
+          "verified": true,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'sparse_any_all_skipna_false_na_fill': probe raised: ValueError: fill_value must be a valid value for the SparseDtype.subtype; produced NaN"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -c \"import pandas as pd; print(pd.__version__, pd.__file__)\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 0.51
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -c \"import pandas as pd; from pandas.arrays import SparseArray; arr = SparseArray(pd.array([1, None], dtype='Int64')); print(arr.fill_value is pd.NA, arr.dtype)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.54
+      },
+      {
+        "verification": {
+          "milestone": "fixed_environment_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_reductions -k \"skipna_false\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.1
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "sparse_any_all_skipna_false_na_fill",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: ValueError: fill_value must be a valid value for the SparseDtype.subtype"
+        ],
+        "expected": null,
+        "observed": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          1.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "fixed_ok_and_revisions_differ",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on fixed"
+            },
+            {
+              "check": "test_passes",
+              "passed": true,
+              "detail": "test pass on fixed (milestone required pass)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "probe 'sparse_any_all_skipna_false_na_fill' is not clean on fixed: probe raised: ValueError: fill_value must be a valid value for the SparseDtype.subtype"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": true,
+              "detail": "the reproducing test goes FAIL -> PASS"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "",
+          "milestones": []
+        }
+      },
+      {
+        "plan_retry": {
+          "attempt": "replan",
+          "reason": "Your previous answer could not be read as a plan. Answer by calling the submit tool with the plan object itself \u2014 no prose, no code fences."
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_reductions -k test_any_all_skipna_false_numeric_na_fill_value -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.47
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_reductions -k test_any_all_skipna_false_numeric_na_fill_value -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 0.97
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_any_all_skipna_false_numeric_na_fill_value",
+          "command": "python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_reductions -k test_any_all_skipna_false_numeric_na_fill_value -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "pandas",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_any_all_skipna_false_numeric_na_fill_value",
+              "command": "python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_reductions -k test_any_all_skipna_false_numeric_na_fill_value -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "status": "probe_error",
+        "kept_earlier_run": true
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "status": "probe_error",
+        "kept_earlier_run": true
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "probe_error",
+            "checked": 5,
+            "recorded": 0,
+            "error": null,
+            "could_not_evaluate": 0,
+            "traceback": "Traceback (most recent call last):\n  File \"/tmp/_numagent_runner.py\", line 156, in <module>\n    exec(compile(_ast.Module(body=_lead, type_ignores=[]), \"/tmp/_numagent_probe.py\", \"exec\"), _g)\n  File \"/tmp/_numagent_probe.py\", line 6, in <module>\n    from pandas.core.arrays.sparse import SparseDtype\nImportError: cannot import name 'SparseDtype' from 'pandas.core.arrays.sparse' (/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/core/arrays/sparse/__init__.py)"
+          },
+          "fixed": {
+            "status": "probe_error",
+            "checked": 5,
+            "recorded": 0,
+            "error": null,
+            "could_not_evaluate": 0,
+            "traceback": "Traceback (most recent call last):\n  File \"/tmp/_numagent_runner.py\", line 156, in <module>\n    exec(compile(_ast.Module(body=_lead, type_ignores=[]), \"/tmp/_numagent_probe.py\", \"exec\"), _g)\n  File \"/tmp/_numagent_probe.py\", line 6, in <module>\n    from pandas.core.arrays.sparse import SparseDtype\nImportError: cannot import name 'SparseDtype' from 'pandas.core.arrays.sparse' (/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/arrays/sparse/__init__.py)"
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "probe_error",
+        "pathology": null,
+        "reasons": [
+          "the probe itself could not run (ImportError: cannot import name 'SparseArray' from 'pandas' (/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py)) \u2014 fix the probe, not the revision"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "probe_error",
+        "pathology": null,
+        "reasons": [
+          "the probe itself could not run (ImportError: cannot import name 'SparseArray' from 'pandas' (/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py)) \u2014 fix the probe, not the revision"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "described_examples": {
+          "n_described": 1,
+          "buggy": {
+            "status": "probe_error",
+            "n_records": 0,
+            "target_reached": false
+          },
+          "fixed": {
+            "status": "probe_error",
+            "n_records": 0,
+            "target_reached": false
+          },
+          "unusable": {
+            "buggy": "Traceback (most recent call last):\n  File \"/tmp/_numagent_runner.py\", line 156, in <module>\n    exec(compile(_ast.Module(body=_lead, type_ignores=[]), \"/tmp/_numagent_probe.py\", \"exec\"), _g)\n  File \"/tmp/_numagent_probe.py\", line 3, in <module>\n    from pandas import SparseArray\nImportError: cannot import name 'SparseArray' from 'pandas' (/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py)",
+            "fixed": "Traceback (most recent call last):\n  File \"/tmp/_numagent_runner.py\", line 156, in <module>\n    exec(compile(_ast.Module(body=_lead, type_ignores=[]), \"/tmp/_numagent_probe.py\", \"exec\"), _g)\n  File \"/tmp/_numagent_probe.py\", line 3, in <module>\n    from pandas import SparseArray\nImportError: cannot import name 'SparseArray' from 'pandas' (/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py)"
+          },
+          "repair_stopped": "the model returned no code"
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "incomplete",
+        "examples": "3/3"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 3/3 reported example(s) reproduce, but 2 of 5 reported example(s) could not be evaluated on either revision, so those values remain unchecked"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "deepseek-v4-flash",
+      "calls": 8,
+      "input_tokens": 25735,
+      "output_tokens": 133549,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.187608
+    }
+  }
+]

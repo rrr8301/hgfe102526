@@ -1,0 +1,439 @@
+{
+  "repo": "pandas-dev/pandas",
+  "pr_number": 66678,
+  "reference": "https://github.com/pandas-dev/pandas/pull/66678",
+  "buggy_commit": "6663b2123b9a90c1d77212d7928c2a915fc69c38",
+  "fixed_commit": "18e2ea6f3344b064169b24618fc5e8480c288b56",
+  "pr_date": "",
+  "category": "accuracy",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "NumPy",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "README.md: \"NumPy - Adds support for large, multi-dimensional arrays, matrices and high-level mathematical functions to operate on these arrays\""
+      },
+      {
+        "name": "python-dateutil",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md: \"python-dateutil - Provides powerful extensions to the standard datetime module\""
+      },
+      {
+        "name": "tzdata",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md: \"tzdata - ... (Only required on Windows/Emscripten)\""
+      },
+      {
+        "name": "Cython",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md: \"To install pandas from source you need Cython in addition to the normal dependencies above.\""
+      }
+    ],
+    "installation_commands": [
+      "pip install cython",
+      "pip install .",
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "build_commands": [],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: NumPy \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: python-dateutil \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: tzdata \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: Cython \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "NumPy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "README.md: \"NumPy - Adds support for large, multi-dimensional arrays, matrices and high-level mathematical functions to operate on these arrays\""
+      },
+      {
+        "package": "python-dateutil",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md: \"python-dateutil - Provides powerful extensions to the standard datetime module\""
+      },
+      {
+        "package": "tzdata",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md: \"tzdata - ... (Only required on Windows/Emscripten)\""
+      },
+      {
+        "package": "Cython",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md: \"To install pandas from source you need Cython in addition to the normal dependencies above.\""
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "accuracy",
+    "affected_api": null,
+    "observed_behavior": "Rolling covariance/correlation values are silently wrong after a large value leaves the sliding window; can also become NaN once a negative ssqdm_x is used in the square root in calc_corr.",
+    "expected_behavior": "Rolling cov/corr should not be poisoned by earlier numerical error; instead it should recompute or otherwise re-anchor/bound incremental accumulators so results match exact values for windows, and avoid NaN/poisoning once a negative ssqdm_x would be involved in calc_corr. The passage\u2019s example exact expected values are [1.1, -0.3, -0.8].",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "Rolling cov/corr over a window after the series contains a large shared offset (example uses adding 1e12 to both x and y)",
+      "After a window that previously included a very large value leaves the window, every later window is silently wrong",
+      "Numerical instability in which ssqdm_x collapses such that it becomes negative and calc_corr takes a square root of a negative number, producing NaN",
+      "Execution paths where the incremental cov/corr logic only checked catastrophic cancellation for ssqdm_xy against its own previous value and missed that ssqdm_x/ssqdm_y collapse to round-off after the dominating value leaves the window",
+      "Incremental recomputation logic that does not bound error using the largest deviation each accumulator has absorbed since the last recompute"
+    ],
+    "input_output_examples": [
+      {
+        "input": "x = pd.Series([1, 2, 4, 7, 3, 5, 9, 2, 6, 8], dtype=\"float64\") + 1e12; y = pd.Series([2, 1, 5, 3, 8, 4, 7, 9, 1, 6], dtype=\"float64\") + 1e12; x.rolling(5).cov(y).iloc[4:7].tolist()",
+        "buggy_output": "[1.099968..., -0.300072..., -0.800026...]",
+        "expected_output": "[1.1, -0.3, -0.8]",
+        "value_kind": "array",
+        "source": "PR#66678 reproducer passage"
+      }
+    ],
+    "oracle_clues": [
+      "Commit text: \"Every window after a large value left was silently wrong, or NaN once a negative ssqdm_x reached the square root in calc_corr.\"",
+      "PR#66678 reproducer shows exact expected values: \"exact: [1.1, -0.3, -0.8]\" for x.rolling(5).cov(y).iloc[4:7].tolist(), whereas produced values were \"[1.099968..., -0.300072..., -0.800026...]\".",
+      "Commit fix description: incremental cov/corr accumulators missed two issues\u2014(1) ssqdm_x/ssqdm_y collapse to round-off after the dominating value leaves the window and (2) error from an earlier update is invisible one step later.",
+      "Commit fix description: bound error by using the largest deviation each accumulator absorbed since the last recompute (test all three accumulators against it). Also anchor accumulators to the first value in the window so a common offset cancels exactly; values large enough that subtraction could overflow are not used as an anchor.",
+      "C code excerpt indicates new logic tracks peak deviations (track_peak_dev) and uses cancellation_suspected(ssqdm_xy[0], ssqdm_x[0], ssqdm_y[0], peak_dev_x[0], peak_dev_y[0]) to decide numerically_unstable/recompute."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": "float64",
+    "precision": null,
+    "magnitude": "large value / shared offset around 1e12; windows containing 1e12 (e.g., in the rolling window size 3 example and in PR#66678); also subtraction against a mean that is itself huge (large shared offset) where significant digits are lost; values large enough that subtraction could overflow are not used as an anchor",
+    "tolerance": "rtol=1e-12, atol=0 is the tolerance the incremental update is designed to hold (for some windows still containing 1e12)",
+    "category_specific_evidence": [
+      "GH#65739 cancellation could drive ssqdm_x negative, so calc_corr took the square root of a negative number and returned NaN for every later window",
+      "test_rolling_cov_corr_outlier_exit_no_nan sets window=3 and uses series_x=[1.0, 2.0, 1e12, 1e7, 6.0, 5.0, 8.0, 7.0] and series_y=[2.0, 1.0, 3.0, -1e12, 4.0, 7.0, 6.0, 9.0]; assert not result.iloc[window - 1:].isna().any()",
+      "test comment: 'rtol here is the tolerance the incremental update is designed to hold to, not float64 noise: some of these windows still contain 1e12' (rtol=1e-12, atol=0 appears in the _equal call)",
+      "PR#66678 reproducer: x = pd.Series([...], dtype='float64') + 1e12; y = pd.Series([...], dtype='float64') + 1e12; x.rolling(5).cov(y).iloc[4:7].tolist() shows discrepancy 'exact: [1.1, -0.3, -0.8]' vs produced values [1.099968..., -0.300072..., -0.800026...]",
+      "commit message: rolling cov/corr wrong after a large value leaves the window; incremental accumulators: ssqdm_x/ssqdm_y collapse to round-off as soon as dominating value leaves the window; error introduced by earlier update is invisible one step later; 'Every window after a large value left was silently wrong, or NaN once a negative ssqdm_x reached the square root in calc_corr.'",
+      "commit message: separately, deviations were taken against a mean that is itself huge when the series carries a large shared offset, leaving almost no significant digits; fix: anchor accumulators to the first value in the window so a common offset cancels exactly; 'values large enough that the subtraction could overflow are not used as an anchor'",
+      "aggregations.pyx: InvCondTol is EpsF64*1e3 and addition of MaxOriginMagnitude=np.sqrt(np.finfo(np.float64).max) with comment that subtracting an origin of this size can never overflow and beyond it squared deviations would overflow anyway (relevant to magnitude regimes where anchoring is/ isn't safe)"
+    ],
+    "reproduction_risks": [
+      "Bug depends on dtype float64 (code uses float64_t and the reproducer specifies dtype='float64'); reproducer must keep float64 inputs.",
+      "Bug appears in magnitude regimes involving large values/shared offsets (on order 1e12 and also includes 1e12/-1e12 in the test); smaller magnitudes may not trigger the cancellation/accumulator collapse behavior.",
+      "The failure mode includes NaN poisoning for later windows when ssqdm_x becomes negative and calc_corr takes sqrt of a negative number; reproducer should include subsequent windows after a large value leaves (e.g., rolling after the outlier exits).",
+      "Correctness separation is described via rtol=1e-12 and atol=0 for expected incremental update tolerance; using different tolerances may mask or exaggerate the discrepancy."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "pip install cython",
+        "pip install .",
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "NumPy",
+      "source": "README.md: \"NumPy - Adds support for large, multi-dimensional arrays, matrices and high-level mathematical functions to operate on these arrays\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "python-dateutil",
+      "source": "README.md: \"python-dateutil - Provides powerful extensions to the standard datetime module\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "tzdata",
+      "source": "README.md: \"tzdata - ... (Only required on Windows/Emscripten)\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "Cython",
+      "source": "README.md: \"To install pandas from source you need Cython in addition to the normal dependencies above.\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "Rolling covariance/correlation values are silently wrong after a large value leaves the sliding window; can also become NaN when a negative ssqdm_x is used in the square root in calc_corr.",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/window/aggregations.pyx:1151-1173"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "Rolling cov/corr should match exact results (example shows [1.1, -0.3, -0.8] as the exact expected values) by recomputing or using numerically safe re-anchoring/error bounds so that accumulation errors from earlier window steps do not poison later windows.",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/window/aggregations.pyx:1151-1173"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/window/aggregations.pyx:1151-1173"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 4,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/window/aggregations.pyx:1151-1173"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 3,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/window/aggregations.pyx:1151-1173"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 1,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/window/aggregations.pyx:1151-1173"
+    },
+    {
+      "field": "numerical_characteristics.dtype",
+      "value": "float64",
+      "source": "test_diff",
+      "evidence_location": "test_diff:pandas/tests/window/test_pairwise.py:92-206"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "large value / shared offset around 1e12; windows containing 1e12 (e.g., in the rolling window size 3 example and in PR#66678); also subtraction against a mean that is itself huge (large shared offset) where significant digits are lost; values large enough that subtraction could overflow are not used as an anchor",
+      "source": "test_diff",
+      "evidence_location": "test_diff:pandas/tests/window/test_pairwise.py:92-206"
+    },
+    {
+      "field": "numerical_characteristics.tolerance",
+      "value": "rtol=1e-12, atol=0 is the tolerance the incremental update is designed to hold (for some windows still containing 1e12)",
+      "source": "test_diff",
+      "evidence_location": "test_diff:pandas/tests/window/test_pairwise.py:92-206"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 7,
+      "source": "test_diff",
+      "evidence_location": "test_diff:pandas/tests/window/test_pairwise.py:92-206"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 4,
+      "source": "test_diff",
+      "evidence_location": "test_diff:pandas/tests/window/test_pairwise.py:92-206"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "Rolling covariance/correlation values are silently wrong after a large value leaves the sliding window; can also become NaN once a negative ssqdm_x is used in the square root in calc_corr.",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/window/aggregations.pyx"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "Rolling cov/corr should not be poisoned by earlier numerical error; instead it should recompute or otherwise re-anchor/bound incremental accumulators so results match exact values for windows, and avoid NaN/poisoning once a negative ssqdm_x would be involved in calc_corr. The passage\u2019s example exact expected values are [1.1, -0.3, -0.8].",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/window/aggregations.pyx"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/window/aggregations.pyx"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 5,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/window/aggregations.pyx"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 5,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/window/aggregations.pyx"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 1,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/window/aggregations.pyx"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "readme:README.md",
+        "diff:pandas/_libs/window/aggregations.pyx:957-987",
+        "pr_body:PR#66678",
+        "commit:commits",
+        "diff:pandas/_libs/window/aggregations.pyx:1151-1173",
+        "readme:README.md",
+        "readme:README.md"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "diff:pandas/_libs/window/aggregations.pyx:1151-1173",
+        "commit:commits",
+        "pr_body:PR#66678",
+        "diff:pandas/_libs/window/aggregations.pyx:957-987",
+        "diff:pandas/_libs/window/aggregations.pyx:1016-1063",
+        "diff:pandas/_libs/window/aggregations.pyx:1068-1129",
+        "diff:pandas/_libs/window/aggregations.pyx:69-79",
+        "diff:pandas/_libs/window/aggregations.pyx:753-869"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "test_diff:pandas/tests/window/test_pairwise.py:92-206",
+        "diff:pandas/_libs/window/aggregations.pyx:69-79",
+        "pr_body:PR#66678",
+        "commit:commits",
+        "diff:pandas/_libs/window/aggregations.pyx:1151-1173",
+        "diff:pandas/_libs/window/aggregations.pyx:1016-1063",
+        "diff:pandas/_libs/window/aggregations.pyx:1068-1129",
+        "diff:pandas/_libs/window/aggregations.pyx:753-869"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "accuracy",
+        "checked": 5,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          },
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          },
+          {
+            "path": "environment.numerical_backend",
+            "why": "BLAS/LAPACK choice changes results for linear algebra instances"
+          }
+        ],
+        "present": [
+          "environment.dependencies"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "accuracy",
+        "checked": 10,
+        "score": 0.857,
+        "required_total": 7,
+        "required_present": 6,
+        "required_missing": [
+          {
+            "path": "numerical_failure.affected_api",
+            "why": "the probe has nothing to call without the API under test"
+          }
+        ],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.dtype",
+          "numerical_characteristics.tolerance",
+          "numerical_characteristics.magnitude",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "budget": {
+      "max_calls": 1,
+      "max_rung": "widened",
+      "spent": 1,
+      "log": [
+        {
+          "rung": "targeted",
+          "note": "failure: The first pass left these REQUIRED fields empty. Search the ",
+          "input_tokens": 4639,
+          "output_tokens": 770,
+          "cost_usd": 0.00189
+        }
+      ]
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 12157,
+    "output_tokens": 2620,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.005706,
+    "llm_calls": 4
+  },
+  "errors": {},
+  "expansions": [
+    {
+      "rung": "targeted",
+      "question": "failure",
+      "error": "",
+      "n_passages": 8,
+      "fields_added": [
+        "affected_api",
+        "confidence",
+        "expected_behavior",
+        "input_output_examples",
+        "manifestation",
+        "observed_behavior",
+        "oracle_clues",
+        "trigger_conditions"
+      ]
+    }
+  ]
+}

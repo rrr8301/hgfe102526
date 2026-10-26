@@ -1,0 +1,101 @@
+{
+  "input": "pipeline-gpt-5.4-nano/scipy_20573_gpt-5.4-nano/mined/scipy__scipy_20573.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 16250,
+    "output_tokens": 4591,
+    "cost_usd": 0.008989,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 20573,
+      "reference": "https://github.com/scipy/scipy/pull/20573",
+      "buggy_commit": "efbcba15d3624201aeb6387270726812996e7836",
+      "fixed_commit": "701d8da42825f7c5124dcdaba470a841598091b3",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 9636,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce SciPy special-value bug in Rotation.align_vectors for the exact 180\u00b0 (antiparallel) case when an infinite weight is present. The buggy revision returns a 0-rad rotation; the fixed revision returns a \u03c0-rad rotation and passes the added regression test.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "numpy",
+            "pybind11==2.12.0",
+            "pythran==0.15.0",
+            "Cython==3.0.10"
+          ],
+          "system_packages": [
+            "gcc=10.2.1",
+            "g++=10.2.1",
+            "gfortran=10.2.1",
+            "cmake",
+            "ninja",
+            "python3-dev"
+          ],
+          "build_commands": [
+            "# Create clean build env\npython -m venv .venv && source .venv/bin/activate\npip install -U pip wheel setuptools\npip install numpy\n# Optional: also install dev deps if building from source with them\npip install pybind11==2.12.0 pythran==0.15.0 Cython==3.0.10\n\n# Get SciPy sources at buggy and (later) fixed revisions\n# (Fixed commit not provided in the evidence context; see risks.)\n\n# Build SciPy from source with OpenBLAS configuration as in evidence\n# Use an OpenBLAS already built for: 0.3.26.dev, USE_64BITINT=0, DYNAMIC_ARCH=1,\n# NO_CBLAS= NO_LAPACK= NO_LAPACKE= NO_AFFINITY=1, USE_OPENMP=ZEN, MAX_THREADS=64.\n\nexport CC=gcc\nexport CXX=g++\nexport FC=gfortran\n# Point SciPy to the OpenBLAS install used for reproduction\nexport BLAS=None\nexport LAPACK=None\nexport OPENBLAS_DIR=/path/to/openblas-0.3.26.dev\n\n# Configure and build (single-threaded environment recommended to reduce flakiness)\npython -m pip install -v -e . --no-build-isolation --config-settings=--builddir=build-buggy \\\n  -Csetup-args=\"--blas=openblas --lapack=openblas\""
+          ],
+          "pinned_because": [
+            "OpenBLAS is explicitly documented as the numerical backend in the evidence (version 0.3.26.dev) with specific build flags; the 180\u00b0 rotation/degeneracy path is numerically sensitive, and the regression test targets this numerical corner.",
+            "pybind11==2.12.0, pythran==0.15.0, Cython==3.0.10, gcc/gfortran==10.2.1 are explicitly documented dependencies/compilers in the provided environment context, so pin them to match the observed defect surface."
+          ]
+        },
+        "test_command": "python -m pytest -q scipy/spatial/transform/tests/test_rotation.py -k test_align_vectors_antiparallel",
+        "reproducing_test": "The regression test `test_align_vectors_antiparallel` added to `scipy/spatial/transform/tests/test_rotation.py` in the provided diff. It calls `Rotation.align_vectors(a, b, weights=[np.inf, 1])` for exact antiparallel (180\u00b0) cases and asserts `R.magnitude() == np.pi` (atol=1e-12) and `R.apply(b[0]) == a[0]` (atol=1e-12).",
+        "success_criterion": "On the buggy SciPy revision efbcba15d362, `test_align_vectors_antiparallel` FAILS because `Rotation.align_vectors(..., weights=[np.inf, 1])` for an exact 180\u00b0 antiparallel case produces a rotation whose magnitude is 0 instead of \u03c0 (so the `np.isclose(R.magnitude(), np.pi, atol=1e-12)` assertion fails). On the fixed SciPy revision (fixed commit not included in the provided evidence), the same test PASSes for both the exact 180\u00b0 antiparallel cases and the near-180\u00b0 infinite-vs-finite weight consistency checks.",
+        "numerical_probe": "The test oracle is the rotation magnitude `R.magnitude()` produced by `Rotation.align_vectors` with `weights=[np.inf, 1]` on exact antiparallel inputs; additionally it verifies correctness of the rotation by checking `R.apply(b[0])` equals the expected vector. The known bug signature is `R.as_rotvec()` effectively returning [0,0,0] (magnitude 0) instead of a \u03c0-radian rotation (magnitude \u03c0).",
+        "input_output_examples": [
+          {
+            "input": "Rotation.align_vectors([[0, 1, 0], [-1, 0, 0]], [[0, -1, 0], [-1, 0, 0]], weights=[np.inf, 1])[0].as_rotvec()",
+            "buggy_output": "array([0., 0., 0.])",
+            "expected_output": "array([3.14159265, 0., 0.])"
+          }
+        ],
+        "risks": [
+          "Fixed commit/PR number is not present in the evidence context; you must identify the corresponding patched revision for SciPy/scipy#20573 in order to demonstrate PASS on fixed code.",
+          "Reproduction may depend on the OpenBLAS build/installation actually matching the documented configuration (0.3.26.dev with the given flags). If the local OpenBLAS differs, the wrong branch may not trigger (or may trigger differently), potentially preventing the test transition.",
+          "This defect is specifically for the exact 180\u00b0 antiparallel geometry with `weights=[np.inf, 1]`. If your constructed test vectors are altered such that the algorithm takes a different geometric branch (e.g., not exactly cross-norm==0), the buggy behavior may not appear.",
+          "If threading or BLAS/LAPACK runtime differs (e.g., OpenMP threading enabled differently), there can be nondeterminism in near-180\u00b0 cases; mitigate by controlling `OMP_NUM_THREADS=1` (risk: evidence does not explicitly mention threading, but OpenBLAS is built with USE_OPENMP=ZEN).",
+          "Platform/toolchain constraint risk: the evidence pins GCC/gfortran 10.2.1 and Python 3.12; changing these may change how special-value/degeneracy handling behaves."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "The project\u2019s own regression test: `assert_allclose(R.magnitude(), np.pi, atol=1e-12)` and `assert_allclose(R.apply(b[0]), a[0], atol=1e-12)`; plus matrix equality between infinite and large finite weight results with `assert_allclose(..., atol=1e-12)`.",
+          "why": "The added test directly checks magnitude against \u03c0 with a strict absolute tolerance and checks vector action consistency; no external numerical reference is required."
+        },
+        "fails_on_buggy": "`test_align_vectors_antiparallel` fails on efbcba15d362 at the assertion `assert_allclose(R.magnitude(), np.pi, atol=1e-12)` because the buggy code returns a rotation corresponding to 0 rad for an exact antiparallel (180\u00b0) alignment when using `weights=[np.inf, 1]` (known signature: as_rotvec becomes [0,0,0], magnitude 0).",
+        "passes_on_fixed": "Expected to pass on the patched revision for SciPy/scipy#20573, where the 180\u00b0 antiparallel with infinite weight degeneracy is handled so that the returned rotation magnitude is \u03c0 and `R.apply(b[0])` matches `a[0]` within 1e-12; and the infinite-weight vs large-finite-weight matrix outputs match within 1e-12."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 4179,
+        "output_tokens": 1644,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002891
+      },
+      "miner_usage": {
+        "input_tokens": 12071,
+        "output_tokens": 2947,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.006098,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

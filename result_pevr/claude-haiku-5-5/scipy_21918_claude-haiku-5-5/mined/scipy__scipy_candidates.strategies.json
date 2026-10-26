@@ -1,0 +1,113 @@
+{
+  "input": "pipeline-haiku-eradyn-inloop/scipy_21918_claude-haiku-5-5/mined/scipy__scipy_21918.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-23",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 23918,
+    "output_tokens": 6756,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 21918,
+      "reference": "https://github.com/scipy/scipy/pull/21918",
+      "buggy_commit": "9285a8bc63edf6d65968202553ba1e00e8eda330",
+      "fixed_commit": "85bbb867b29227a01eb171eeb258a04322c6cc26",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6417,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce scipy PR #21918 by building scipy from source at the buggy commit 9285a8bc63ed with the era-matched toolchain, then running the developer's test_curvefit_omitnan. On the buggy revision the sigma_dim=1 and sigma_dim=2 cases raise ValueError from curve_fit's sigma shape check because sigma is not masked alongside xdata and ydata; the sigma_dim=0 scalar case should pass there. On the fixed revision all three parametrizations should pass, with the masked fit matching the manually-deleted reference fit to atol 1e-14.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.10",
+          "pip_packages": [
+            "numpy==2.1.2",
+            "cython==3.0.11",
+            "pybind11==2.12.0",
+            "pythran==0.16.1",
+            "meson-python",
+            "ninja",
+            "pytest",
+            "hypothesis",
+            "pooch",
+            "spin"
+          ],
+          "system_packages": [
+            "gcc 10.2.1 (cc, c++, gfortran)",
+            "git"
+          ],
+          "build_commands": [
+            "git clone https://github.com/scipy/scipy.git scipy-src && cd scipy-src && git checkout 9285a8bc63ed && git submodule update --init",
+            "python3.10 -m pip install numpy==2.1.2 cython==3.0.11 pybind11==2.12.0 pythran==0.16.1 meson-python ninja pytest hypothesis pooch spin",
+            "python3.10 dev.py build",
+            "python3.10 dev.py python -c \"import scipy; print(scipy.__version__)\""
+          ],
+          "pinned_because": [
+            "numpy 2.1.2: observed in issue#21772 reproducer; era ceiling 2.1 (numerically relevant, era-inferred, not a documented constraint); relied on as era-inferred",
+            "scipy: built from source at the buggy commit, so no pip scipy wheel is installed; observed 1.14.1 in issue#21772 is only the release-era version, and the source tree at 9285a8bc63ed is what defines the defect",
+            "cython 3.0.11: observed in show_config and matches era ceiling 3.0 (era-inferred, not numerically relevant)",
+            "pybind11 2.12.0: observed in show_config; no documented constraint and no era table entry, so chosen here as the observed value and stated as a choice (not numerically relevant)",
+            "pythran 0.16.1: observed in show_config; no documented constraint and no era table entry, so chosen here as the observed value and stated as a choice (not numerically relevant)",
+            "OpenBLAS: scipy-openblas 0.3.27.dev, bundled by the build via pkgconfig; not pinned separately, used as built"
+          ]
+        },
+        "test_command": "cd scipy-src && python3.10 dev.py test -t scipy.optimize.tests.test_minpack::TestCurveFit::test_curvefit_omitnan -v",
+        "reproducing_test": "scipy/optimize/tests/test_minpack.py::TestCurveFit::test_curvefit_omitnan[0], [1], [2] (parametrized over sigma_dim in [0, 1, 2]), added by the developer's diff",
+        "success_criterion": "Transition: on the buggy revision 9285a8bc63ed, test_curvefit_omitnan[1] and test_curvefit_omitnan[2] FAIL with ValueError '`sigma` has incorrect shape' raised inside curve_fit before the assertions are reached, while test_curvefit_omitnan[0] (scalar sigma, no sigma masking needed) passes. On the fixed revision (the commit after the PR), all three parametrizations PASS: the NaN-masked fit with sigma filtered by has_nan matches the manually-deleted reference fit within assert_allclose atol=1e-14 for both popt and pcov.",
+        "numerical_probe": "Not required for pass/fail. If a probe is wanted, compare curve_fit(..., sigma=sigma, nan_policy='omit') against the reference with np.delete applied to x, y and sigma, on the same seeded data, to confirm the two agree before running the test.",
+        "input_output_examples": [
+          {
+            "input": "x = np.linspace(1, 10, 90, endpoint=False); sigma = x * 0.05; y = exponential(x, 0.2, 0.5) + np.random.normal(0, sigma, 90); x[11] = np.nan; y[22] = np.nan; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy=\"omit\")",
+            "buggy_output": "ValueError: `sigma` has incorrect shape.",
+            "expected_output": "No exception; the fit completes and returns popt and pcov.','value_kind':'property'}],"
+          }
+        ],
+        "risks": [
+          "The buggy revision fails before any numerical comparison, so the transition depends only on the exception path; this is deterministic and does not depend on BLAS results.",
+          "The test asserts atol=1e-14, which is tight. Results of the masked fit and the reference fit should be bit-identical or nearly so because they share the same code path after masking, but OpenBLAS threading or a different BLAS build could perturb the last bits. If the fixed revision fails only on the tolerance, rerun with OPENBLAS_NUM_THREADS=1 to check.",
+          "The test uses rng.multivariate_normal for the 2-D covariance case; with a = normal(0,2,(100,100)), sigma = a @ a.T is positive semidefinite but may be ill-conditioned. numpy's multivariate_normal may emit a RuntimeWarning about the covariance matrix, which is not a failure, but a pytest configuration that promotes warnings to errors would change the outcome.",
+          "The defect is NaN-driven and has no architecture or sanitiser dependence named in the evidence, so it should transition on x86_64 Linux as built here. No evidence shows it needs a specific platform, so none is assumed.",
+          "dtype is not stated in the evidence; the test uses default float64 from np.linspace and default_rng, which is the dtype used here.",
+          "The developer test is the only grounded reproducer. The issue reproducer is truncated, so its exact popt/pcov values are not recoverable and are not used.",
+          "pybind11 and pythran versions are not documented constraints; the chosen values are observed values from show_config, and changing them is not expected to affect the test because they are not numerically relevant to curve_fit.",
+          "The buggy revision must be checked out and built fresh; an installed scipy 1.14.1 wheel would not reproduce the defect, because the wheel predates or differs from the buggy source tree."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "atol=1e-14 on popt and pcov via assert_allclose (stated in the reproducing test diff)",
+          "reference_source": "test_curvefit_omitnan reference fit: x, y, sigma with the NaN indices removed by np.delete, then curve_fit without nan_policy",
+          "why": "The reference is the same fit on manually cleaned data, so agreement with the masked fit is the correct behaviour; atol 1e-14 comes from the developer's test."
+        },
+        "fails_on_buggy": "On 9285a8bc63ed, curve_fit with nan_policy='omit' and a 1-D or 2-D sigma filters xdata and ydata by has_nan but does not filter sigma, so len(sigma) != len(ydata) and the function raises ValueError '`sigma` has incorrect shape' before any assertion. This makes test_curvefit_omitnan[1] and [2] error out, while [0] passes because a scalar sigma is not shape-checked against the data.",
+        "passes_on_fixed": "After the fix, sigma is filtered with sigma[~has_nan] for 1-D and sigma[~has_nan, :] then sigma[:, ~has_nan] for 2-D, so the shapes match, the masked fit runs, and it agrees with the manually deleted reference within atol 1e-14 for all three sigma_dim cases."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5545,
+        "output_tokens": 3719,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 18373,
+        "output_tokens": 3037,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

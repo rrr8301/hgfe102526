@@ -1,0 +1,108 @@
+{
+  "input": "pipeline-gpt-5.4-nano/statsmodels_10232_gpt-5.4-nano/mined/statsmodels__statsmodels_10232.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 9745,
+    "output_tokens": 4264,
+    "cost_usd": 0.007279,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10232,
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10232",
+      "buggy_commit": "e7f76fec5421daa85e697bb2afbbe1cd220fd65f",
+      "fixed_commit": "3beaeeb147df215616297de655a57f2508df19af",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 7920,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#9556/statsmodels PR #10232 numerical correctness bug in statsmodels.nonparametric.linbin.fast_linbin as exercised via KDEUnivariate.fit(fft=True, cut=0). The reproduction must use the PR\u2019s noted toolchain constraints (numpy 2.5.2, Cython 3.3.0; macOS arm64 / Apple M3, Python 3.12; clang; Cython -3) and run the specific test(s) added by the PR so they fail on the buggy revision and pass on the fixed one.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "numpy==2.5.2",
+            "Cython==3.3.0",
+            "statsmodels (checked out at buggy and fixed revisions)",
+            "ruff (if used separately; not required by the reproducing tests)"
+          ],
+          "system_packages": [
+            "clang (implied by PR run notes: compiled with cython -3 + clang)",
+            "python3-dev / headers (typical to compile C/Cython extensions)"
+          ],
+          "build_commands": [
+            "# Create env\npython -m venv .venv && . .venv/bin/activate\npython -m pip install -U pip setuptools wheel\n\n# Install toolchain deps per PR notes\npython -m pip install numpy==2.5.2 Cython==3.3.0\n\n# Install PR wheel base if available, but to ensure the bug is exercised you must build/rebuild Cython extensions\n# Option A (preferred): build statsmodels from source at the target git revision\npython -m pip install -i https://pypi.anaconda.org/scientific-python-nightly-wheels/simple -e . --no-build-isolation --use-deprecated=legacy-resolver\n\n# If the reproducer requires matching the PR\u2019s standalone cython compilation step:\n# (Evidence only) Re-run compilation of the relevant .pyx with Cython 3, clang as per PR notes.\n# Example commands (adjust paths/filenames to your checkout):\n# cython -3 --fast-fail -b -c clang --directive language_level=3 statsmodels/nonparametric/linbin.pyx\n# python -m pip install -e . --no-build-isolation"
+          ],
+          "pinned_because": [
+            "numpy==2.5.2 (documented as numerically relevant in PR#10232 run notes; evidence shows boundary rounding lxi[1]=511.00000000000006 and rem=5.7e-14)",
+            "Cython==3.3.0 (documented in PR#10232 run notes; Cython-to-C code generation affects the numerical/binning loops)",
+            "clang + Cython -3 (documented in PR#10232 run notes as the compilation method used)"
+          ],
+          "pinned_because_note": "The evidence explicitly ties the numerical boundary behavior to the PR\u2019s macOS arm64 / Apple M3 + Python 3.12 + numpy 2.5.2 + Cython 3.3.0 run notes. Respect those constraints when transitioning buggy->fixed."
+        },
+        "test_command": "pytest -q statsmodels/nonparametric/tests/test_kde.py::test_fast_linbin_boundary_observations statsmodels/nonparametric/tests/test_kde.py::test_kde_fft_cut_zero",
+        "reproducing_test": "The PR\u2019s added tests in statsmodels/nonparametric/tests/test_kde.py: test_fast_linbin_boundary_observations and test_kde_fft_cut_zero. These directly assert the bin-count boundary handling and the KDE FFT density integral for cut=0, respectively.",
+        "success_criterion": "On the buggy revision e7f76fec5421: (1) test_fast_linbin_boundary_observations fails because fast_linbin drops early-bin observations and/or misassigns the upper-bound observation, so counts do not match [1.0, 0.8, 0.2, 0.0, 1.0] and/or counts.sum()!=nobs. (2) test_kde_fft_cut_zero fails because KDE(x).fit(fft=True, cut=0) produces an FFT density whose integral is not close to 1.0 within atol=0.01, and/or the run may abort due to out-of-bounds write. On the fixed revision: both tests pass (counts and integral match the asserted values/tolerance, and the fit does not crash).",
+        "numerical_probe": "fast_linbin(x, a, b, M) boundary mapping for an observation effectively landing at x=b (li == M-1) and resulting rem>0; buggy code attempts to add to gcnts[M] (out-of-bounds), and/or drops observations in the first two bins, causing counts.sum()!=nobs and downstream FFT density integral < 1.",
+        "input_output_examples": [
+          {
+            "input": "x = [0.0, 0.3, 1.0] ; counts = fast_linbin(x, 0.0, 1.0, 5)",
+            "buggy_output": "counts differ from the expected vector; buggy behavior described as dropping first two bins and mis-handling upper boundary (out-of-bounds/write on last bin)",
+            "expected_output": "[1.0, 0.8, 0.2, 0.0, 1.0]"
+          },
+          {
+            "input": "x = [24.0, 43.0, 27.0, 15.0, 37.0, 8.82] ; kde = KDE(x); kde.fit(fft=True, cut=0); integral = \u2211 trapezoid(density over support)",
+            "buggy_output": "May crash (abort due to malloc checksum / corrupt value) OR produces integral 0.8317 instead of ~1",
+            "expected_output": "integral is close to 1.0 within atol=0.01"
+          },
+          {
+            "input": "x = np.array([24.0, 43.0, 27.0, 15.0, 37.0, 8.82]) ; a=x.min(), b=x.max(), M=511 ; lxi=(x-a)/((b-a)/511)",
+            "buggy_output": "evidence shows lxi[1]=511.00000000000006 -> li=511==M-1 and rem=5.7e-14, leading to gcnts[M] += rem (out-of-bounds)",
+            "expected_output": "fixed code ensures the rem weight is accumulated into the last valid bin (gcnts[M-1]) rather than gcnts[M]"
+          }
+        ],
+        "risks": [
+          "This defect is strongly tied to the PR notes\u2019 platform/toolchain (macOS arm64 / Apple M3, Python 3.12, numpy 2.5.2, Cython 3.3.0, cython -3 + clang). On other architectures/compilers or with different numpy versions, the specific rounding that makes li hit M-1 with rem>0 may not occur, so the buggy test may not fail.",
+          "The crash described (malloc checksum / abort) is non-deterministic at the process level: depending on allocator state and memory layout, you may see a silent wrong integral instead of an abort, or vice versa.",
+          "Because the evidence indicates out-of-bounds writes, builds with different compiler sanitizers/flags or boundscheck may raise different failure modes; the test transition relies on the numerical assertions (and potentially a crash) rather than inspecting printed values.",
+          "The exact \u201cfixed revision\u201d commit hash is not provided in the evidence context; you must checkout the PR\u2019s fixed commit (e.g., via the PR merge commit) to ensure the tests pass there."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "test_kde_fft_cut_zero: integral must match 1.0 within atol=0.01 (via npt.assert_allclose(integral, 1.0, atol=0.01)); test_fast_linbin_boundary_observations uses exact vector match via assert_allclose on [1.0,0.8,0.2,0.0,1.0] and sum/moment checks with tight default tolerances",
+          "reference_source": "PR#10232 added tests in statsmodels/nonparametric/tests/test_kde.py, plus described expected values/integration behavior from GH#9556 verification notes",
+          "why": "These assertions are the project\u2019s own oracle: they fail on the buggy revision due to mis-binning/out-of-bounds behavior and pass on the fixed revision when boundary assignment and early-bin handling are corrected."
+        },
+        "fails_on_buggy": "At least one of the two tests fails on revision e7f76fec5421. Specifically, test_kde_fft_cut_zero should fail because either (a) kde.fit(fft=True, cut=0) aborts due to out-of-bounds write from fast_linbin when an observation maps to li==M-1, or (b) the computed FFT density integral is incorrect (reported 0.8317) and so does not satisfy atol=0.01 vs 1.0. Separately, test_fast_linbin_boundary_observations should fail because counts do not match the expected boundary-split vector and/or counts.sum()!=nobs and moment preservation fails (bug described as dropping first two bins and incorrect upper boundary handling).",
+        "passes_on_fixed": "On the fixed revision corresponding to PR #10232, fast_linbin assigns weights correctly at the upper boundary and preserves observations in all bins (including first bins), preventing the out-of-bounds write. Therefore test_fast_linbin_boundary_observations passes (counts==[1.0,0.8,0.2,0.0,1.0] and sum/moment checks), and test_kde_fft_cut_zero passes with the FFT density integral close to 1.0 within atol=0.01."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3921,
+        "output_tokens": 2054,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.003352
+      },
+      "miner_usage": {
+        "input_tokens": 5824,
+        "output_tokens": 2210,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.003927,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

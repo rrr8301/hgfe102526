@@ -1,0 +1,110 @@
+{
+  "input": "pipeline_no_historic/statsmodels_9903/mined/statsmodels__statsmodels_9903.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 17200,
+    "output_tokens": 4450,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 9903,
+      "reference": "https://github.com/statsmodels/statsmodels/pull/9903",
+      "buggy_commit": "c1482430228010566b31b6f3f7e0b1c1a08e920c",
+      "fixed_commit": "071a14d7a282e14b022f215a41a6c80168f475df",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6284,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#9103/PR#9903: linear_rainbow with use_distance=True used an arbitrary middle observation exog[nobs//2] as Mahalanobis center and non-stable argsort, making the F-statistic depend on row order (and raising LinAlgError with a constant column). The fix uses the exog centroid, pinv of covariance, and lexsort tie-breaking, and deprecates center. Run the developer's new tests in statsmodels/stats/tests/test_diagnostic.py on the buggy commit (expect failures) and the fixed commit (expect passes).",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "scipy",
+            "pandas",
+            "pytest",
+            "patsy"
+          ],
+          "system_packages": [
+            "a C/C++ compiler and gcc/g++ toolchain for building statsmodels from source",
+            "Cython",
+            "meson-python or setuptools build backend as required by the repository at that revision"
+          ],
+          "build_commands": [
+            "python -m pip install -e . --no-build-isolation  (or python setup.py build_ext --inplace on the older setuptools-based tree; build from source at commit c14824302280 so the buggy Python code is what runs)"
+          ],
+          "pinned_because": [
+            "statsmodels version is unbounded in the evidence (documented constraint null, no era ceiling); numpy/scipy/pandas versions are not stated, so the strategy chooses recent releases compatible with the checked-out revision and says so. This is an era-inferred choice, not a documented constraint.",
+            "Installation via the nightly wheel index is listed in the evidence but a source build of the buggy commit is needed so the defect code is what executes."
+          ]
+        },
+        "test_command": "pytest statsmodels/stats/tests/test_diagnostic.py -q -k \"rainbow_use_distance_order_invariant or rainbow_use_distance_matches_manual_ordering or rainbow_center_deprecated\"",
+        "reproducing_test": "statsmodels/stats/tests/test_diagnostic.py::test_rainbow_use_distance_order_invariant (parametrized add_const False/True), test_rainbow_use_distance_order_invariant_discrete, test_rainbow_use_distance_matches_manual_ordering, test_rainbow_center_deprecated",
+        "success_criterion": "On the buggy revision c14824302280: test_rainbow_use_distance_order_invariant[True] raises LinAlgError (the constant-column singular covariance path) and the other order-invariance and manual-ordering tests fail because the statistic differs across row permutations, and test_rainbow_center_deprecated fails because no FutureWarning is emitted. On the fixed revision all these tests pass: the statistic is identical across permutations within assert_allclose tolerance, the manual order_by equivalence holds, and passing center emits FutureWarning while leaving the result unchanged.",
+        "numerical_probe": "Compare linear_rainbow(res, use_distance=True) across permutations of rows of the same data; the buggy code gives a spread of order 0.17 on the discrete lattice versus floating-point noise (~1e-15) after the fix.",
+        "input_output_examples": [
+          {
+            "input": "continuous data, 5 permutations of rows, use_distance=True",
+            "buggy_output": "order-dependent F-statistic (not quantified in passages)",
+            "expected_output": "spread 8.9e-16 across permutations (statistic identical up to floating-point noise)"
+          },
+          {
+            "input": "discrete lattice, 100 permutations, use_distance=True",
+            "buggy_output": "69 distinct F values, spread 0.17",
+            "expected_output": "1 distinct F, spread 6.7e-16"
+          },
+          {
+            "input": "constant-column model (typical regression with intercept), use_distance=True",
+            "buggy_output": "LinAlgError raised",
+            "expected_output": "F=1.3847543113 with spread 2.2e-16 across permutations"
+          }
+        ],
+        "risks": [
+          "Discrete-lattice failure depends on tie handling: the buggy argsort must be reproduced and the fixed lexsort must be present; a different sort implementation may hide the defect.",
+          "The constant-column LinAlgError path only arises with a singular covariance; a full-rank design will not exercise it, so test_rainbow_use_distance_order_invariant[True] is the one that reproduces that failure.",
+          "No numerical dependency version is documented; behaviour is linear algebra and should not depend on BLAS, but a different numpy/scipy version could change tie-level rounding and thus the exact discrete spread, not the transition.",
+          "The evidence does not state a platform-specific or sanitizer requirement; the defect is expected to appear on ordinary x86_64 Linux and to transition there. If run on another architecture, the exact-tie behaviour may differ and should be checked rather than assumed.",
+          "The center FutureWarning behaviour conflicts between docstring (warns only when use_distance is True) and stated always-warn; test_rainbow_center_deprecated uses use_distance=True so it is consistent with either reading, but do not assume the other path.",
+          "Issue #9103 non-normal size remark is not a reproduction target."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "assert_allclose default rtol=1e-7 as used in the developer test; reference values about 1e-15 spread are floating-point noise",
+          "reference_source": "R lmtest::raintest as cited by the commit, and the independently recomputed centroid/covariance in test_rainbow_use_distance_matches_manual_ordering",
+          "why": "The developer's tests compare statistics across permutations and against a manual ordering, so the oracle is internal consistency within floating-point tolerance rather than an absolute reference value."
+        },
+        "fails_on_buggy": "On the buggy commit, the centre is exog[nobs//2] and ordering uses argsort, so permuted rows yield different F values (assert_allclose fails), the constant-column case raises LinAlgError, and passing center does not emit FutureWarning (pytest.warns fails).",
+        "passes_on_fixed": "On the fixed commit, the centroid-based pinv Mahalanobis ordering with lexsort gives permutation-invariant F within tolerance, the manual ordering matches, and center emits FutureWarning with an unchanged statistic."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6141,
+        "output_tokens": 2056,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 11059,
+        "output_tokens": 2394,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

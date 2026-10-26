@@ -1,0 +1,261 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 7880da9ca61b3..1f39418e5a025 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -334,9 +334,11 @@ Datetimelike
+ - Bug in :class:`ArrowExtensionArray` where adding a :class:`DateOffset` to a ``date32[pyarrow]`` or ``date64[pyarrow]`` Series raised an ``ArrowTypeError`` (:issue:`57168`)
+ - Bug in :class:`DatetimeIndex` constructor raising ``ValueError`` when passing equivalent but not equal frequencies (e.g. ``QS-FEB`` vs ``QS-MAY``) (:issue:`61086`)
+ - Bug in :class:`DatetimeIndex` raising ``AttributeError`` when comparing against Arrow date types (date32, date64) (:issue:`62051`)
++- Bug in :class:`Timestamp` constructor where a timezone-aware ``datetime`` near the implementation bounds raised ``OverflowError`` instead of :class:`OutOfBoundsDatetime` when shifted to UTC (:issue:`66510`)
+ - Bug in :class:`Timestamp` constructor where passing ``np.str_`` objects would fail in Cython string parsing (:issue:`48974`)
+ - Bug in :class:`Timestamp` constructor where strings with a negative year of fewer than 4 digits (e.g. ``"-111-01-01"``) silently dropped the leading ``"-"`` and were parsed as a positive year; BC dates with 1-4 digit years now parse correctly, matching :class:`numpy.datetime64` (:issue:`55954`)
+ - Bug in :class:`Timestamp` constructor, :class:`Timedelta` constructor, :func:`to_datetime`, and :func:`to_timedelta` with non-round ``float`` input and ``unit`` failing to raise when the value is just outside the representable bounds (:issue:`57366`)
++- Bug in :class:`Timestamp` constructor, :meth:`Timestamp.replace`, :func:`to_datetime`, and :func:`read_csv` with ``parse_dates`` where a datetime landing on the ``NaT`` sentinel, either directly or after the shift to UTC, silently became ``NaT`` instead of raising :class:`OutOfBoundsDatetime` (:issue:`66510`)
+ - Bug in :func:`api.types.infer_dtype` returning ``"date"`` or ``"mixed"`` instead of ``"datetime"`` / ``"timedelta"`` for lists of :class:`Timestamp`/:class:`Timedelta` values mixed with ``pd.NA`` (:issue:`53023`)
+ - Bug in :func:`date_range` where ``inclusive="left"`` and ``inclusive="right"`` returned a single-element result instead of empty when ``start`` equals ``end`` (:issue:`55293`)
+ - Bug in :func:`date_range` where ``inclusive`` parameter failed to filter endpoints when only ``start`` and ``periods`` or ``end`` and ``periods`` were specified (:issue:`46331`)
+diff --git a/pandas/_libs/parsers.pyx b/pandas/_libs/parsers.pyx
+index 89dfe91925d62..011bb8addd0b6 100644
+--- a/pandas/_libs/parsers.pyx
++++ b/pandas/_libs/parsers.pyx
+@@ -2402,6 +2402,13 @@ cdef _datetime_box_utf8(parser_t *parser, int64_t col,
+                     break
+ 
+                 iresult[i] = npy_datetimestruct_to_datetime(creso, &dts)
++                if iresult[i] == NPY_NAT:
++                    # GH#66510 NA rows already `continue`d above, so this is a
++                    # real value that rendered onto the NaT sentinel and would be
++                    # indistinguishable from NA. Defer to the object path like
++                    # any other date this fastpath cannot represent.
++                    fallback = True
++                    break
+     except OverflowError:
+         return None, 0
+ 
+diff --git a/pandas/_libs/tslibs/conversion.pyx b/pandas/_libs/tslibs/conversion.pyx
+index 1adc0d8a60836..e19132238d668 100644
+--- a/pandas/_libs/tslibs/conversion.pyx
++++ b/pandas/_libs/tslibs/conversion.pyx
+@@ -47,8 +47,10 @@ from pandas._libs.tslibs.np_datetime cimport (
+     NPY_FR_us,
+     astype_overflowsafe,
+     check_dts_bounds,
++    check_nat_sentinel,
+     convert_reso,
+     dts_to_iso_string,
++    dts_to_iso_string_ns,
+     get_conversion_factor,
+     get_datetime64_unit,
+     get_implementation_bounds,
+@@ -492,6 +494,8 @@ cdef _TSObject convert_to_tsobject(object ts, tzinfo tz, str unit,
+                 obj.value = tz_localize_to_utc_single(
+                     obj.value, tz, ambiguous="raise", nonexistent=None, creso=reso
+                 )
++                # GH#66510 the shift to UTC must not land on the NaT sentinel
++                check_nat_sentinel(obj.value, &obj.dts, reso)
+     elif is_integer_object(ts) or (is_float_object(ts) and ts.is_integer()):
+         try:
+             ts = <int64_t>ts
+@@ -584,7 +588,7 @@ cdef _TSObject convert_datetime_to_tsobject(
+     """
+     cdef:
+         _TSObject obj = _TSObject()
+-        int64_t pps
++        int64_t pps, offset_val
+ 
+     obj.creso = reso
+     obj.fold = ts.fold
+@@ -622,8 +626,18 @@ cdef _TSObject convert_datetime_to_tsobject(
+     if obj.tzinfo is not None and not is_utc(obj.tzinfo):
+         offset = get_utcoffset(obj.tzinfo, ts)
+         pps = periods_per_second(reso)
+-        obj.value -= int(offset.total_seconds() * pps)
++        # utcoffset is bounded by +/-24h, so this cannot itself overflow
++        offset_val = int(offset.total_seconds() * pps)
++        # GH#66510 the shift to UTC must not wrap int64 silently
++        if checked_sub(obj.value, offset_val, &obj.value):
++            attrname = npy_unit_to_attrname[reso]
++            raise OutOfBoundsDatetime(
++                f"Out of bounds {attrname} timestamp: {dts_to_iso_string_ns(&obj.dts)}"
++            )
+ 
++    # GH#66510. NB: after the shift rather than before, since a wall time that
++    #  renders onto the sentinel can still shift to a representable UTC value.
++    check_nat_sentinel(obj.value, &obj.dts, reso)
+     check_overflows(obj, reso)
+     return obj
+ 
+@@ -749,6 +763,8 @@ cdef _TSObject convert_str_to_tsobject(str ts, tzinfo tz,
+                         raise OutOfBoundsDatetime(
+                             f"Out of bounds {attrname} timestamp: {ts}"
+                         )
++                    # GH#66510 nor may it land on the NaT sentinel
++                    check_nat_sentinel(obj.value, &dts, reso)
+                     if tz is None:
+                         check_overflows(obj, reso)
+                         return obj
+@@ -760,6 +776,8 @@ cdef _TSObject convert_str_to_tsobject(str ts, tzinfo tz,
+                         ival = tz_localize_to_utc_single(
+                             ival, tz, ambiguous="raise", nonexistent=None, creso=reso
+                         )
++                        # GH#66510 the shift must not land on the NaT sentinel
++                        check_nat_sentinel(ival, &dts, reso)
+                     obj.value = ival
+                     maybe_localize_tso(obj, tz, obj.creso)
+                     return obj
+diff --git a/pandas/_libs/tslibs/np_datetime.pxd b/pandas/_libs/tslibs/np_datetime.pxd
+index 5ff4ac316b8f7..caffc064e2c2a 100644
+--- a/pandas/_libs/tslibs/np_datetime.pxd
++++ b/pandas/_libs/tslibs/np_datetime.pxd
+@@ -71,9 +71,22 @@ cdef inline void import_pandas_datetime() noexcept:
+ cdef bint cmp_scalar(int64_t lhs, int64_t rhs, int op) except -1
+ 
+ cdef str dts_to_iso_string(npy_datetimestruct *dts)
++cdef str dts_to_iso_string_ns(npy_datetimestruct *dts)
+ 
+ cdef check_dts_bounds(npy_datetimestruct *dts, NPY_DATETIMEUNIT unit=?)
+ 
++cdef _raise_nat_sentinel(npy_datetimestruct *dts, NPY_DATETIMEUNIT unit)
++
++
++# Inline so callers pay a compare and a not-taken branch; a cimported cdef would
++#  instead be an indirect call, which the compiler cannot see through.
++cdef inline int check_nat_sentinel(
++    int64_t value, npy_datetimestruct *dts, NPY_DATETIMEUNIT unit
++) except -1:
++    if value == NPY_DATETIME_NAT:
++        _raise_nat_sentinel(dts, unit)
++    return 0
++
+ cdef int64_t pydatetime_to_dt64(
+     datetime val, npy_datetimestruct *dts, NPY_DATETIMEUNIT reso=?
+ ) except? -1
+diff --git a/pandas/_libs/tslibs/np_datetime.pyx b/pandas/_libs/tslibs/np_datetime.pyx
+index 396bbc2261537..99b27825b4de1 100644
+--- a/pandas/_libs/tslibs/np_datetime.pyx
++++ b/pandas/_libs/tslibs/np_datetime.pyx
+@@ -247,6 +247,40 @@ cdef str dts_to_iso_string(npy_datetimestruct *dts):
+             f"{dts.hour:02d}:{dts.min:02d}:{dts.sec:02d}")
+ 
+ 
++cdef str dts_to_iso_string_ns(npy_datetimestruct *dts):
++    """
++    Render `dts`, including its sub-second digits if it has any.
++
++    For callers where the sub-second digits are what put the value out of
++    bounds, so that truncating to seconds would name a representable value.
++    Trailing zeros are dropped so that a coarser-than-nanosecond `dts` is not
++    given precision it does not have; the digits shown are always exact.
++    """
++    cdef:
++        int64_t nanos = dts.us * 1000 + dts.ps // 1000
++        str digits
++
++    if nanos == 0:
++        return dts_to_iso_string(dts)
++    digits = f"{nanos:09d}".rstrip("0")
++    return f"{dts_to_iso_string(dts)}.{digits}"
++
++
++cdef _raise_nat_sentinel(npy_datetimestruct *dts, NPY_DATETIMEUNIT unit):
++    """
++    Out-of-line raise for check_nat_sentinel (see np_datetime.pxd).
++
++    NPY_NAT is INT64_MIN, so a rendered or tz-shifted value that lands on it is
++    not NaT but is indistinguishable from it downstream: it reads back as NaT as
++    soon as it is stored in a datetime64 array, and wraps if converted to another
++    unit. (GH#66510)
++    """
++    attrname = npy_unit_to_attrname[unit]
++    raise OutOfBoundsDatetime(
++        f"Out of bounds {attrname} timestamp: {dts_to_iso_string_ns(dts)}"
++    )
++
++
+ cdef check_dts_bounds(npy_datetimestruct *dts, NPY_DATETIMEUNIT unit=NPY_FR_ns):
+     """Raises OutOfBoundsDatetime if the given date is outside the range that
+     can be represented by nanosecond-resolution 64-bit integers."""
+diff --git a/pandas/_libs/tslibs/strptime.pyx b/pandas/_libs/tslibs/strptime.pyx
+index 2a4a40f661d1e..be1cc954e3c8c 100644
+--- a/pandas/_libs/tslibs/strptime.pyx
++++ b/pandas/_libs/tslibs/strptime.pyx
+@@ -66,6 +66,7 @@ from pandas._libs.tslibs.nattype cimport (
+ from pandas._libs.tslibs.np_datetime cimport (
+     NPY_DATETIMEUNIT,
+     NPY_FR_ns,
++    check_nat_sentinel,
+     get_datetime64_unit,
+     import_pandas_datetime,
+     npy_datetimestruct,
+@@ -533,10 +534,15 @@ def array_strptime(
+                             f"Out of bounds {npy_unit_to_attrname[creso]} "
+                             f"timestamp: {val}"
+                         )
++                    # GH#66510 nor may it land on the NaT sentinel
++                    check_nat_sentinel(value, &dts, creso)
+                 else:
+                     tz = None
+                     state.out_tzoffset_vals.add("naive")
+                     state.found_naive_str = True
++                    # GH#66510 nothing shifts this value afterwards, so a
++                    #  rendering onto the sentinel is final
++                    check_nat_sentinel(value, &dts, creso)
+                 iresult[i] = value
+                 continue
+ 
+@@ -588,11 +594,23 @@ def array_strptime(
+                             f"Out of bounds {npy_unit_to_attrname[creso]} "
+                             f"timestamp: {val}"
+                         )
++                    # GH#66510 nor may it land on the NaT sentinel
++                    check_nat_sentinel(ival, &dts, creso)
+                     iresult[i] = ival
+                 else:
+                     iresult[i] = tz_localize_to_utc_single(
+                         ival, tz, ambiguous="raise", nonexistent=None, creso=creso
+                     )
++                    # GH#66510 the shift must not land on the NaT sentinel.
++                    #  Only meaningful when ival was not already the sentinel:
++                    #  tz_localize_to_utc_single returns such a value untouched,
++                    #  so we would be rejecting the *wall* time, which a westward
++                    #  offset can legitimately shift into range. That leaves a
++                    #  sentinel wall time under a named zone still reading back
++                    #  as NaT, as it does today; the offset is not recoverable
++                    #  here because the localizer refuses the input.
++                    if ival != NPY_NAT:
++                        check_nat_sentinel(iresult[i], &dts, creso)
+                     nsecs = (ival - iresult[i])
+                     if creso == NPY_FR_ns:
+                         nsecs = nsecs // 10**9
+@@ -604,6 +622,9 @@ def array_strptime(
+                 state.out_tzoffset_vals.add(nsecs)
+                 state.found_aware_str = True
+             else:
++                # GH#66510 nothing shifts this value afterwards, so a
++                #  rendering onto the sentinel is final
++                check_nat_sentinel(iresult[i], &dts, creso)
+                 state.found_naive_str = True
+                 tz = None
+                 state.out_tzoffset_vals.add("naive")
+diff --git a/pandas/_libs/tslibs/timestamps.pyx b/pandas/_libs/tslibs/timestamps.pyx
+index e72e4f5e57105..163a35072c631 100644
+--- a/pandas/_libs/tslibs/timestamps.pyx
++++ b/pandas/_libs/tslibs/timestamps.pyx
+@@ -85,6 +85,7 @@ from pandas._libs.tslibs.nattype cimport (
+ from pandas._libs.tslibs.np_datetime cimport (
+     NPY_DATETIMEUNIT,
+     NPY_FR_ns,
++    check_nat_sentinel,
+     cmp_dtstructs,
+     cmp_scalar,
+     convert_reso,
+@@ -3691,6 +3692,9 @@ default 'raise'
+                 raise OutOfBoundsDatetime(
+                     f"Out of bounds timestamp: {fmt} with frequency '{self.unit}'"
+                 ) from err
++            # GH#66510 the tz-aware legs below go through
++            #  convert_datetime_to_tsobject, which checks this for us
++            check_nat_sentinel(ts.value, &dts, creso)
+             ts.dts = dts
+             ts.creso = creso
+             ts.fold = fold

@@ -1,0 +1,99 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_62863_gpt-5.4-nano/mined/pandas-dev__pandas_62863.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 15953,
+    "output_tokens": 3321,
+    "cost_usd": 0.007343,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 62863,
+      "reference": "https://github.com/pandas-dev/pandas/pull/62863",
+      "buggy_commit": "65a2a749773a4ee11b07048143ab03bc4846fd72",
+      "fixed_commit": "88c276a489abd1742c84ca1cafedb1b9e93f083a",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 6935,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas rolling skew/kurt numerical accuracy bug (degenerate windows yield incorrect large values instead of NaN) by running the specific window skew/kurt tests on the buggy pandas revision vs the fixed one from PR#62863, under a controlled Python/numpy environment that matches the reported failure setup.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.13.9",
+          "pip_packages": [
+            "cython"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip",
+            "python -m pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "pandas is the target; use the buggy commit 65a2a749773a and then the PR-fixed commit (merge result of PR#62863)",
+            "numpy 2.3.4 is numerically relevant per the evidence (installed versions from issue#62946)",
+            "Python 3.13.9 is the recorded runtime for the observed behavior"
+          ],
+          "pinned_because_reason": "The evidence explicitly constrains pandas (3.0.0.dev0+2592...gea75dd7b3bf9b29837afc2bc0693b728382b80ef) and numpy 2.3.4; scipy is imported by the reproducer but no version constraint is documented, so pinning scipy is avoided unless needed by the test suite import path."
+        },
+        "test_command": "python -m pytest pandas/tests/window/test_rolling.py -k \"rolling_skew_kurt_floating_artifacts or rolling_skew_kurt_large_value_range\"",
+        "reproducing_test": "pandas/tests/window/test_rolling.py::{test_rolling_skew_kurt_floating_artifacts,test_rolling_skew_kurt_large_value_range}",
+        "success_criterion": "On the buggy revision (commit 65a2a749773a), tm.assert_series_equal in these tests fails because rolling skew/kurt over degenerate (near-uniform) 4-length windows returns incorrect finite values (not NaN), including potentially very large magnitudes; on the fixed revision (the PR#62863 result that includes the `elif m2 < dnobs * (1e-28 * mean * mean if fabs(mean) > 1e-14 else 1e-14): result = NaN` logic), the same assertions pass with NaNs in the expected positions.",
+        "numerical_probe": "The tests assert exact Series equality (no separate numeric inspection): for degenerate/near-degenerate windows, the expected behavior is that results become NaN instead of large incorrect finite values. The relevant internal decision is the m2-degeneracy threshold mentioned in the evidence.",
+        "input_output_examples": [
+          {
+            "input": "sr = Series([1/3, 4, 0, 0, 0, 0, 0]); r = sr.rolling(4); r.skew()",
+            "buggy_output": "Incorrect finite values instead of NaNs for the first three positions (evidence describes floating error making m2 != 0 leading to a very large wrong number).",
+            "expected_output": "Series([np.nan, np.nan, np.nan, 1.9619045191072484, 2.0, 0.0, 0.0])"
+          },
+          {
+            "input": "sr = Series([1/3, 4, 0, 0, 0, 0, 0]); r = sr.rolling(4); r.kurt()",
+            "buggy_output": "Incorrect finite values instead of NaNs for the first three positions (evidence rationale: degenerate windows treated as non-degenerate due to m2 != 0 from floating error).",
+            "expected_output": "Series([np.nan, np.nan, np.nan, 3.8636048803878786, 4.0, -3.0, -3.0])"
+          }
+        ],
+        "risks": [
+          "SciPy is imported in the reported reproducer but its version is not specified in the evidence; if these specific window tests don\u2019t require SciPy, omit it. If the test module imports SciPy at import-time, you\u2019ll need to install a compatible SciPy but the exact version is unknown.",
+          "The bug can be sensitive to the Cython/C++ build configuration and platform; ensure you build pandas from source for both buggy and fixed revisions (editable install shown). If the fixed logic is only exercised under certain compile flags/backends, transitions may not occur elsewhere.",
+          "InvCondTol / m2 threshold behavior is not fully specified in the evidence; if your local build or environment changes floating behavior (compiler/flags), the buggy revision might not hit the same degenerate-path instability every time.",
+          "If you cannot identify the exact fixed commit SHA for PR#62863 in your checkout workflow, you may need to test against the merge commit or the PR head after it was fixed; otherwise the test may fail or pass for unrelated reasons."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "The project test expectations in pandas/tests/window/test_rolling.py added/modified in the PR diff provided in the evidence (tm.assert_series_equal against Series literals).",
+          "why": "The test uses tm.assert_series_equal with explicit expected Series values including np.nan locations, so the oracle is exact (including NaN positions) rather than tolerance-based."
+        },
+        "fails_on_buggy": "The assertions in test_rolling_skew_kurt_floating_artifacts and/or test_rolling_skew_kurt_large_value_range fail: rolling skew/kurt for degenerate near-uniform windows produce finite incorrect values where the expected output has np.nan (the PR motivation states m2 floating error makes the degeneracy check miss and yields a very large incorrect number).",
+        "passes_on_fixed": "Assertions pass because the fixed code treats degenerate second central moment (m2) as degenerate using the threshold `m2 < dnobs * (1e-28 * mean * mean if fabs(mean) > 1e-14 else 1e-14)` and assigns `result = NaN`, matching the expected Series literals in the tests."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3568,
+        "output_tokens": 1264,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002294
+      },
+      "miner_usage": {
+        "input_tokens": 12385,
+        "output_tokens": 2057,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.005049,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

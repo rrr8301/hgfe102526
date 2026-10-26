@@ -1,0 +1,112 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/cvxpy_3313_claude-haiku-5-5/mined/cvxpy__cvxpy_3313.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 27248,
+    "output_tokens": 6803,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "cvxpy/cvxpy",
+      "pr_number": 3313,
+      "reference": "https://github.com/cvxpy/cvxpy/pull/3313",
+      "buggy_commit": "4a921b5329ecad7840aef010b14152653c3d7e6e",
+      "fixed_commit": "a52742bbbbf9167d7daec811b32810ca61c0d39e",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6317,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce cvxpy PR 3313 bug in cvxpy.utilities.linalg.sparse_cholesky: on rank-deficient PSD inputs QDLDL either raises 'not quasi-definite' (re-raised as 'Cholesky factorization failed' with no fallback) or silently returns tiny pivots with huge L entries that drop a non-negligible contribution, so L[p,:] @ L[p,:].T != A. The developer's three new tests in cvxpy/tests/test_linalg_utils.py exercise seeds 3, 16 and 128 (n=6, k=2) and the singular-leading-minor matrix [[1,1,0],[1,1,0],[0,0,1]]; on the buggy commit they should error or fail the gram check, and on the fixed commit (dense pivoted LDL fallback with residual check) they should pass. Environment: Python >= 3.11 with the documented dependency floors from the README (Clarabel>=0.5.0, OSQP>=1.0.0, SCS>=3.2.4.post1, NumPy>=2.0.0, SciPy>=1.13.0, highspy>=1.11.0); qdldl has no documented constraint, so I am choosing the latest qdldl release compatible with the installed OSQP 1.x, and flag that as my own choice rather than evidence-based. Install from the buggy commit in editable mode so the tested code is the buggy revision.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": ">=3.11",
+          "pip_packages": [
+            "cvxpy==1.6.0.dev0 (install from source at commit 4a921b5329ec, pip install -e .)",
+            "clarabel>=0.5.0",
+            "osqp>=1.0.0",
+            "scs>=3.2.4.post1",
+            "numpy>=2.0.0",
+            "scipy>=1.13.0",
+            "highspy>=1.11.0",
+            "qdldl (unpinned; latest release chosen by me, no documented constraint)",
+            "pytest"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "git checkout 4a921b5329ec",
+            "pip install -e .",
+            "pip install pytest"
+          ],
+          "pinned_because": [
+            "Clarabel, OSQP, SCS, NumPy, SciPy and highspy floors are explicitly documented in README.md and are numerically relevant, so they are pinned to their minimum documented versions for fidelity.",
+            "qdldl has no documented or era-table constraint; its version is unpinned and chosen by me, so the QDLDL failure path may differ from the one observed by the authors and must be checked."
+          ]
+        },
+        "test_command": "pytest cvxpy/tests/test_linalg_utils.py -k \"qdldl_throws_falls_back or qdldl_silent_drop_falls_back or singular_leading_minor_falls_back\" -v",
+        "reproducing_test": "cvxpy/tests/test_linalg_utils.py::TestLinalgUtils::test_qdldl_throws_falls_back_to_dense_ldl, test_qdldl_silent_drop_falls_back_to_dense_ldl, test_singular_leading_minor_falls_back_to_dense_ldl",
+        "success_criterion": "On buggy revision 4a921b5329ec the three new tests should fail: the seed 3/16 and singular-minor cases raise RuntimeError ('Cholesky factorization failed') from sparse_cholesky, and the seed 128 case either raises or fails check_gram because the dropped column makes L[p,:] @ L[p,:].T disagree with A. On the fixed revision (dense pivoted LDL fallback with residual check) all three tests should pass: sign == 1.0, L.shape[1] == 2 where specified, and check_gram(L[p,:], A) succeeds. The transition, not any printed number, is the success criterion.",
+        "numerical_probe": "python -c \"import numpy as np, scipy.sparse as sp, cvxpy.utilities.linalg as lau; np.random.seed(128); B=np.random.randn(6,2); A=sp.csc_array(B@B.T); print(lau.sparse_cholesky(A))\"",
+        "input_output_examples": [
+          {
+            "input": "A = [[1,1,0],[1,1,0],[0,0,1]] (sp.csc_array), sparse_cholesky(A)",
+            "buggy_output": "RuntimeError: Cholesky factorization failed (QDLDL 'not quasi-definite')",
+            "expected_output": "sign == 1.0, L.shape[1] == 2, L[p,:] @ L[p,:].T == A"
+          },
+          {
+            "input": "B = np.random.randn(6,2) with seed 3, A = sp.csc_array(B @ B.T)",
+            "buggy_output": "RuntimeError: Cholesky factorization failed (QDLDL 'not quasi-definite')",
+            "expected_output": "sign == 1.0, L.shape[1] == 2, gram product matches A"
+          },
+          {
+            "input": "B = np.random.randn(6,2) with seed 128, A = sp.csc_array(B @ B.T)",
+            "buggy_output": "silently returns tiny pivot D[j]=-3.6e-30 with |L|~1e13; L[p,:] @ L[p,:].T differs from A by about 0.02",
+            "expected_output": "sign == 1.0 and gram product matches A within the residual tolerance"
+          }
+        ],
+        "risks": [
+          "The silent-drop case (seed 128) depends on the specific qdldl version and its pivot behaviour; with an unpinned qdldl the tiny-pivot path may not be reached, so the test might pass on the buggy revision and not transition. Pin qdldl to the version used by the authors if it can be determined.",
+          "The bug is platform-sensitive in the sense that the random draws depend on NumPy's RNG; NumPy >= 2.0 with the legacy np.random.seed API should reproduce the same B, but a different NumPy major or a changed generator would alter the seeds' inputs.",
+          "The exact dtype and precision of the discrepancy are not stated; the failure may depend on float64 rounding, so a platform with different BLAS/LAPACK behaviour in scipy.linalg.ldl could shift the outcome.",
+          "The residual_tol threshold and the sym_tol/tol default are not numerically given in the evidence, so whether the seed 128 case is caught depends on values I cannot confirm.",
+          "No BLAS/LAPACK backend is documented, so the dense fallback's numerical behaviour is not pinned by the evidence.",
+          "The seed 128 failure is described as producing tiny pivots and |L|~1e13; if the environment uses a different qdldl or a different float path, that exact pathology may not appear, and the test may pass trivially or fail for a different reason."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "residual_tol = sqrt(tol) * (A_norm + 1.0) on Frobenius norm, with A_norm = la.norm(A.data); numeric tol not stated in evidence",
+          "reference_source": "check_gram helper in cvxpy/tests/test_linalg_utils.py comparing L[p,:] @ L[p,:].T against sign*A",
+          "why": "The gram-product check is the developer's own oracle and the residual threshold depends on A's norm, which the evidence describes but does not quantify exactly."
+        },
+        "fails_on_buggy": "On buggy 4a921b5329ec, seeds 3 and 16 and the singular-minor matrix hit QDLDL's 'not quasi-definite' error, which the old code re-raises as RuntimeError('Cholesky factorization failed') with no fallback, so the assertion never completes; seed 128 returns a factorization whose dropped column contributes about 0.02 to the gram product, so check_gram's Frobenius comparison fails.",
+        "passes_on_fixed": "On the fixed revision the residual check triggers _dense_ldl_factor for the failing inputs, returning sign 1.0 and a rank-2 L whose gram product matches A, so sign, shape and check_gram assertions all succeed."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5594,
+        "output_tokens": 2646,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 21654,
+        "output_tokens": 4157,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

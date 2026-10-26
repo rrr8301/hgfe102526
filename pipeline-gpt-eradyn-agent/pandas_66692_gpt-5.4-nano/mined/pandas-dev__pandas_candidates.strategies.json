@@ -1,0 +1,99 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_66692_gpt-5.4-nano/mined/pandas-dev__pandas_66692.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 15369,
+    "output_tokens": 3713,
+    "cost_usd": 0.007715,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66692,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66692",
+      "buggy_commit": "44ae06694d5a11b8876f2925ea81d68aedb64661",
+      "fixed_commit": "fdf42cdf8834a95778df05af88c92eb7e3a4cdfd",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 8158,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#66692/related GH#66552 correctness bug by running pandas\u2019 Timedelta (Timedelta-like) + datetime64-ndarray out-of-bounds cases. On the buggy revision, the dt64 ndarray path wraps or returns NaT for the iNaT/NaT-sentinel boundary instead of raising OutOfBoundsDatetime; the fixed revision routes through _addsub_datetime64_array to raise like the scalar Timestamp path, so the added tests pass.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.10 or 3.11 (pick one; 3.12+ may be fine but avoid adding extra variables)",
+          "pip_packages": [
+            "numpy",
+            "python-dateutil",
+            "cython",
+            "pytest",
+            "pytz (optional; not required by the provided context)"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "# In a fresh venv\npython -m venv .venv\nsource .venv/bin/activate\npython -m pip install -U pip\n\n# Install build deps for pandas-from-source (context requires Cython)\npip install cython numpy python-dateutil pytest\n\n# Checkout buggy revision\ngit clone https://github.com/pandas-dev/pandas.git\ncd pandas\ngit checkout 44ae06694d5a\n\n# Build/install editable without build isolation (matches context style)\npython -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true\n"
+          ],
+          "pinned_because": [
+            "Pandas source must be installed from the specific buggy commit (44ae06694d5a) and later from the fixed commit (not provided in the evidence, so you must checkout the PR merge result that contains the helper routing change described in the oracle clues).",
+            "Cython is required to build pandas from source per provided README dependency context."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/scalar/timedelta/test_arithmetic.py -k \"test_td_add_sub_dt64_ndarray_out_of_bounds or test_td_add_sub_dt64_ndarray_out_of_bounds_message_unit or test_td_add_sub_dt64_ndarray_overflow_in_cast\"",
+        "reproducing_test": "The tests added in the provided diff in pandas/tests/scalar/timedelta/test_arithmetic.py:\n- test_td_add_sub_dt64_ndarray_out_of_bounds (parametrized by unit)\n- test_td_add_sub_dt64_ndarray_out_of_bounds_message_unit\n- test_td_add_sub_dt64_ndarray_overflow_in_cast",
+        "success_criterion": "Run the specified pytest selection against the buggy revision (44ae06694d5a): it should FAIL because the out-of-bounds cases do not raise OutOfBoundsDatetime (they instead wrap or return datetime64 NaT/sentinel). Then checkout the fixed revision containing the routing change to _addsub_datetime64_array (per oracle clues from GH#66552/GH#66692), rebuild/reinstall pandas, and rerun the same test command: it should PASS because those operations now raise OutOfBoundsDatetime/OutOfBoundsTimedelta with the expected messages.",
+        "numerical_probe": "Not a standalone benchmarked numeric check; the probe is whether the arithmetic triggers raising vs returning a datetime64 array with NaT/wrapped content. The test asserts only on exception type/message, not on numeric values.",
+        "input_output_examples": [
+          {
+            "input": "td = Timedelta(1, \"ns\"); other = np.array([pd.Timestamp.max.value], \"M8[ns]\"); expression: td + other",
+            "buggy_output": "array([\"NaT\"], dtype=\"datetime64[ns]\")",
+            "expected_output": "OutOfBoundsDatetime is raised (matching message f\"Out of bounds nanosecond timestamp\")"
+          },
+          {
+            "input": "td = Timedelta(1, \"ns\"); other = np.array([2**40], \"M8[s]\"); expression: td + other",
+            "buggy_output": "array([\"1738-11-23T02:02:33.426903041\"], dtype=\"datetime64[ns]\")",
+            "expected_output": "OutOfBoundsDatetime is raised (message match: \"Out of bounds nanosecond timestamp: 36812-02-20\")"
+          }
+        ],
+        "risks": [
+          "The evidence does not provide the exact fixed commit hash; you must checkout the revision that includes the change described in the oracle clues (routing dt64 ndarray timedeltalike arithmetic through _addsub_datetime64_array to raise instead of letting numpy wrap).",
+          "If your environment uses a different Python/NumPy version than pandas CI expectations, the failure mode might differ (e.g., how numpy handles datetime64 overflow/casting). Prefer the same NumPy major/minor used by CI for the pandas version under test (not specified in evidence).",
+          "The behavior is specific to datetime64 ndarray arithmetic through pandas\u2019 dt64 branch (_binary_op_method_timedeltalike). If pandas falls back to a different implementation due to dtype quirks, the test selection may not exercise the buggy code path; ensure you use numpy arrays with the exact dtype strings (M8[{unit}]).",
+          "Platform/toolchain differences (32-bit, unusual datetime64 behavior, or endianness issues) could change whether wrap occurs vs overflow/raising; the provided tests aim to cover byte order as well (there is a byteswapped test), but your minimal repro focuses on the out-of-bounds raising tests."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "Oracle clues from the provided context: PR change notes for GH#66552/GH#66692 that replace numpy-wrapping dt64 ndarray path with _addsub_datetime64_array, which raises OutOfBoundsDatetime instead of returning NaT/sentinel on the boundary and instead of wrapping on int64 overflow or promotion to finer resolution.",
+          "why": "The added tests assert exception type and message. Success requires that buggy revision does not raise while fixed revision does raise with the message naming the promoted resolution unit."
+        },
+        "fails_on_buggy": "On revision 44ae06694d5a, at least one of the selected tests should FAIL because the code returns a numpy/pandas datetime64 array containing NaT (or a wrapped date) rather than raising OutOfBoundsDatetime with match=msg (e.g., \"Out of bounds nanosecond timestamp\"). The failure is observed as pytest expecting OutOfBoundsDatetime but not getting it (or getting a different exception).",
+        "passes_on_fixed": "On the fixed revision that includes the _addsub_datetime64_array routing change, the same selected tests raise OutOfBoundsDatetime/OutOfBoundsTimedelta with the expected message, so the pytest selection passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 4882,
+        "output_tokens": 1374,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002694
+      },
+      "miner_usage": {
+        "input_tokens": 10487,
+        "output_tokens": 2339,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.005020999999999999,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

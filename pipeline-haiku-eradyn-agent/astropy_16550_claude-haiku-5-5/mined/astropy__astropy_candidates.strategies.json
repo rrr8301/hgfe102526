@@ -1,0 +1,113 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/astropy_16550_claude-haiku-5-5/mined/astropy__astropy_16550.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 16315,
+    "output_tokens": 6952,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "astropy/astropy",
+      "pr_number": 16550,
+      "reference": "https://github.com/astropy/astropy/pull/16550",
+      "buggy_commit": "e85ba377e915ce14e78a535527f9d93957ec57b7",
+      "fixed_commit": "9ff62a8a258d3000be48c6741f1fc9de6063e178",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 4659,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce astropy PR 16550 by building astropy at the buggy commit e85ba377e915 and running the developer's test_integer_blank_support. On the buggy revision the integer compressed image is not converted to float with NaN at blank pixels, so the assert_equal against the float32 NaN reference fails (or the expected warning/read path misbehaves). On the fixed revision the test passes. The environment is a choice: the evidence gives numpy as unbounded with no documented or era constraint, so this plan pins numpy 1.26 and Python 3.11 as a reasonable era guess, not as evidence.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.11",
+          "pip_packages": [
+            "numpy==1.26.4",
+            "cython<3.1",
+            "extension-helpers",
+            "setuptools_scm",
+            "wheel",
+            "pyerfa",
+            "pyyaml",
+            "packaging",
+            "astropy-iers-data",
+            "pytest",
+            "pytest-doctestplus"
+          ],
+          "system_packages": [
+            "gcc",
+            "g++",
+            "make",
+            "git",
+            "libcfitsio is not required because astropy bundles cfitsio sources in its compressed extension build"
+          ],
+          "build_commands": [
+            "git checkout e85ba377e915",
+            "git apply reproducing_test.patch  # apply the developer test diff shown in the task",
+            "python -m pip install --upgrade pip",
+            "python -m pip install numpy==1.26.4 cython<3.1 extension-helpers setuptools_scm wheel pyerfa pyyaml packaging astropy-iers-data pytest pytest-doctestplus",
+            "python -m pip install --no-build-isolation -e ."
+          ],
+          "pinned_because": [
+            "numpy 1.26.4 is a strategy choice: the evidence lists numpy as unbounded with documented_constraint null and era_ceiling null, so no documented pin exists; 1.26 is chosen as the release line contemporaneous with a early-2024 astropy PR, and avoids NumPy 2 scalar-promotion changes that could alter np.where and np.float32(np.nan) behaviour",
+            "Python 3.11 is an assumption (not stated in evidence) chosen as a version supported by the astropy 6.x line of that era",
+            "Cython below 3.1 is a build-compatibility choice for astropy's Cython extensions (the _compression and _codecs modules), not a documented constraint from the evidence"
+          ]
+        },
+        "test_command": "python -m pytest astropy/io/fits/hdu/compressed/tests/test_tiled_compression.py::test_integer_blank_support -p no:cacheprovider -v",
+        "reproducing_test": "astropy/io/fits/hdu/compressed/tests/test_tiled_compression.py::test_integer_blank_support: builds a 64x64 int16 subset of m13.fits with blank=-16384 and three NaN positions, writes RICE_1 CompImageHDU files with BLANK, ZBLANK, and ZBLANK-column variants, then reads them back and asserts equality with a float32 NaN reference, including a pytest.warns check for the default -32768 BLANK warning.",
+        "success_criterion": "On the buggy revision e85ba377e915 the test FAILS: reading the compressed int16 HDUs does not yield a float image with NaN at blank pixels (the blank test runs after or without the required conversion), so assert_equal against the reference fails or the read raises, and the warning/value checks are not met. On the fixed revision (the PR 16550 merge, with the same test file) the test PASSES: all four files read to float32 arrays equal to the reference including NaN positions, the header BLANK equals -16384, and the ZBLANK-column file emits the AstropyUserWarning and yields BLANK -32768.",
+        "numerical_probe": "Read the RICE_1 compressed file written with BLANK=-16384 and print hdul[1].data.dtype and the count of NaN values; expected float32 with 3 NaNs at [1,2,3],[1,2,3] of the 64x64 subset, buggy revision expected to give integer data or an exception instead.",
+        "input_output_examples": [
+          {
+            "input": "int16 image with BLANK = -32768 stored in compressed HDU",
+            "buggy_output": "blank comparison fails after conversion to uint16; spurious exception raised on read",
+            "expected_output": "float image with NaN at blank pixels"
+          }
+        ],
+        "risks": [
+          "The fail-on-buggy transition depends on numpy version: NumPy 2 promotion rules could change whether the buggy np.where path raises or silently returns wrong values, so the buggy failure mode may differ across numpy versions; the chosen 1.26.4 is an assumption.",
+          "The test reads canonical data m13.fits via the canonical_data_base_path fixture; if that file is not present in the checkout it must be fetched (possibly needing --remote-data), and the test will error instead of transitioning.",
+          "The described bug mentions unsigned (uint16/uint32/uint64) conversion paths, but the test itself uses int16 data without BZERO/BSCALE; the transition is driven by the NaN-without-BZERO/BSCALE path and the ZBLANK handling, not by a platform-specific uint path.",
+          "No evidence shows the behaviour depends on architecture, sanitiser, or threading; it is expected to reproduce on a standard x86_64 Linux build, and a build without the C extensions would not reproduce it.",
+          "Test relies on fitsio-style parametrisation only in other tests; if conftest imports optional fitsio, that is not needed for this test.",
+          "Special values are NaN only as blanks; no evidence about infinities or signed zeros, so the transition should not be expected from those."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "test code: reference = data.astype(np.float32) with reference[[1,2,3],[1,2,3]] = np.nan",
+          "why": "Source is an integer image with no BZERO/BSCALE scaling, so values are exactly representable and assert_equal (which treats NaN positions as equal) is an exact check."
+        },
+        "fails_on_buggy": "On e85ba377e915 the int16 compressed image with BLANK/ZBLANK is not converted to float32 with NaN at blanks; assert_equal against the NaN reference sees integer values (or the read raises) at the blank positions, so the assertion fails.",
+        "passes_on_fixed": "On the fixed revision blanks are detected before conversion and replaced with NaN, so each of the four files reads as float32 equal to the reference, the header BLANK equals -16384, and the warning-case file yields BLANK -32768 with the expected AstropyUserWarning."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5577,
+        "output_tokens": 4475,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 10738,
+        "output_tokens": 2477,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

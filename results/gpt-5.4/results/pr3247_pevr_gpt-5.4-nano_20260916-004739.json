@@ -1,0 +1,1095 @@
+[
+  {
+    "slug": "cvxpy_3247",
+    "bug_type": "correctness",
+    "image": "python:3.12",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/2 reported example(s))",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "absent",
+    "examples_verdict": "not_reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import numpy as np\nimport cvxpy as cp\n\nX = cp.Variable((3, 2))\nP = cp.Parameter((3, 3), PSD=True)\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)\", \"cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)\", [], \"(np.dot(P_inv + np.transpose(P_inv), X)).ravel(order='F')\"], [\"MultiVarAtomConfig(\\\"matrix_frac_matrix_x\\\", lambda x, P: cp.matrix_frac(x, P), [(\\\"unrestricted\\\", (3,2)), (\\\"psd\\\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py\", \"MultiVarAtomConfig(\\\"matrix_frac_matrix_x\\\", lambda x, P: cp.matrix_frac(x, P), [(\\\"unrestricted\\\", (3,2)), (\\\"psd\\\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py\", [], \"derivative check passes (error ~1.85e-08) once DX is raveled column-major without the trailing transpose\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nimport cvxpy as cp\n\n# Probe 1: cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD,\n# checked by finite-difference gradient verification (PR#3247)\nname1 = 'cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)'\ntry:\n    m, n = 3, 2\n    Pn = 3\n    X = cp.Variable((m, n))  # unrestricted by default\n    P = cp.Variable((Pn, Pn), PSD=True)\n\n    # Use a small epsilon-bounded random initial values for determinism\n    X0 = np.random.RandomState(0).randn(m, n)\n    # Make a PSD P0\n    A = np.random.RandomState(1).randn(Pn, Pn)\n    P0 = A @ A.T + np.eye(Pn)\n\n    f = cp.matrix_frac(X, P)\n\n    # Finite-difference gradient verification.\n    # We verify gradients of sum(f) w.r.t. X and P.\n    # Use numeric gradients via central differences.\n    def eval_expr():\n        return np.array(f.value) if f.value is not None else None\n\n    # Set up a minimal problem to get f.value\n    prob = cp.Problem(cp.Minimize(cp.sum(f)), [])\n\n    # Helper to compute numeric gradient for a variable array\n    def numeric_grad(var_value, assign_to, eps=1e-6):\n        grad = np.zeros_like(var_value, dtype=float)\n        it = np.nditer(var_value, flags=['multi_index'], op_flags=['readwrite'])\n        while not it.finished:\n            idx = it.multi_index\n            old = var_value[idx]\n            var_value[idx] = old + eps\n            assign_to(var_value)\n            prob.solve(solver=cp.SCS, warm_start=False, verbose=False)\n            f_plus = float(cp.sum(f).value)\n            var_value[idx] = old - eps\n            assign_to(var_value)\n            prob.solve(solver=cp.SCS, warm_start=False, verbose=False)\n            f_minus = float(cp.sum(f).value)\n            var_value[idx] = old\n            grad[idx] = (f_plus - f_minus) / (2 * eps)\n            it.iternext()\n        return grad\n\n    # assign_to closures\n    def assign_X(val):\n        X.value = val\n    def assign_P(val):\n        # ensure symmetric PSD\n        P.value = (val + val.T) / 2\n\n    # initial assignment\n    X.value = X0\n    P.value = P0\n\n    # Solve once to populate f.value\n    prob.solve(solver=cp.SCS, warm_start=False, verbose=False)\n    analytic_sum = float(cp.sum(f).value)\n\n    # Compute numeric gradients\n    num_grad_X = numeric_grad(X0.copy(), assign_X)\n    num_grad_P = numeric_grad(P0.copy(), assign_P)\n\n    # Compute analytic gradients from CVXPY (via DPP / grad of scalar objective)\n    # We differentiate objective w.r.t. variable values using cvxpy's backward pass.\n    obj = cp.sum(f)\n    # Derivatives are available through prob.gradients\n    grads = prob.gradients[obj]\n    grad_X = np.array(grads[X])\n    grad_P = np.array(grads[P])\n\n    # Compare\n    rel_err_X = np.max(np.abs(num_grad_X - grad_X) / (1 + np.abs(num_grad_X)))\n    rel_err_P = np.max(np.abs(num_grad_P - grad_P) / (1 + np.abs(num_grad_P)))\n\n    # record EXACT requested value(s) asked about: returned array, flag, coordinate.\n    # Here we record the computed relative errors.\n    probe(name1, {'rel_err_X': float(rel_err_X), 'rel_err_P': float(rel_err_P), 'obj_value': float(analytic_sum)})\nexcept Exception as e:\n    probe_exception(name1, e)\n\n# Probe 2: MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P),\n# [(\n#   \"unrestricted\", (3,2)\n# ), (\"psd\", (3,3))]) added to ATOM_CONFIGS list in cvxpy/tests/test_grad.py\nname2 = 'MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py'\ntry:\n    # Bind the scenario's config and run a gradient-check style function if available.\n    # We'll just construct the config object and verify the callable works on representative variables.\n    try:\n        from cvxpy.tests.test_grad import MultiVarAtomConfig, ATOM_CONFIGS\n    except Exception as e:\n        # If the symbols aren't available, we still construct what we can.\n        MultiVarAtomConfig = None\n        ATOM_CONFIGS = None\n\n    cfg_callable = lambda x, P: cp.matrix_frac(x, P)\n\n    if MultiVarAtomConfig is not None:\n        cfg = MultiVarAtomConfig(\n            'matrix_frac_matrix_x',\n            cfg_callable,\n            [('unrestricted', (3, 2)), ('psd', (3, 3))]\n        )\n        # Ensure it is in the list if possible\n        if ATOM_CONFIGS is not None and cfg not in ATOM_CONFIGS:\n            # Create a comparable check by name\n            in_list = any(getattr(c, 'name', None) == 'matrix_frac_matrix_x' for c in ATOM_CONFIGS)\n        else:\n            in_list = True\n\n        # Evaluate the config callable with concrete variable shapes\n        x_var = cp.Variable((3, 2))\n        P_var = cp.Variable((3, 3), PSD=True)\n        expr = cfg_callable(x_var, P_var)\n        # record returned expression shape and in_list flag\n        probe(name2, {'in_list': bool(in_list), 'expr_shape': getattr(expr, 'shape', None)})\n    else:\n        # Cannot construct config; just verify callable evaluation shape with variables.\n        x_var = cp.Variable((3, 2))\n        P_var = cp.Variable((3, 3), PSD=True)\n        expr = cfg_callable(x_var, P_var)\n        probe(name2, {'in_list': None, 'expr_shape': getattr(expr, 'shape', None)})\nexcept Exception as e:\n    probe_exception(name2, e)"
+      },
+      "fixed": {
+        "reported_examples": "import numpy as np\nimport cvxpy as cp\n\nX = cp.Variable((3, 2))\nP = cp.Parameter((3, 3), PSD=True)\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)\", \"cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)\", [], \"(np.dot(P_inv + np.transpose(P_inv), X)).ravel(order='F')\"], [\"MultiVarAtomConfig(\\\"matrix_frac_matrix_x\\\", lambda x, P: cp.matrix_frac(x, P), [(\\\"unrestricted\\\", (3,2)), (\\\"psd\\\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py\", \"MultiVarAtomConfig(\\\"matrix_frac_matrix_x\\\", lambda x, P: cp.matrix_frac(x, P), [(\\\"unrestricted\\\", (3,2)), (\\\"psd\\\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py\", [], \"derivative check passes (error ~1.85e-08) once DX is raveled column-major without the trailing transpose\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nimport cvxpy as cp\n\n# Probe 1: cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD,\n# checked by finite-difference gradient verification (PR#3247)\nname1 = 'cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)'\ntry:\n    m, n = 3, 2\n    Pn = 3\n    X = cp.Variable((m, n))  # unrestricted by default\n    P = cp.Variable((Pn, Pn), PSD=True)\n\n    # Use a small epsilon-bounded random initial values for determinism\n    X0 = np.random.RandomState(0).randn(m, n)\n    # Make a PSD P0\n    A = np.random.RandomState(1).randn(Pn, Pn)\n    P0 = A @ A.T + np.eye(Pn)\n\n    f = cp.matrix_frac(X, P)\n\n    # Finite-difference gradient verification.\n    # We verify gradients of sum(f) w.r.t. X and P.\n    # Use numeric gradients via central differences.\n    def eval_expr():\n        return np.array(f.value) if f.value is not None else None\n\n    # Set up a minimal problem to get f.value\n    prob = cp.Problem(cp.Minimize(cp.sum(f)), [])\n\n    # Helper to compute numeric gradient for a variable array\n    def numeric_grad(var_value, assign_to, eps=1e-6):\n        grad = np.zeros_like(var_value, dtype=float)\n        it = np.nditer(var_value, flags=['multi_index'], op_flags=['readwrite'])\n        while not it.finished:\n            idx = it.multi_index\n            old = var_value[idx]\n            var_value[idx] = old + eps\n            assign_to(var_value)\n            prob.solve(solver=cp.SCS, warm_start=False, verbose=False)\n            f_plus = float(cp.sum(f).value)\n            var_value[idx] = old - eps\n            assign_to(var_value)\n            prob.solve(solver=cp.SCS, warm_start=False, verbose=False)\n            f_minus = float(cp.sum(f).value)\n            var_value[idx] = old\n            grad[idx] = (f_plus - f_minus) / (2 * eps)\n            it.iternext()\n        return grad\n\n    # assign_to closures\n    def assign_X(val):\n        X.value = val\n    def assign_P(val):\n        # ensure symmetric PSD\n        P.value = (val + val.T) / 2\n\n    # initial assignment\n    X.value = X0\n    P.value = P0\n\n    # Solve once to populate f.value\n    prob.solve(solver=cp.SCS, warm_start=False, verbose=False)\n    analytic_sum = float(cp.sum(f).value)\n\n    # Compute numeric gradients\n    num_grad_X = numeric_grad(X0.copy(), assign_X)\n    num_grad_P = numeric_grad(P0.copy(), assign_P)\n\n    # Compute analytic gradients from CVXPY (via DPP / grad of scalar objective)\n    # We differentiate objective w.r.t. variable values using cvxpy's backward pass.\n    obj = cp.sum(f)\n    # Derivatives are available through prob.gradients\n    grads = prob.gradients[obj]\n    grad_X = np.array(grads[X])\n    grad_P = np.array(grads[P])\n\n    # Compare\n    rel_err_X = np.max(np.abs(num_grad_X - grad_X) / (1 + np.abs(num_grad_X)))\n    rel_err_P = np.max(np.abs(num_grad_P - grad_P) / (1 + np.abs(num_grad_P)))\n\n    # record EXACT requested value(s) asked about: returned array, flag, coordinate.\n    # Here we record the computed relative errors.\n    probe(name1, {'rel_err_X': float(rel_err_X), 'rel_err_P': float(rel_err_P), 'obj_value': float(analytic_sum)})\nexcept Exception as e:\n    probe_exception(name1, e)\n\n# Probe 2: MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P),\n# [(\n#   \"unrestricted\", (3,2)\n# ), (\"psd\", (3,3))]) added to ATOM_CONFIGS list in cvxpy/tests/test_grad.py\nname2 = 'MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py'\ntry:\n    # Bind the scenario's config and run a gradient-check style function if available.\n    # We'll just construct the config object and verify the callable works on representative variables.\n    try:\n        from cvxpy.tests.test_grad import MultiVarAtomConfig, ATOM_CONFIGS\n    except Exception as e:\n        # If the symbols aren't available, we still construct what we can.\n        MultiVarAtomConfig = None\n        ATOM_CONFIGS = None\n\n    cfg_callable = lambda x, P: cp.matrix_frac(x, P)\n\n    if MultiVarAtomConfig is not None:\n        cfg = MultiVarAtomConfig(\n            'matrix_frac_matrix_x',\n            cfg_callable,\n            [('unrestricted', (3, 2)), ('psd', (3, 3))]\n        )\n        # Ensure it is in the list if possible\n        if ATOM_CONFIGS is not None and cfg not in ATOM_CONFIGS:\n            # Create a comparable check by name\n            in_list = any(getattr(c, 'name', None) == 'matrix_frac_matrix_x' for c in ATOM_CONFIGS)\n        else:\n            in_list = True\n\n        # Evaluate the config callable with concrete variable shapes\n        x_var = cp.Variable((3, 2))\n        P_var = cp.Variable((3, 3), PSD=True)\n        expr = cfg_callable(x_var, P_var)\n        # record returned expression shape and in_list flag\n        probe(name2, {'in_list': bool(in_list), 'expr_shape': getattr(expr, 'shape', None)})\n    else:\n        # Cannot construct config; just verify callable evaluation shape with variables.\n        x_var = cp.Variable((3, 2))\n        P_var = cp.Variable((3, 3), PSD=True)\n        expr = cfg_callable(x_var, P_var)\n        probe(name2, {'in_list': None, 'expr_shape': getattr(expr, 'shape', None)})\nexcept Exception as e:\n    probe_exception(name2, e)"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/2 reported example(s))",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "absent",
+      "examples_verdict": "not_reproduced",
+      "success_criterion": "On the buggy commit b5a20484, pytest cvxpy/tests/test_grad.py with the PR's added matrix_frac_matrix_x config present FAILS in the matrix_frac gradient check with an error of order ~0.97 (not a tolerance-level ~1e-8); the same test would pass once DX.T.ravel(order='F') is replaced by DX.ravel(order='F').",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 1,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 3,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)": {
+                "raised": "LinAlgError",
+                "message": "Singular matrix",
+                "origin": "/workspace/buggy/.venv/lib/python3.12/site-packages/numpy/linalg/_linalg.py",
+                "in_repository": true
+              },
+              "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py": {
+                "in_list": null,
+                "expr_shape": []
+              }
+            },
+            "fixed_values": {
+              "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)": {
+                "raised": "LinAlgError",
+                "message": "Singular matrix",
+                "origin": "/workspace/fixed/.venv/lib/python3.12/site-packages/numpy/linalg/_linalg.py",
+                "in_repository": true
+              },
+              "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py": {
+                "in_list": null,
+                "expr_shape": []
+              }
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)",
+            "expected_output": "gradient error ~1.85e-08; derivative computed as DX = (np.dot(P_inv + np.transpose(P_inv), X)).ravel(order='F')",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "gradient error ~0.97 (catastrophic); derivative computed as DX = (np.dot(P_inv + np.transpose(P_inv), X)).T.ravel(order='F')",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)",
+              "observed": {
+                "raised": "LinAlgError",
+                "message": "Singular matrix",
+                "origin": "/workspace/buggy/.venv/lib/python3.12/site-packages/numpy/linalg/_linalg.py",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)",
+              "observed": {
+                "raised": "LinAlgError",
+                "message": "Singular matrix",
+                "origin": "/workspace/fixed/.venv/lib/python3.12/site-packages/numpy/linalg/_linalg.py",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py",
+            "expected_output": "derivative check passes (error ~1.85e-08) once DX is raveled column-major without the trailing transpose",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "derivative/forward gradient check fails for the matrix-X case (error ~0.97) because _grad transposes DX before column-major ravel",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py",
+              "observed": {
+                "in_list": null,
+                "expr_shape": []
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py",
+              "observed": {
+                "in_list": null,
+                "expr_shape": []
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 6,
+            "n_failed": 2,
+            "ran_test": true,
+            "failed_setup_or_build": [
+              "cd /workspace/buggy && git rev-parse HEAD"
+            ]
+          },
+          "fixed": {
+            "n_commands": 4,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-03-20T22:35:16-04:00",
+        "fixed_commit_date": "2026-03-21T14:12:31-04:00",
+        "reproducing_test_present": true,
+        "build_detected": "build-requires:pybind11|setup.py:ext_modules",
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-03-21T14:12:31-04:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.12/site-packages/cvxpy/__init__.py",
+            "build_requires": [
+              "scipy >= 1.13.0",
+              "setuptools >= 68.1.0",
+              "wheel",
+              "pybind11"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.3",
+              "pandas": "3.0.1",
+              "matplotlib": "3.10.8",
+              "pyparsing": "3.3.2",
+              "scipy": "1.17.1",
+              "setuptools": "82.0.1",
+              "wheel": "0.46.3",
+              "pybind11": "3.0.2"
+            },
+            "repinned_for_build": {},
+            "test_extras": [
+              "pytest",
+              "hypothesis"
+            ],
+            "output": "--- end of build log ---\nloading joblib-1.6.0-py3-none-any.whl (306 kB)\nDownloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nDownloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.9.0-cp312-cp312-linux_x86_64.whl size=1544678 sha256=ecde026e6742e6e470a0c90ad3fbcd09085245abfd23a1876215367e09b13063\n  Stored in directory: /tmp/pip-ephem-wheel-cache-7s0xtdp6/wheels/7a/8e/f6/6361a05021faea16c41b60355501cb8542c208befbd0798736\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.9.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 scs-3.3.1 sparsediffpy-0.1.3\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.12/site-packages/cvxpy/__init__.py",
+            "build_requires": [
+              "scipy >= 1.13.0",
+              "setuptools >= 68.1.0",
+              "wheel",
+              "pybind11"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.3",
+              "pandas": "3.0.1",
+              "matplotlib": "3.10.8",
+              "pyparsing": "3.3.2",
+              "scipy": "1.17.1",
+              "setuptools": "82.0.1",
+              "wheel": "0.46.3",
+              "pybind11": "3.0.2"
+            },
+            "repinned_for_build": {},
+            "test_extras": [
+              "pytest",
+              "hypothesis"
+            ],
+            "output": "--- end of build log ---\nloading joblib-1.6.0-py3-none-any.whl (306 kB)\nDownloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nDownloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.9.0-cp312-cp312-linux_x86_64.whl size=1544672 sha256=7c8683abee2b23a7d5f10e13c577bf8291b014862c5964ffb4748a80c278bf68\n  Stored in directory: /tmp/pip-ephem-wheel-cache-x5o6awop/wheels/71/38/20/6358bc83d061b0e5b7f2ca1588a2c1d520ab055cf84e576666\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.9.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 scs-3.3.1 sparsediffpy-0.1.3\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 1,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 3,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 2,
+        "verdict": "absent",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)": {
+                "raised": "LinAlgError",
+                "message": "Singular matrix",
+                "origin": "/workspace/buggy/.venv/lib/python3.12/site-packages/numpy/linalg/_linalg.py",
+                "in_repository": true
+              },
+              "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py": {
+                "in_list": null,
+                "expr_shape": []
+              }
+            },
+            "fixed_values": {
+              "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)": {
+                "raised": "LinAlgError",
+                "message": "Singular matrix",
+                "origin": "/workspace/fixed/.venv/lib/python3.12/site-packages/numpy/linalg/_linalg.py",
+                "in_repository": true
+              },
+              "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py": {
+                "in_list": null,
+                "expr_shape": []
+              }
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 2,
+        "n_judged": 2,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 0,
+        "n_contested": 0,
+        "unobserved": [],
+        "verdict": "not_reproduced",
+        "examples": [
+          {
+            "input": "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)",
+            "expected_output": "gradient error ~1.85e-08; derivative computed as DX = (np.dot(P_inv + np.transpose(P_inv), X)).ravel(order='F')",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "gradient error ~0.97 (catastrophic); derivative computed as DX = (np.dot(P_inv + np.transpose(P_inv), X)).T.ravel(order='F')",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)",
+              "observed": {
+                "raised": "LinAlgError",
+                "message": "Singular matrix",
+                "origin": "/workspace/buggy/.venv/lib/python3.12/site-packages/numpy/linalg/_linalg.py",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "cp.matrix_frac(X, P) with X shape (3,2) unrestricted and P shape (3,3) PSD, checked by finite-difference gradient verification (PR#3247)",
+              "observed": {
+                "raised": "LinAlgError",
+                "message": "Singular matrix",
+                "origin": "/workspace/fixed/.venv/lib/python3.12/site-packages/numpy/linalg/_linalg.py",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py",
+            "expected_output": "derivative check passes (error ~1.85e-08) once DX is raveled column-major without the trailing transpose",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "derivative/forward gradient check fails for the matrix-X case (error ~0.97) because _grad transposes DX before column-major ravel",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py",
+              "observed": {
+                "in_list": null,
+                "expr_shape": []
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "MultiVarAtomConfig(\"matrix_frac_matrix_x\", lambda x, P: cp.matrix_frac(x, P), [(\"unrestricted\", (3,2)), (\"psd\", (3,3))]) added to the ATOM_CONFIGS list in cvxpy/tests/test_grad.py",
+              "observed": {
+                "in_list": null,
+                "expr_shape": []
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 6,
+          "n_failed": 2,
+          "ran_test": true,
+          "failed_setup_or_build": [
+            "cd /workspace/buggy && git rev-parse HEAD"
+          ]
+        },
+        "fixed": {
+          "n_commands": 4,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "On the buggy commit b5a20484, pytest cvxpy/tests/test_grad.py with the PR's added matrix_frac_matrix_x config present FAILS in the matrix_frac gradient check with an error of order ~0.97 (not a tolerance-level ~1e-8); the same test would pass once DX.T.ravel(order='F') is replaced by DX.ravel(order='F')."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-03-20T22:35:16-04:00",
+      "fixed_commit_date": "2026-03-21T14:12:31-04:00",
+      "reproducing_test_present": true,
+      "build_detected": "build-requires:pybind11|setup.py:ext_modules",
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-03-21T14:12:31-04:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.12/site-packages/cvxpy/__init__.py",
+          "build_requires": [
+            "scipy >= 1.13.0",
+            "setuptools >= 68.1.0",
+            "wheel",
+            "pybind11"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.3",
+            "pandas": "3.0.1",
+            "matplotlib": "3.10.8",
+            "pyparsing": "3.3.2",
+            "scipy": "1.17.1",
+            "setuptools": "82.0.1",
+            "wheel": "0.46.3",
+            "pybind11": "3.0.2"
+          },
+          "repinned_for_build": {},
+          "test_extras": [
+            "pytest",
+            "hypothesis"
+          ],
+          "output": "--- end of build log ---\nloading joblib-1.6.0-py3-none-any.whl (306 kB)\nDownloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nDownloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.9.0-cp312-cp312-linux_x86_64.whl size=1544678 sha256=ecde026e6742e6e470a0c90ad3fbcd09085245abfd23a1876215367e09b13063\n  Stored in directory: /tmp/pip-ephem-wheel-cache-7s0xtdp6/wheels/7a/8e/f6/6361a05021faea16c41b60355501cb8542c208befbd0798736\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.9.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 scs-3.3.1 sparsediffpy-0.1.3\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.12/site-packages/cvxpy/__init__.py",
+          "build_requires": [
+            "scipy >= 1.13.0",
+            "setuptools >= 68.1.0",
+            "wheel",
+            "pybind11"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.3",
+            "pandas": "3.0.1",
+            "matplotlib": "3.10.8",
+            "pyparsing": "3.3.2",
+            "scipy": "1.17.1",
+            "setuptools": "82.0.1",
+            "wheel": "0.46.3",
+            "pybind11": "3.0.2"
+          },
+          "repinned_for_build": {},
+          "test_extras": [
+            "pytest",
+            "hypothesis"
+          ],
+          "output": "--- end of build log ---\nloading joblib-1.6.0-py3-none-any.whl (306 kB)\nDownloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nDownloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.9.0-cp312-cp312-linux_x86_64.whl size=1544672 sha256=7c8683abee2b23a7d5f10e13c577bf8291b014862c5964ffb4748a80c278bf68\n  Stored in directory: /tmp/pip-ephem-wheel-cache-x5o6awop/wheels/71/38/20/6358bc83d061b0e5b7f2ca1588a2c1d520ab055cf84e576666\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.9.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 scs-3.3.1 sparsediffpy-0.1.3\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 7,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce and localize the incorrect gradient of cvxpy.atoms.matrix_frac for the new matrix-X case, showing it fails on the buggy revision and passes on the fixed revision.",
+          "milestones": [
+            "buggy_test_fails [buggy] \u2014 Install/run the targeted gradient test case on the buggy revision and confirm it fails for matrix_frac_matrix_x. (5 steps, verify: steps_succeeded, test_ran, test_fails)",
+            "buggy_probe_shows_layout_defect [buggy] \u2014 Use a numerical probe for the finite-difference vs analytic gradient gap of cp.matrix_frac for matrix-X, verifying the reported large error on buggy. (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "fixed_test_passes [fixed] \u2014 Install/run the targeted gradient test case on the fixed revision and confirm it passes. (4 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "fixed_probe_clean [fixed] \u2014 Run the same numerical probe on the fixed revision to confirm the max error is tiny (near finite-difference tolerance-level), contrasting with buggy. (1 steps, verify: steps_succeeded, probe_ran, probe_clean)",
+            "revisions_differ [fixed] \u2014 Conclude that buggy and fixed revisions differ on the matrix-X gradient check symptom for matrix_frac_matrix_x. (2 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && git rev-parse HEAD",
+        "purpose": "setup",
+        "exit_code": 127,
+        "runtime_s": 0.17
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pip install -q -e /workspace/buggy",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 55.6
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -c \"import cvxpy; print('cvxpy', cvxpy.__version__)\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 1.77
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -c \"import pathlib, re; p=pathlib.Path('/workspace/buggy/cvxpy/tests/test_grad.py'); s=p.read_text(); print('matrix_frac_matrix_x' in s)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.17
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs cvxpy.tests.test_grad -k matrix_frac_matrix_x -x --confcutdir=/workspace/buggy/.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 2.93
+      },
+      {
+        "verification": {
+          "milestone": "buggy_test_fails",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && git rev-parse HEAD` exited 127: bash: line 1: git: command not found; `python -I -m pytest --pyargs cvxpy.tests.test_grad -k matrix_frac_matrix_x -x --` exited 1: ulti_var_atom[42-matrix_frac_matrix_x]\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n====================== 1 failed, 349 deselected in 2.32s ======================="
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce and localize the matrix_frac matrix-X gradient layout defect by directly probing gradient error on matrix_frac(X,P) for the (3,2) X / (3,3) PSD P case, contrasting buggy vs fixed revisions (since the test-case addition cannot be relied on).",
+          "milestones": [
+            "matrix_frac_fd_probe_buggy_fails [buggy] \u2014 On buggy revision, compute finite-difference vs analytic gradient error for cp.matrix_frac(X,P) with X\u2208R^{3x2} and PSD P\u2208R^{3x3}, and verify the mismatch is large (order ~1e-0). (3 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "fixed_revision_passes_fd_probe [fixed] \u2014 On fixed revision, compute the same finite-difference vs analytic gradient error for the same matrix-X case and verify it is tiny (near 1e-8). (1 steps, verify: steps_succeeded, probe_ran, probe_clean)",
+            "revisions_differ_on_gradient_layout [fixed] \u2014 Show that the buggy and fixed revisions differ on the recorded max gradient absolute error for matrix_frac_matrix_x_grad_error. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pip install -q -e /workspace/buggy",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 50.38
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "matrix_frac_matrix_x_grad_error",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(matrix_frac_matrix_x_grad_error) \u2014 Compute max absolute gradient mismatch between analytic gradient from cvxpy and finite-difference gradient for the matrix-X case."
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "matrix_frac_matrix_x_grad_error_check",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(matrix_frac_matrix_x_grad_error_check) \u2014 Record that the buggy gradient mismatch is large (defect present)."
+      },
+      {
+        "verification": {
+          "milestone": "matrix_frac_fd_probe_buggy_fails",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(matrix_frac_matrix_x_grad_error) \u2014 Compute max absolute gradient mismatch between analytic gradient from cvxpy and finite-difference gradient for the matrix-X case. did not execute; [buggy] run_numerical_probe(matrix_frac_matrix_x_grad_error_check) \u2014 Record that the buggy gradient mismatch is large (defect present). did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Establish, without relying on the PR-added test, that cp.matrix_frac with matrix first argument has a large finite-difference vs analytic gradient mismatch on the buggy revision, and that the mismatch is tiny on the fixed revision for X\u2208R^{3x2} and PSD P\u2208R^{3x3}.",
+          "milestones": [
+            "matrix_frac_fd_probe_bugfix_diff [buggy] \u2014 Compute finite-difference vs analytic gradient mismatch for cp.matrix_frac(X,P) in the matrix-X case (3x2 X, 3x3 PSD P) on both buggy and fixed revisions using the same probe; confirm buggy shows a large error while fixed shows a small error. (2 steps, verify: steps_succeeded)",
+            "matrix_frac_fd_probe_fixed_small [fixed] \u2014 Run the same finite-difference vs analytic gradient probe on the fixed revision and confirm the mismatch is tiny. (1 steps, verify: steps_succeeded)",
+            "gradient_mismatch_reduces_after_fix [fixed] \u2014 Confirm that buggy and fixed revisions produce different gradient mismatch values for the matrix-X case, with buggy much larger than fixed. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "matrix_frac_matrix_x_grad_error_fd_vs_analytic",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(matrix_frac_matrix_x_grad_error_fd_vs_analytic) \u2014 Run a numerical probe on the buggy revision to compute max absolute mismatch between analytic gradient and finite-difference gradient for matrix_frac(X,P) with matrix-shaped X."
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "matrix_frac_matrix_x_grad_error_fd_vs_analytic_check",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(matrix_frac_matrix_x_grad_error_fd_vs_analytic_check) \u2014 On buggy revision, check that the computed mismatch is large (order ~1e-0 rather than near 1e-8). Record via expected mismatch threshold by tolerances in harness."
+      },
+      {
+        "verification": {
+          "milestone": "matrix_frac_fd_probe_bugfix_diff",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(matrix_frac_matrix_x_grad_error_fd_vs_analytic) \u2014 Run a numerical probe on the buggy revision to compute max absolute mismatch between analytic gradient and finite-difference gradient for matrix_frac(X,P) with matrix-shaped X. did not execute; [buggy] run_numerical_probe(matrix_frac_matrix_x_grad_error_fd_vs_analytic_check) \u2014 On buggy revision, check that the computed mismatch is large (order ~1e-0 rather than near 1e-8). Record via expected mismatch threshold by tolerances in harness. did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "matrix_frac_fd_probe_bugfix_diff",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 2,
+          "detail": [
+            "[buggy] run_numerical_probe(matrix_frac_matrix_x_grad_error_fd_vs_analytic) \u2014 Run a numerical probe on the buggy revision to compute max absolute mismatch between analytic gradient and finite-difference gradient for matrix_frac(X,P) with matrix-shaped X. did not execute; [buggy] run_numerical_probe(matrix_frac_matrix_x_grad_error_fd_vs_analytic_check) \u2014 On buggy revision, check that the computed mismatch is large (order ~1e-0 rather than near 1e-8). Record via expected mismatch threshold by tolerances in harness. did not execute"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "matrix_frac_matrix_x_grad_error_fd_vs_analytic",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[fixed] run_numerical_probe(matrix_frac_matrix_x_grad_error_fd_vs_analytic) \u2014 Run the same numerical probe on the fixed revision using the SAME label and SAME code to ensure direct comparability."
+      },
+      {
+        "verification": {
+          "milestone": "matrix_frac_fd_probe_fixed_small",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[fixed] run_numerical_probe(matrix_frac_matrix_x_grad_error_fd_vs_analytic) \u2014 Run the same numerical probe on the fixed revision using the SAME label and SAME code to ensure direct comparability. did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Directly measure the finite-difference vs analytic gradient mismatch for cp.matrix_frac with matrix-shaped X on both buggy and fixed revisions (without relying on the PR-added test).",
+          "milestones": [
+            "matrix_frac_fd_probe_fixed_small_replaced [fixed] \u2014 Run a numerical probe for the matrix-X gradient mismatch on the fixed revision and show it is near machine precision (small). (2 steps, verify: steps_succeeded, probe_ran, probe_clean)",
+            "matrix_frac_fd_probe_buggy_replaced_if_needed [buggy] \u2014 (Re-run on buggy revision only if the previous buggy probe did not record; otherwise skip) Measure the same mismatch for matrix-shaped X to confirm it is large. (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -c \"import cvxpy, numpy as np; print('cvxpy', cvxpy.__version__, 'numpy', np.__version__)\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 1.42
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "matrix_frac_matrix_x_grad_error_fd_vs_analytic",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[fixed] run_numerical_probe(matrix_frac_matrix_x_grad_error_fd_vs_analytic) \u2014 Compute max absolute gradient mismatch between analytic gradient and finite-difference for cp.matrix_frac(X,P) with X in R^{3x2} and P PSD in R^{3x3}. Use the same code/label on both revisions for comparability."
+      },
+      {
+        "verification": {
+          "milestone": "matrix_frac_fd_probe_fixed_small_replaced",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[fixed] run_numerical_probe(matrix_frac_matrix_x_grad_error_fd_vs_analytic) \u2014 Compute max absolute gradient mismatch between analytic gradient and finite-difference for cp.matrix_frac(X,P) with X in R^{3x2} and P PSD in R^{3x3}. Use the same code/label on both revisions for comparability. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pip install -q -e /workspace/fixed",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 49.89
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -c \"import cvxpy; print('cvxpy', cvxpy.__version__)\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 1.72
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs cvxpy.tests.test_grad -k matrix_frac_matrix_x -x --confcutdir=/workspace/fixed/.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.92
+      },
+      {
+        "mirrored_procedure": {
+          "mirrored_from": "buggy",
+          "onto": "fixed",
+          "setup_commands": 2,
+          "test_command": "python -I -m pytest --pyargs cvxpy.tests.test_grad -k matrix_frac_matrix_x -x --confcutdir=/workspace/fixed/.venv -W ignore::pytest.PytestDeprecationWarning",
+          "exit_code": 0
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 2,
+            "recorded": 2,
+            "error": null,
+            "could_not_evaluate": 2
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 2,
+            "recorded": 2,
+            "error": null,
+            "could_not_evaluate": 2
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "described_examples": {
+          "n_described": 2,
+          "buggy": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "absent",
+        "examples_verdict": "not_reproduced",
+        "examples": "0/2"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/2 reported example(s))"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 7,
+      "input_tokens": 18706,
+      "output_tokens": 8390,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.014229
+    }
+  }
+]

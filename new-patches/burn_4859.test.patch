@@ -1,0 +1,318 @@
+diff --git a/crates/burn-backend-tests/tests/tensor/float/ops/arg.rs b/crates/burn-backend-tests/tests/tensor/float/ops/arg.rs
+index 11a040e94de..a6472cb5e7f 100644
+--- a/crates/burn-backend-tests/tests/tensor/float/ops/arg.rs
++++ b/crates/burn-backend-tests/tests/tensor/float/ops/arg.rs
+@@ -126,10 +126,15 @@ fn test_argmax_permuted_correctness() {
+         .assert_eq(&TensorData::from([[[1], [1], [1]], [[1], [1], [1]]]), false);
+ }
+ 
+-// Only run under the `flex` backend feature; other burn backends follow
+-// IEEE 754 min/max and drop NaN. Positive-gate form because the default
+-// CI build doesn't set identifying feature flags on burn-backend-tests.
+-// See issue #4814.
++// NaN-propagation tests below. Only run when the `flex` backend feature
++// is active, because flex is the only burn backend that currently
++// propagates NaN from argmax/argmin (matching PyTorch/NumPy/JAX/TF).
++// ndarray and the cubecl backends follow IEEE 754 min/max and drop NaN.
++// The positive-gate form (rather than excluding specific backends) is
++// used because the default-feature CI build selects a backend
++// transitively without setting any of its identifying feature flags on
++// burn-backend-tests, so a negative gate would still run the test on a
++// NaN-dropping backend. See issue #4814.
+ #[cfg(feature = "flex")]
+ #[test]
+ fn test_argmax_nan_propagation() {
+@@ -140,3 +145,66 @@ fn test_argmax_nan_propagation() {
+         .into_data()
+         .assert_eq(&TensorData::from([[1]]), false);
+ }
++
++// First-NaN wins: when row[0] is NaN AND a later element is also NaN,
++// argmax must return 0 (the earlier NaN index), not the later one.
++#[cfg(feature = "flex")]
++#[test]
++fn test_argmax_nan_leading_with_trailing_nan() {
++    let tensor = TestTensor::<2>::from([[f32::NAN, f32::NAN, 3.0]]);
++    let output = tensor.argmax(1);
++    output
++        .into_data()
++        .assert_eq(&TensorData::from([[0]]), false);
++}
++
++#[cfg(feature = "flex")]
++#[test]
++fn test_argmin_nan_leading_with_trailing_nan() {
++    let tensor = TestTensor::<2>::from([[f32::NAN, f32::NAN, 3.0]]);
++    let output = tensor.argmin(1);
++    output
++        .into_data()
++        .assert_eq(&TensorData::from([[0]]), false);
++}
++
++// All-NaN row: argmax should return 0 (first NaN).
++#[cfg(feature = "flex")]
++#[test]
++fn test_argmax_all_nan_row() {
++    let tensor = TestTensor::<2>::from([[f32::NAN, f32::NAN, f32::NAN]]);
++    let output = tensor.argmax(1);
++    output
++        .into_data()
++        .assert_eq(&TensorData::from([[0]]), false);
++}
++
++// NaN propagation must also hold for non-last-dim argmax, which routes
++// through a different kernel than the last-dim fast path.
++#[cfg(feature = "flex")]
++#[test]
++fn test_argmax_nan_leading_non_last_dim() {
++    // Column 0: [NaN, NaN, 3.0] -> argmax along dim 0 = 0.
++    // Column 1: [1.0, 2.0, 4.0] -> argmax along dim 0 = 2.
++    let tensor = TestTensor::<2>::from([[f32::NAN, 1.0], [f32::NAN, 2.0], [3.0, 4.0]]);
++    let output = tensor.argmax(0);
++    output
++        .into_data()
++        .assert_eq(&TensorData::from([[0, 2]]), false);
++}
++
++// max_dim_with_indices on a leading-NaN row should return (NaN, 0).
++// Complements test_max_dim_with_indices_nan_propagation in maxmin.rs,
++// which uses a single NaN in the middle of the row.
++#[cfg(feature = "flex")]
++#[test]
++fn test_max_dim_with_indices_nan_leading() {
++    let tensor = TestTensor::<2>::from([[f32::NAN, f32::NAN, 3.0]]);
++    let (values, indices) = tensor.max_dim_with_indices(1);
++    let vdata = values.into_data();
++    let slice = vdata.as_slice::<FloatElem>().unwrap();
++    assert!(slice[0].is_nan());
++    indices
++        .into_data()
++        .assert_eq(&TensorData::from([[0]]), false);
++}
+diff --git a/crates/burn-flex/src/ops/expand.rs b/crates/burn-flex/src/ops/expand.rs
+index ed530b50287..5caa3d85515 100644
+--- a/crates/burn-flex/src/ops/expand.rs
++++ b/crates/burn-flex/src/ops/expand.rs
+@@ -255,6 +266,25 @@ mod tests {
+         assert_eq!(data, vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
+     }
+ 
++    #[test]
++    #[should_panic(expected = "broadcasting cannot drop dimensions")]
++    fn test_expand_to_fewer_dims_panics() {
++        // Shape [2, 3, 4] expanded to target [2, 3] would silently drop
++        // the trailing dim and produce an invalid layout; must panic.
++        let tensor = FlexTensor::from_data(TensorData::new(alloc::vec![0.0f32; 24], [2, 3, 4]));
++        let _ = expand(tensor, Shape::new([2, 3]));
++    }
++
++    #[test]
++    #[should_panic(expected = "broadcasting cannot drop dimensions")]
++    fn test_expand_1d_to_scalar_panics() {
++        // 1D -> 0D exercises the saturating_sub edge we removed: dim_diff
++        // used to come out as 0 and the loop would iterate zero times,
++        // silently producing a 0-dim layout over 1D data.
++        let tensor = FlexTensor::from_data(TensorData::new(alloc::vec![1.0f32, 2.0, 3.0], [3]));
++        let _ = expand(tensor, Shape::from(alloc::vec::Vec::<usize>::new()));
++    }
++
+     #[test]
+     fn test_broadcast_binary_with_flipped() {
+         // One tensor flipped, broadcast to same shape
+diff --git a/crates/burn-flex/src/ops/reduce.rs b/crates/burn-flex/src/ops/reduce.rs
+index 8f87a306277..0f178d6274f 100644
+--- a/crates/burn-flex/src/ops/reduce.rs
++++ b/crates/burn-flex/src/ops/reduce.rs
+@@ -2531,4 +2527,29 @@ mod tests {
+         assert_eq!(vals, vec![10, 8]);
+         assert_eq!(idxs, vec![1, 1]);
+     }
++
++    // Cross-path consistency: `argmax`/`argmin` route short rows to the
++    // scalar kernel and rows of length >= EXTREMUM_SIMD_ROW_THRESHOLD to
++    // the SIMD kernel. Both kernels must agree on "first NaN wins".
++    // This is a flex-internal dispatch concern; the behavioral NaN
++    // propagation contract itself is exercised in burn-backend-tests
++    // under the `flex` feature gate (see issue #4814).
++    #[test]
++    fn test_argmax_scalar_and_simd_paths_agree_on_leading_nan() {
++        let short =
++            FlexTensor::from_data(TensorData::new(vec![f32::NAN, f32::NAN, f32::NAN], [1, 3]));
++        let short_idxs: Vec<isize> =
++            bytemuck::cast_slice(&super::argmax(short, 1).into_data().bytes).to_vec();
++
++        let mut long_data = alloc::vec![1.0f32; 600];
++        long_data[0] = f32::NAN;
++        long_data[1] = f32::NAN;
++        long_data[300] = 5.0;
++        let long = FlexTensor::from_data(TensorData::new(long_data, [1, 600]));
++        let long_idxs: Vec<isize> =
++            bytemuck::cast_slice(&super::argmax(long, 1).into_data().bytes).to_vec();
++
++        assert_eq!(short_idxs, vec![0], "scalar path");
++        assert_eq!(long_idxs, vec![0], "SIMD path");
++    }
+ }
+diff --git a/crates/burn-flex/src/ops/unary.rs b/crates/burn-flex/src/ops/unary.rs
+index 3a193a80c02..a5248824698 100644
+--- a/crates/burn-flex/src/ops/unary.rs
++++ b/crates/burn-flex/src/ops/unary.rs
+@@ -413,4 +392,71 @@ mod tests {
+             assert_eq!(a.to_bits(), b.to_bits());
+         }
+     }
++
++    // The previous A&S 7.1.26 erf implementation had ~1.5e-7 max absolute
++    // error regardless of arithmetic precision. That was acceptable for
++    // f32 but orders of magnitude worse than f64's ~2.2e-16 precision.
++    // These tests guard near-ulp accuracy across the domain, including
++    // libm's piecewise-rational switch points near |x|=0.84375 and the
++    // saturation region around |x|>=6 where erf(x) rounds to ±1.
++    // Reference values from Wolfram Alpha / DLMF.
++    #[test]
++    fn test_erf_f64_is_full_precision() {
++        // Reference values computed with mpmath at 25-digit precision.
++        let cases = [
++            (0.0f64, 0.0f64),
++            (1e-10, 1.128379167095512574e-10), // small-x linear regime
++            (0.5, 0.5204998778130465377),
++            (0.84, 0.7651427114549945347), // just below libm's 0.84375 boundary
++            (0.85, 0.7706680576083525324), // just above
++            (1.0, 0.8427007929497148693),
++            (1.5, 0.9661051464753107271),
++            (2.0, 0.9953222650189527342),
++            (3.0, 0.9999779095030014145),
++            (6.0, 0.9999999999999999785), // near saturation
++            (30.0, 1.0),                  // fully saturated
++            (-0.5, -0.5204998778130465377),
++            (-1.0, -0.8427007929497148693),
++            (-3.0, -0.9999779095030014145),
++        ];
++        for (x, expected) in cases {
++            let got = super::erf_f64(x);
++            let err = (got - expected).abs();
++            assert!(
++                err < 1e-14,
++                "erf_f64({}) = {} expected {} (err {:e})",
++                x,
++                got,
++                expected,
++                err
++            );
++        }
++    }
++
++    // f32 erf must stay accurate to within f32 precision (~6e-8). Covers
++    // the same piecewise boundaries as the f64 test.
++    #[test]
++    fn test_erf_f32_full_f32_precision() {
++        let cases = [
++            (0.0f32, 0.0f32),
++            (0.5, 0.520_499_9),
++            (0.84, 0.765_142_7),
++            (0.85, 0.770_668_06),
++            (1.0, 0.842_700_8),
++            (2.0, 0.995_322_24),
++            (6.0, 1.0),
++            (-0.5, -0.520_499_9),
++            (-1.0, -0.842_700_8),
++        ];
++        for (x, expected) in cases {
++            let got = super::erf_f32(x);
++            assert!(
++                (got - expected).abs() < 1e-6,
++                "erf_f32({}) = {} expected {}",
++                x,
++                got,
++                expected
++            );
++        }
++    }
+ }
+diff --git a/crates/burn-flex/src/simd/portable.rs b/crates/burn-flex/src/simd/portable.rs
+index 8a1156da3dd..a58aa1ba328 100644
+--- a/crates/burn-flex/src/simd/portable.rs
++++ b/crates/burn-flex/src/simd/portable.rs
+@@ -1306,4 +1306,82 @@ mod tests {
+         mask_fill_f32(&[], &[], 1.0, &mut out);
+         assert!(out.is_empty());
+     }
++
++    // bool_not_u8 writes into a `*mut bool` via macerator's store_as_bool.
++    // Rust's bool is only valid as 0x00 or 0x01 (any other byte is UB when
++    // read back as bool). A previous audit flagged that SIMD mask stores
++    // might emit 0xFF. Verify every output byte is normalized to 0/1.
++    #[test]
++    fn bool_not_u8_output_is_normalized_0_or_1() {
++        // Spans SIMD body + scalar tail on any realistic lane width:
++        //   17 elements -> NEON 16-byte SIMD + 1 tail; AVX2 32 spills to tail.
++        //   127 elements -> SIMD body + 15 tail for 16-byte lanes.
++        for &len in &[1usize, 8, 15, 16, 17, 31, 32, 63, 127, 256] {
++            let a: Vec<u8> = (0..len).map(|i| (i % 2) as u8).collect();
++            let mut out = vec![0xAAu8; len];
++            super::bool_not_u8(&a, &mut out);
++            for (i, &b) in out.iter().enumerate() {
++                assert!(
++                    b == 0 || b == 1,
++                    "len={}: out[{}] = 0x{:02x}, expected 0x00 or 0x01",
++                    len,
++                    i,
++                    b
++                );
++                let expected = if a[i] == 0 { 1 } else { 0 };
++                assert_eq!(
++                    b, expected,
++                    "len={}: out[{}] = {}, expected {}",
++                    len, i, b, expected
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn bool_not_inplace_u8_output_is_normalized_0_or_1() {
++        for &len in &[1usize, 8, 15, 16, 17, 31, 32, 63, 127, 256] {
++            let mut a: Vec<u8> = (0..len).map(|i| (i % 2) as u8).collect();
++            let original = a.clone();
++            super::bool_not_inplace_u8(&mut a);
++            for (i, &b) in a.iter().enumerate() {
++                assert!(
++                    b == 0 || b == 1,
++                    "len={}: a[{}] = 0x{:02x}, expected 0x00 or 0x01",
++                    len,
++                    i,
++                    b
++                );
++                let expected = if original[i] == 0 { 1 } else { 0 };
++                assert_eq!(
++                    b, expected,
++                    "len={}: a[{}] = {}, expected {}",
++                    len, i, b, expected
++                );
++            }
++        }
++    }
++
++    // Edge cases: empty input, homogeneous all-zero, homogeneous all-one.
++    // Homogeneous inputs exercise the SIMD mask-to-byte conversion for
++    // all-true and all-false cases, which alternating inputs do not.
++    #[test]
++    fn bool_not_u8_edge_cases() {
++        // Empty input.
++        let mut out: Vec<u8> = Vec::new();
++        super::bool_not_u8(&[], &mut out);
++        assert!(out.is_empty());
++
++        // All zeros -> all ones.
++        let a = alloc::vec![0u8; 32];
++        let mut out = alloc::vec![0xAAu8; 32];
++        super::bool_not_u8(&a, &mut out);
++        assert!(out.iter().all(|&b| b == 1));
++
++        // All ones -> all zeros.
++        let a = alloc::vec![1u8; 32];
++        let mut out = alloc::vec![0xAAu8; 32];
++        super::bool_not_u8(&a, &mut out);
++        assert!(out.iter().all(|&b| b == 0));
++    }
+ }

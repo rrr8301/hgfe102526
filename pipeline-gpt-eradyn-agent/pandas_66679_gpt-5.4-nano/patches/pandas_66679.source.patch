@@ -1,0 +1,34 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index cd3036ba03d85..936cacc72381c 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -431,6 +431,7 @@ Datetimelike
+ - Bug in adding a :class:`BusinessDay` offset with ``n`` of magnitude ``2**31`` or more to a :class:`DatetimeIndex` or :class:`Series` silently shifting by a wrapped number of business days, e.g. ``n=2**32`` behaving like ``n=0`` (:issue:`66549`)
+ - Bug in adding a :class:`DateOffset` to a :class:`DatetimeIndex` or :class:`Series` where a result landing exactly on the ``NaT`` sentinel came back as a missing value, and where promoting the values to the offset's finer resolution silently wrapped to an unrelated date, instead of raising as the equivalent :class:`Timedelta` operations already did (:issue:`66552`)
+ - Bug in adding a :class:`DateOffset` with a ``milliseconds`` component to a :class:`Timestamp` returning a microsecond-resolution result, inconsistent with the millisecond-resolution result of the equivalent :class:`DatetimeIndex` and :class:`Series` operations (:issue:`64806`)
++- Bug in adding a :class:`Day` offset to a timezone-aware :class:`DatetimeIndex` or :class:`Series` where an out-of-bounds result silently wrapped to an unrelated date, and a result landing exactly on the ``NaT`` sentinel came back as a missing value, instead of raising ``OverflowError`` as the timezone-naive equivalent already did (:issue:`66552`)
+ - Bug in adding a :class:`Week` offset to a :class:`DatetimeIndex` or :class:`Series` where an out-of-bounds result silently wrapped to an unrelated date, and a result landing exactly on the ``NaT`` sentinel came back as a missing value, instead of raising ``OverflowError`` (:issue:`66552`)
+ - Bug in adding a :class:`Week` offset with ``n`` of magnitude ``2**31`` or more to a :class:`DatetimeIndex` or :class:`Series` silently shifting by a wrapped number of weeks, e.g. ``n=2**32`` behaving like ``n=0`` (:issue:`66549`)
+ - Bug in adding a month-, quarter-, half-year-, year- or semi-month-based offset (e.g. :class:`MonthEnd`, :class:`QuarterEnd`, :class:`YearEnd`, :class:`SemiMonthEnd`) with ``n`` of magnitude ``2**31`` or more silently shifting by a wrapped number of periods, e.g. ``n=2**32`` behaving like ``n=0`` (:issue:`66549`)
+diff --git a/pandas/_libs/tslibs/offsets.pyx b/pandas/_libs/tslibs/offsets.pyx
+index b14f51e90610a..62568a2a0deb6 100644
+--- a/pandas/_libs/tslibs/offsets.pyx
++++ b/pandas/_libs/tslibs/offsets.pyx
+@@ -1596,7 +1596,16 @@ cdef class Day(SingleConstructorOffset):
+         return other + np.timedelta64(self._n, "D")
+ 
+     def _apply_array(self, dtarr):
+-        return dtarr + np.timedelta64(self._n, "D")
++        cdef:
++            NPY_DATETIMEUNIT reso = get_unit_from_dtype(dtarr.dtype)
++            int64_t shift
++
++        if (
++            checked_mul(self._n, periods_per_day(reso), &shift)
++            or shift == NPY_NAT
++        ):
++            raise OverflowError("Overflow in int64 addition")
++        return add_overflowsafe(dtarr.view("i8"), np.array(shift, dtype="i8"))
+ 
+     @cache_readonly
+     def freqstr(self) -> str:

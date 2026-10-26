@@ -1,0 +1,32 @@
+# scipy-23121
+
+A NumBugBench instance: one image, both revisions, the developer test, and the
+environment the reproduction was validated in.
+
+    docker run numbugbench/scipy-23121:latest validate   # checks FAIL on buggy, PASS on fixed
+    docker run numbugbench/scipy-23121:latest buggy      # the developer test on the buggy revision
+    docker run numbugbench/scipy-23121:latest fixed      # the same test on the fixed revision
+    docker run numbugbench/scipy-23121:latest metadata   # the manifest
+
+Bug: https://github.com/scipy/scipy/pull/23121
+Category: correctness
+Buggy: 04b8f858c947dcffa27a3a510723d2340cd0e35c
+Fixed: 8c0233d00af6c7b2803348d6f001d6f907cb8092
+
+Test: python -I -m pytest --pyargs scipy.sparse.linalg.tests.test_special_sparse_arrays -k test_eigenvectors -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning
+
+`validate` separates "the test ran and failed" from "the test could not run".
+An ImportError on the buggy revision reports `Test execution: ERROR` and
+`INVALID` — it is never counted as FAIL.
+
+## Evaluating a generated test (BRTG)
+
+    docker run -v ./candidate.py:/benchmark/candidate/test.py numbugbench/scipy-23121:latest evaluate-generated-test
+
+prints `{"buggy": …, "fixed": …, "classification": …}` using the same oracle.
+
+## Information leakage
+
+This image is the EVALUATOR artifact and contains the ground truth — the fixed
+revision, the test patch and the oracle metadata. Do not mount it as an agent's
+workspace. Give the agent the buggy revision and the permitted context only.

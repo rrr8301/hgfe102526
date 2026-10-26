@@ -1,0 +1,112 @@
+{
+  "input": "pipeline-gpt-5.4-nano/jax_30346_gpt-5.4-nano/mined/jax-ml__jax_30346.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 12833,
+    "output_tokens": 3442,
+    "cost_usd": 0.006869,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "jax-ml/jax",
+      "pr_number": 30346,
+      "reference": "https://github.com/jax-ml/jax/pull/30346",
+      "buggy_commit": "1b556f2e7444e80952fb923e6f4ad16c55ba1a23",
+      "fixed_commit": "893b483e3f130bad7db8a0858dc229033e9ff9e1",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 6372,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the JAX accuracy-mode gradient bug where HIGHEST-accuracy derivatives for logistic/sigmoid, tanh, and expm1 become numerically unstable (e.g., sigmoid grads vanish for x>~17). The reproduction targets the project\u2019s added tests `testEvenFunctionGrads` and `testExpm1Grad` so that they fail on the buggy revision and pass on the fixed revision.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "jaxlib",
+            "jax",
+            "numpy",
+            "scipy",
+            "absl-py",
+            "parameterized"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip",
+            "git clone https://github.com/jax-ml/jax.git",
+            "cd jax",
+            "git checkout 1b556f2e7444",
+            "python -m pip install -e .",
+            "python -m pip install -r requirements-dev.txt || true"
+          ],
+          "pinned_because": [
+            "The bug is observed/introduced/fixed across JAX revisions; the exact commit `1b556f2e7444` is required to transition buggy\u2192fixed.",
+            "The failing behavior is conditional on `accuracy=lax.AccuracyMode.HIGHEST` and involves the XLA backend; JAX/JAXLIB versions must match the repo checkout (no separate pip wheel mixing)."
+          ]
+        },
+        "test_command": "cd jax && python -m pytest tests/lax_test.py -k \"testEvenFunctionGrads or testExpm1Grad\"",
+        "reproducing_test": "Within `tests/lax_test.py`: `testEvenFunctionGrads` (parameterized over op_name in [\"logistic\",\"tanh\"]) and `testExpm1Grad`. These compare gradients to their odd/even symmetry counterpart and compare expm1-grad against exp-grad reference, both under `accuracy=lax.AccuracyMode.HIGHEST`, using float32.",
+        "success_criterion": "On buggy revision `1b556f2e7444`, the assertions in `testEvenFunctionGrads` and/or `testExpm1Grad` fail (gradients not equal under the even-function symmetry and/or expm1 grad differs from exp grad) when using `jnp.float32` and `AccuracyMode.HIGHEST`. On the fixed revision (the PR that corrects the derivative formulas), the same tests pass with the same tolerances (`atol=jtu.default_tolerance()[np.dtype(np.float32)]`, `rtol=0.0`).",
+        "numerical_probe": "The test relies on symmetry and reference equality, so it doesn\u2019t directly check numeric values. It will fail when the derivative formulas used for HIGHEST accuracy are numerically inaccurate (e.g., logistic derivative computed as sigmoid(x)*(1-sigmoid(x)) causing vanishing for x>~17 instead of the stable sigmoid(x)*sigmoid(-x); expm1 derivative computed as expm1(x)+1 instead of exp(x); tanh derivative computed as (1+tanh(x))*(1-tanh(x)) instead of 4*sigmoid(2x)*sigmoid(-2x)).",
+        "input_output_examples": [
+          {
+            "input": "x = jnp.arange(0.0, 80.0, 1.0, dtype=jnp.float32); compute grads = vmap(grad(high_acc_op))(x) and neg_grads = vmap(grad(high_acc_op))(-x) where high_acc_op(x)=op(x, accuracy=lax.AccuracyMode.HIGHEST) and op in {lax.logistic, lax.tanh}.",
+            "buggy_output": "Assertion fails because grads and neg_grads differ under HIGHEST due to unstable gradient derivative implementations.",
+            "expected_output": "Assertion passes because gradients respect even-function symmetry under stable derivative implementations for HIGHEST accuracy."
+          },
+          {
+            "input": "x = jnp.arange(-80.0, 80.0, 1.0, dtype=jnp.float32); expected = vmap(grad(lambda x: lax.exp(x, accuracy=HIGHEST)))(x); actual = vmap(grad(lambda x: lax.expm1(x, accuracy=HIGHEST)))(x).",
+            "buggy_output": "Assertion fails because actual differs from expected when expm1 derivative is computed as expm1(x)+1 instead of exp(x) for large negative x under HIGHEST.",
+            "expected_output": "Assertion passes because actual matches expected using the corrected expm1 derivative under HIGHEST."
+          }
+        ],
+        "risks": [
+          "Era/constraint handling: the provided context states there is no documented dependency constraint/era ceiling for choosing JAX versions; you must rely on the explicit commit checkout. Do not assume a particular pip version satisfies the bug\u2014use the git revision(s) directly.",
+          "Hardware/backend sensitivity: the defect is tied to JAX\u2019s XLA numeric behavior; results may vary if XLA is configured differently (CPU vs GPU vs TPU). The transition is guaranteed only if you run on the same type of accelerator/backend used to observe the bug. Default to CPU first, then match the failing platform if needed.",
+          "AccuracyMode gating: if the bug is only triggered for `accuracy=AccuracyMode.HIGHEST`, any reproduction that forgets this argument will not fail.",
+          "Threading/performance: JAX compilation/execution can be influenced by environment variables (e.g., XLA_FLAGS). Avoid changing them between buggy and fixed runs.",
+          "Fixed revision commit is not included in the provided context; you must identify the PR merge commit (or subsequent commit) for #30346 and run the same test to confirm the transition."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "Within `testEvenFunctionGrads`, the oracle is symmetry equality: gradients at x and -x must match (allclose with atol=jtu.default_tolerance()[float32], rtol=0). Within `testExpm1Grad`, the oracle is equality against a reference gradient: grad(exp, HIGHEST) vs grad(expm1, HIGHEST), same allclose thresholds.",
+          "why": "The tests assert `self.assertAllClose(actual_or_grads, expected_or_neg_grads, atol=default_tolerance(float32), rtol=0.0)`; thus the oracle is equality under tight tolerances rather than printing/inspecting intermediate numeric values."
+        },
+        "fails_on_buggy": {
+          "type": "string",
+          "description": "what the assertion sees on the buggy revision, and why that makes it fail"
+        },
+        "passes_on_fixed": {
+          "type": "string",
+          "description": "what the assertion sees on the fixed revision"
+        }
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3065,
+        "output_tokens": 1348,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002298
+      },
+      "miner_usage": {
+        "input_tokens": 9768,
+        "output_tokens": 2094,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.004571,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

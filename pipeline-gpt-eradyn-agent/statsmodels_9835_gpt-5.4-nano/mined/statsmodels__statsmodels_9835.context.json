@@ -1,0 +1,331 @@
+{
+  "repo": "statsmodels/statsmodels",
+  "pr_number": 9835,
+  "reference": "https://github.com/statsmodels/statsmodels/pull/9835",
+  "buggy_commit": "383d9707516a8613a46d58998e42985b431a33f3",
+  "fixed_commit": "8470c9c164b4811527659317c972fb5283f0bb12",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "statsmodels",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.rst: \"pip ... statsmodels\" / \"conda install statsmodels\""
+      },
+      {
+        "name": "numpy",
+        "constraint": null,
+        "documented": false,
+        "numerically_relevant": true,
+        "source": "issue#6251 discusses np.clip, np.finfo(np.float64).resolution, and np.float64(1e-15)"
+      }
+    ],
+    "installation_commands": [
+      "python -m pip install -i https://pypi.anaconda.org/scientific-python-nightly-wheels/simple statsmodels --upgrade --use-deprecated=legacy-resolver",
+      "conda install statsmodels"
+    ],
+    "build_commands": [],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: statsmodels \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: numpy \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "statsmodels",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "README.rst: \"pip ... statsmodels\" / \"conda install statsmodels\""
+      },
+      {
+        "package": "numpy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "issue#6251 discusses np.clip, np.finfo(np.float64).resolution, and np.float64(1e-15)"
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "statsmodels.stats.outliers_influence.variance_inflation_factor",
+    "observed_behavior": "VIF values explode to extremely high numbers (e.g., 20, 40, 60, 100+), and in the precision edge-case can become inf due to division by zero with a \u201czero division warning\u201d; in other cases they become very large finite values instead of inf (e.g., vif=1e14, 1e20, 1e200).",
+    "expected_behavior": "VIF should not explode unrealistically when there is no real multicollinearity; numerical computation should yield stable, accurate VIF values (no unnecessary explosion to 20/40/60/100+; and avoiding inf caused by floating-point precision where the instability is not due to true collinearity).",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "Computing VIF via auxiliary regression R-squared and converting using vif = 1 / (1 - r_squared_i); when r_squared_i is close enough to 1 that (1 - rsquared) becomes exactly zero in floating-point, leading to division by zero (inf plus zero division warning).",
+      "When the design matrix includes monotonic nonlinear transformations\u2014especially 1/x, log(x), 1/y, log(y)\u2014in datasets that otherwise have no real multicollinearity among independent variables, causing exploding VIF values.",
+      "Mixing columns with wildly different numeric ranges (e.g., huge numbers with tiny fractions alongside a column of 1s), which makes regression math snowball rounding mistakes into wrong VIF values; standardizing (rescaling columns to same scale) prevents the instability.",
+      "Use of very small ridge_factor in the context mentioned in #2380 can make vif=inf (singular) become very large but finite; the instability is numerical."
+    ],
+    "input_output_examples": [
+      {
+        "input": "Design matrix includes common econometric transformations such as 1/x and log(x) (monotonic nonlinear transformations), despite no real multicollinearity among independent variables.",
+        "buggy_output": "VIF values explode to extremely high numbers (20, 40, 60, 100+).",
+        "expected_output": "VIF values should remain stable and not indicate severe multicollinearity when there is none.",
+        "value_kind": "array",
+        "source": "ISSUE #9791 (closes, closed) and PR#9835 summary"
+      },
+      {
+        "input": "Computation uses vif = 1. / (1. - r_squared_i) where floating point precision makes (1-rsquared) exactly equal to zero.",
+        "buggy_output": "vif = inf with zero division warning.",
+        "expected_output": "Instead of inf from zero division caused by floating-point precision, VIF should be very large finite values reflecting the numerical instability context or otherwise computed without triggering the exact zero denominator; the PR notes using ssr/tss (unexplained fraction) avoids this precision issue.",
+        "value_kind": "float",
+        "source": "ISSUE #6251 (sim=0.644)"
+      },
+      {
+        "input": "Same precision edge-case, but consequence described as small-denominator numerical noise producing very large finite VIF instead of inf.",
+        "buggy_output": "vif values can be very large finite numbers such as 1e14, 1e20, 1e200.",
+        "expected_output": "More appropriate behavior is that these correspond to near-collinearity numerically but should not manifest as an unrealistic explosion or inf purely due to floating-point rounding; using ssr/tss keeps the denominator around small values rather than producing an exact zero from 1-r_squared.",
+        "value_kind": "float",
+        "source": "ISSUE #6251 (consequence section)"
+      }
+    ],
+    "oracle_clues": [
+      "Numerical precision issue specifically identified: vif = 1/(1 - r_squared_i) can make (1-rsquared) exactly zero in floating point, leading to inf with zero division warning.",
+      "Alternative computation mentioned as oracle clue: use ssr / tss instead of (1 - r_squared), so the denominator can be very small without hitting exact zero caused by floating point near 1.",
+      "Oracle clue for correctness: With standardize=True, VIFs stay stable and no warnings appear; with standardize=False on bad transformed data, warnings fire and VIFs break as expected (PR#9835 added test_vif_instability).",
+      "Magnitude oracle clue from ISSUE #9791: VIF values explode to 20, 40, 60, 100+ even when there is no real multicollinearity."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": null,
+    "precision": "floating point precision makes `(1-rsquared)` exactly equal to zero, causing `vif` to become `inf` with a zero division warning; also mentions floating point around zero instead of floating point around 1 when using alternative denominators",
+    "magnitude": "VIF can become `inf` (in the failure mode), or very large finite values such as `1e14`, `1e20`, `1e200`; similarly, small ridge_factor can make `vif=inf (singulat)` instead become very large but finite",
+    "tolerance": "rtol=1e-7 (assert_allclose(vif_true, vif_false, rtol=1e-7))",
+    "category_specific_evidence": [
+      "Bug in `variance_inflation_factor`: it computes `vif = 1. / (1. - r_squared_i)` using `rsquared` from an auxiliary regression (ISSUE #6251).",
+      "Failure mode: for small `r_squared`, floating point precision makes `(1-rsquared)` exactly equal to zero, so `vif` becomes `inf` with a zero division warning (ISSUE #6251).",
+      "Mathematical/denominator property involved: the reciprocal transformation `1/(1-r_squared)` becomes numerically unstable when `1-r_squared` underflows to exactly zero; the proposed alternative uses the unexplained fraction (ISSUE #6251): use `ssr / tss` instead of `(1-r_squared)` so the denominator is small around zero rather than `1-r_squared` around one (description in ISSUE #6251).",
+      "Consequence statement: in many cases this yields very large finite VIF instead of `vif=Inf` (ISSUE #6251), with example magnitudes `vif=1e14 or 1e20 or 1e200` (ISSUE #6251).",
+      "Fix description: PR #9835 clips `r_sq` before computing `1/(1-r_sq)` in `variance_inflation_factor` (issue#6251; ISSUE #6251).",
+      "Test evidence: `test_diff:...` asserts standardize=True and standardize=False match closely on clean, well-conditioned data, using `assert_allclose(vif_true, vif_false, rtol=1e-7)` (test_influence.py:331-367)."
+    ],
+    "reproduction_risks": [
+      "Reproduction may require data that yields very small `r_squared` so that `1-rsquared` underflows to exactly zero; otherwise the error may only show up as very large finite VIF rather than `inf`.",
+      "If data is only 'nearly' singular/collinear, reproduction might produce large finite values (e.g., `1e14`, `1e20`, `1e200`) instead of `inf`, depending on conditioning.",
+      "The fix involves clipping `r_sq` (PR #9835), so reproducing on a branch with the fix may not show the original `inf`/zero-division behavior."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.rst"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "python -m pip install -i https://pypi.anaconda.org/scientific-python-nightly-wheels/simple statsmodels --upgrade --use-deprecated=legacy-resolver",
+        "conda install statsmodels"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.rst"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "statsmodels",
+      "source": "README.rst: \"pip ... statsmodels\" / \"conda install statsmodels\"",
+      "evidence_location": "readme:README.rst"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "numpy",
+      "source": "issue#6251 discusses np.clip, np.finfo(np.float64).resolution, and np.float64(1e-15)",
+      "evidence_location": "readme:README.rst"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "statsmodels.stats.outliers_influence.variance_inflation_factor",
+      "source": "issue",
+      "evidence_location": "issue:issue#6251"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "VIF values explode to extremely high numbers (e.g., 20, 40, 60, 100+), and in the precision edge-case can become inf due to division by zero with a \u201czero division warning\u201d; in other cases they become very large finite values instead of inf (e.g., vif=1e14, 1e20, 1e200).",
+      "source": "issue",
+      "evidence_location": "issue:issue#6251"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "VIF should not explode unrealistically when there is no real multicollinearity; numerical computation should yield stable, accurate VIF values (no unnecessary explosion to 20/40/60/100+; and avoiding inf caused by floating-point precision where the instability is not due to true collinearity).",
+      "source": "issue",
+      "evidence_location": "issue:issue#6251"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "issue",
+      "evidence_location": "issue:issue#6251"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 4,
+      "source": "issue",
+      "evidence_location": "issue:issue#6251"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 4,
+      "source": "issue",
+      "evidence_location": "issue:issue#6251"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 3,
+      "source": "issue",
+      "evidence_location": "issue:issue#6251"
+    },
+    {
+      "field": "numerical_characteristics.precision",
+      "value": "floating point precision makes `(1-rsquared)` exactly equal to zero, causing `vif` to become `inf` with a zero division warning; also mentions floating point around zero instead of floating point around 1 when using alternative denominators",
+      "source": "test_diff",
+      "evidence_location": "test_diff:statsmodels/stats/tests/test_influence.py:331-367"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "VIF can become `inf` (in the failure mode), or very large finite values such as `1e14`, `1e20`, `1e200`; similarly, small ridge_factor can make `vif=inf (singulat)` instead become very large but finite",
+      "source": "test_diff",
+      "evidence_location": "test_diff:statsmodels/stats/tests/test_influence.py:331-367"
+    },
+    {
+      "field": "numerical_characteristics.tolerance",
+      "value": "rtol=1e-7 (assert_allclose(vif_true, vif_false, rtol=1e-7))",
+      "source": "test_diff",
+      "evidence_location": "test_diff:statsmodels/stats/tests/test_influence.py:331-367"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 6,
+      "source": "test_diff",
+      "evidence_location": "test_diff:statsmodels/stats/tests/test_influence.py:331-367"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "test_diff",
+      "evidence_location": "test_diff:statsmodels/stats/tests/test_influence.py:331-367"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.rst",
+        "pr_body:PR#9835",
+        "diff:statsmodels/stats/outliers_influence.py:6-12",
+        "readme:README.rst",
+        "issue:issue#6251",
+        "commit:commits",
+        "readme:README.rst",
+        "issue:issue#6251"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "issue:issue#6251",
+        "pr_body:PR#9835",
+        "commit:commits",
+        "diff:statsmodels/stats/outliers_influence.py:6-12",
+        "issue:issue#9791",
+        "discussion:statsmodels/stats/outliers_influence.py",
+        "pr_body:PR#9835",
+        "pr_body:PR#9835"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "test_diff:statsmodels/stats/tests/test_influence.py:331-367",
+        "issue:issue#6251",
+        "discussion:statsmodels/stats/outliers_influence.py",
+        "issue:issue#6251",
+        "commit:commits",
+        "pr_body:PR#9835",
+        "diff:statsmodels/stats/outliers_influence.py:6-12",
+        "discussion:statsmodels/stats/outliers_influence.py"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          },
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          }
+        ],
+        "present": [
+          "environment.dependencies"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 1.0,
+        "required_total": 5,
+        "required_present": 5,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 5073,
+    "output_tokens": 1924,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.00342,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": []
+}

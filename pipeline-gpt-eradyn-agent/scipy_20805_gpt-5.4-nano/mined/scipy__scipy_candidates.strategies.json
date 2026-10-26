@@ -1,0 +1,99 @@
+{
+  "input": "pipeline-gpt-5.4-nano/scipy_20805_gpt-5.4-nano/mined/scipy__scipy_20805.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 10984,
+    "output_tokens": 3002,
+    "cost_usd": 0.00595,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 20805,
+      "reference": "https://github.com/scipy/scipy/pull/20805",
+      "buggy_commit": "dc9cbc03c0393fcd50b2f496216ad871490a5cf0",
+      "fixed_commit": "64601941a19ab8d765d8f64e33ec95d58692f457",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 6950,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce SciPy special.hyp1f1 complex-z numerical correctness regression (SciPy PR #20805). The failing transition is a new test asserting hyp1f1(a,b,z) matches high-precision reference values (mpmath/WolframAlpha) for several complex inputs. Build SciPy under the same toolchain and MKL backend configuration described, then run the specific pytest test that checks those complex-z cases.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "numpy",
+            "mpmath",
+            "pytest"
+          ],
+          "system_packages": [
+            "Intel oneAPI MKL (mkl-dynamic-lp64-seq) 2023.2",
+            "Intel oneAPI compilers (for SciPy build with MKL; required to link/use MKL as described)",
+            "git",
+            "python3-dev"
+          ],
+          "build_commands": [
+            "# 0) Obtain SciPy sources at the two revisions\n#    - Buggy: dc9cbc03c039 (the reported buggy revision)\n#    - Fixed: PR #20805 merge commit (or the revision after the fix; see risks)\n#\n# 1) Create venv and install build/test requirements\npython3.12 -m venv .venv\nsource .venv/bin/activate\npip install -U pip setuptools wheel\npip install numpy pytest mpmath\n\n# 2) Export MKL paths as indicated by the reproducer (adjust if your oneAPI install differs)\nexport MKLROOT=/opt/intel/oneapi/mkl/latest\nexport MKL_PKG_CONFIG_PATH=/opt/intel/oneapi/mkl/2023.2.0/lib/pkgconfig\n\n# 3) Build SciPy using MKL (linking to mkl-dynamic-lp64-seq)\n#    Use the same C/Fortran compilers as your oneAPI setup.\n#    Ensure SciPy is built from source (not a wheel), because the bug is in compiled code paths.\nexport CC=icc\nexport CXX=icpc\nexport FC=ifort\n\n# Optional but recommended for determinism:\nexport OMP_NUM_THREADS=1\nexport MKL_NUM_THREADS=1\nexport VECLIB_MAXIMUM_THREADS=1\n\n# Configure BLAS/LAPACK to MKL\n# (Exact flags may vary by SciPy build system; the critical constraint is MKL 2023.2.)\npython -m pip install -v -e . --no-build-isolation \\\n  --config-settings=\"--global-option=--mkl\" || true\n\n# If above does not work in your environment, use SciPy's recommended mkl build approach for your version.\n# The key is that SciPy must link against MKL 2023.2 mkl-dynamic-lp64-seq for BLAS/LAPACK.\n"
+          ],
+          "pinned_because": [
+            "pythran 0.15.0 (explicit in the issue#20797 reproducer; included to match compiled-special-function generation behavior even though it is not the numerically relevant dependency per supplied evidence)",
+            "pybind11 2.12.0 (explicit in the issue#20797 reproducer; kept consistent with the described build dependency set)",
+            "BLAS/LAPACK backend MKL 2023.2 (explicit and numerically relevant per evidence; the defect is exercised through compiled special-function implementations)"
+          ]
+        },
+        "test_command": "python -m pytest scipy/special/tests/test_hypergeometric.py -k test_complex_z",
+        "reproducing_test": "scipy/special/tests/test_hypergeometric.py::test_complex_z",
+        "success_criterion": "On the buggy revision dc9cbc03c039, the assertion in test_complex_z fails for at least one parameter set (e.g. for a=-0.25, b=0.5, z=1+2j, the buggy result is observed as something like (1+0j) rather than the reference). On the fixed revision (the commit after PR #20805\u2019s fix/merge), test_complex_z passes for all non-xfail cases (with the two xfail cases remaining xfailed).",
+        "numerical_probe": "The test checks: h = scipy.special.hyp1f1(a,b,z) and asserts it is close to the provided complex reference values with rtol=4e-15.",
+        "input_output_examples": [
+          {
+            "input": "scipy.special.hyp1f1(-0.25, 0.5, 1+2j)",
+            "buggy_output": "(1+0j)",
+            "expected_output": "(1.1814553180903435-1.2792130661292984j)"
+          }
+        ],
+        "risks": [
+          "Fixed revision is not explicitly identified by commit hash in the supplied evidence. You must map \u201cPR #20805 fixed\u201d to a specific Git revision (e.g., PR merge commit or the commit where the missing line in cchg() was restored). Without that, the PASS-on-fixed transition cannot be verified.",
+          "This defect is exercised through compiled special-function code paths that may depend on the BLAS/LAPACK backend. The strategy explicitly relies on MKL 2023.2 (mkl-dynamic-lp64-seq) as numerically relevant (per evidence). If you build without MKL 2023.2, the bug may not reproduce or may reproduce differently.",
+          "Complex branch/accuracy behavior may be input-path dependent. The transition hinges on exercising the complex-z branch affected by the cchg() change; using the exact test parameters (especially z=1+2j) is important.",
+          "Architectural/toolchain differences: only specify compilers/OS at a high level (oneAPI toolchain). On non-x86_64 or with a different compiler/MKL build, behavior may differ; ensure the same architecture and toolchain family.",
+          "The environment constraints for NumPy and SciPy are unbounded in the supplied evidence (no documented versions provided). Use the described SciPy source revision and an up-to-date NumPy compatible with building; do not assume a specific NumPy version unless you can match it from the original reproducer outside this evidence set."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "rtol=4e-15",
+          "reference_source": "Reference values in test were computed with mpmath.hyp1f1(a,b,z) and verified with Wolfram Alpha/Matlab (and a Matlab session for the z=7-24j case).",
+          "why": "The project test uses assert_allclose with rtol=4e-15 against hard-coded complex references; the bug causes obviously incorrect or very inaccurate results, exceeding this tolerance."
+        },
+        "fails_on_buggy": "test_complex_z computes h = sc.hyp1f1(-0.25, 0.5, 1+2j) (and other complex cases) and compares to the hard-coded references with rtol=4e-15. On dc9cbc03c039, the returned value is grossly wrong (e.g. (1+0j) for that input), so assert_allclose fails.",
+        "passes_on_fixed": "On the revision after PR #20805\u2019s fix (restoring the missing line in cchg()), sc.hyp1f1 returns values matching the hard-coded complex references within rtol=4e-15 for all non-xfail cases; therefore test_complex_z passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3764,
+        "output_tokens": 1539,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002677
+      },
+      "miner_usage": {
+        "input_tokens": 7220,
+        "output_tokens": 1463,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0032730000000000003,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

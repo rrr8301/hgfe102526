@@ -1,0 +1,41 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index f54c501770922..9004e8fc61c8a 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -384,6 +384,7 @@ Timezones
+ ^^^^^^^^^
+ - Bug in :class:`DatetimeIndex` addition with a :class:`DateOffset` that has only timedelta components (e.g. ``DateOffset(hours=-2)``) raising ``ValueError`` near DST transitions, while scalar :class:`Timestamp` addition worked correctly (:issue:`28610`)
+ - Bug in :meth:`DatetimeIndex.tz_convert` and :meth:`DatetimeIndex.tz_localize` returning incorrect offsets for far-future dates (roughly 2088 to 2100) with ``zoneinfo`` timezones whose DST rule follows Ramadan, such as ``Africa/Casablanca`` and ``Africa/El_Aaiun`` (:issue:`65712`)
++- Bug in :meth:`DatetimeIndex.tz_localize` and :meth:`Series.dt.tz_localize` with a ``nonexistent`` shift that moves a timestamp past the last cached DST transition of the timezone returning a wrong result, which could differ between two identical calls (:issue:`66550`)
+ - Bug in :meth:`Series.dt.tz_localize` and :meth:`Series.dt.tz_convert` (and their :class:`DatetimeIndex` counterparts) returning incorrect results for non-nanosecond resolutions (e.g. ``"s"``, ``"ms"``, ``"us"``) on timestamps before roughly 1677 (:issue:`66252`)
+ - Bug in :meth:`Timestamp.isoformat`, ``str(Timestamp)``, and the rendering of :class:`Series` and :class:`DatetimeIndex` (including ``repr``, ``astype(str)``, and :meth:`DataFrame.to_csv`) splicing the fractional seconds into the middle of the UTC offset for timestamps in a timezone whose offset is not a whole number of minutes, such as any zone in its pre-standardization era (e.g. ``Asia/Tokyo`` before 1888) (:issue:`66547`)
+ - Bug in :meth:`Timestamp.to_julian_date` and :meth:`DatetimeIndex.to_julian_date` returning the Julian date of the local wall clock for timezone-aware inputs instead of the underlying UTC instant (:issue:`54763`)
+diff --git a/pandas/_libs/tslibs/tzconversion.pyx b/pandas/_libs/tslibs/tzconversion.pyx
+index 87c850670bf61..bcdc3d54113d1 100644
+--- a/pandas/_libs/tslibs/tzconversion.pyx
++++ b/pandas/_libs/tslibs/tzconversion.pyx
+@@ -447,9 +447,23 @@ timedelta-like}
+                     result[i] = new_local - delta
+                 else:
+                     delta_idx = bisect_right_i8(info.tdata, new_local, info.ntrans)
++                    if delta_idx == info.ntrans:
++                        # new_local is past the last cached transition, so the
++                        #  offsets below would index deltas (length ntrans) out
++                        #  of bounds. The bisect compared a *local* time against
++                        #  info.tdata, which holds *UTC* instants, so the last
++                        #  delta can put us back before its own transition;
++                        #  walk back to the last one that does not.
++                        delta_idx = info.ntrans - 1
++                        while (
++                            delta_idx > 0
++                            and new_local - info.deltas[delta_idx]
++                            < info.tdata[delta_idx]
++                        ):
++                            delta_idx -= 1
+                     # Logic similar to the precompute section. But check the current
+                     # delta in case we are moving between UTC+0 and non-zero timezone
+-                    if (
++                    elif (
+                         (shift_forward or shift_delta > 0)
+                         and info.deltas[delta_idx - 1] >= 0
+                     ):

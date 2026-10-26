@@ -1,0 +1,64 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index cd3036ba03d85..0013c2ee1e920 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -455,6 +455,7 @@ Timedelta
+ - Bug in ``Series.dt.seconds`` and ``Series.dt.microseconds`` with :class:`ArrowDtype` durations returning the ``Series.dt.components`` field values (e.g. 0-59 for seconds, or 0 for ``microseconds`` on a ``"ms"`` unit) instead of the totals within each day and second respectively, inconsistent with NumPy-backed timedeltas (:issue:`63283`, :issue:`63470`)
+ - Bug in adding or subtracting a :class:`Timedelta` and a ``timedelta64`` :class:`numpy.ndarray` where an out-of-bounds result silently wrapped, and a result landing exactly on the ``NaT`` sentinel came back as a missing value, instead of raising :class:`OutOfBoundsTimedelta` as the equivalent :class:`Timedelta` and :class:`TimedeltaIndex` operations already did (:issue:`66552`)
+ - Bug in adding or subtracting two :class:`Timedelta` objects where a result landing exactly on the ``NaT`` sentinel returned ``NaT``, e.g. ``Timedelta.min - Timedelta(1, "ns")``, instead of raising :class:`OutOfBoundsTimedelta` as it already did one step further out (:issue:`66552`)
++- Bug in dividing a :class:`Timedelta` by a float :class:`numpy.ndarray` where a quotient outside the ``int64`` range silently saturated instead of raising :class:`OutOfBoundsTimedelta` as the equivalent :class:`TimedeltaIndex` operation already did (:issue:`66552`)
+ - Bug in dividing a :class:`Timedelta` by an integer, where the quotient was computed in ``float64`` and so was rounded once it exceeded ``2**53``; dividing ``Timedelta.min`` by ``1`` returned ``NaT`` and dividing ``Timedelta.max`` by ``1`` raised ``OverflowError`` instead of returning the original value (:issue:`66551`)
+ - Bug in multiplying a :class:`Series` of ``timedelta64`` by an integer or float, or dividing it by a float, where an overflowing result silently wrapped or saturated instead of raising :class:`OutOfBoundsTimedelta`; multiplying by ``inf`` now raises :class:`OutOfBoundsTimedelta` instead of returning ``NaT`` (:issue:`43178`)
+ - Bug in multiplying a :class:`Timedelta` by a NumPy integer or float scalar, where an overflowing product silently wrapped instead of raising and a ``np.float32`` multiplier lost precision, unlike the equivalent Python ``int`` or ``float`` (:issue:`66551`)
+diff --git a/pandas/_libs/tslibs/timedeltas.pyx b/pandas/_libs/tslibs/timedeltas.pyx
+index 2e9f4f40f261f..97854c440b38c 100644
+--- a/pandas/_libs/tslibs/timedeltas.pyx
++++ b/pandas/_libs/tslibs/timedeltas.pyx
+@@ -1049,6 +1049,29 @@ cdef _mul_numeric_array(_Timedelta td, ndarray other):
+     return (i8other * value).view(f"m8[{abbrev}]")
+ 
+ 
++cdef _check_div_float_array(_Timedelta td, ndarray other):
++    """
++    Raise if dividing td by any element of the float ndarray other leaves the
++    int64 range, which numpy would saturate rather than report (GH#66552).
++
++    Integer divisors need no check: a quotient can only exceed td itself when
++    the divisor is between -1 and 1.  Zero and nan divisors are excluded here
++    because numpy returns NaT for those, which TimedeltaIndex keeps.
++    """
++    if other.size == 0:
++        return
++
++    with np.errstate(divide="ignore", invalid="ignore"):
++        # in float64 regardless of the divisor's own precision: a float32
++        #  quotient would overflow to inf before we could measure it
++        quotients = np.abs(td._value / other.astype("f8", copy=False))
++    keep = ~(np.isnan(quotients) | (other == 0))
++    # a float64 quotient inside (-2**63, 2**63) is at least an ulp away from
++    #  the boundary, so the floor in __floordiv__ cannot push it out of bounds
++    if np.max(quotients, initial=0.0, where=keep) >= 2.0**63:
++        raise OutOfBoundsTimedelta("Overflow in timedelta division")
++
++
+ def _binary_op_method_timedeltalike(op, name):
+     # define a binary operation that only works if the other argument is
+     # timedelta like or an array of timedeltalike
+@@ -2925,6 +2948,8 @@ class Timedelta(_Timedelta):
+                 # see also: item_from_zerodim
+                 item = cnp.PyArray_ToScalar(cnp.PyArray_DATA(other), other)
+                 return self.__truediv__(item)
++            if other.dtype.kind == "f":
++                _check_div_float_array(self, other)
+             return self.to_timedelta64() / other
+ 
+         return NotImplemented
+@@ -3005,6 +3030,8 @@ class Timedelta(_Timedelta):
+                 if other.ndim == 0:
+                     return self // other.item()
+                 else:
++                    if other.dtype.kind == "f":
++                        _check_div_float_array(self, other)
+                     return self.to_timedelta64() // other
+ 
+             raise TypeError(f"Invalid dtype {other.dtype} for __floordiv__")

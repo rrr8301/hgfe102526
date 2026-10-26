@@ -1,0 +1,67 @@
+diff --git a/numpy/_core/src/multiarray/stringdtype/casts.cpp b/numpy/_core/src/multiarray/stringdtype/casts.cpp
+index 318e3ed967bc..f74f642a3339 100644
+--- a/numpy/_core/src/multiarray/stringdtype/casts.cpp
++++ b/numpy/_core/src/multiarray/stringdtype/casts.cpp
+@@ -1208,14 +1208,35 @@ float_to_string(
+     PyArray_StringDTypeObject *descr =
+             (PyArray_StringDTypeObject *)context->descriptors[1];
+     npy_string_allocator *allocator = NpyString_acquire_allocator(descr);
++    // borrowed reference
++    PyObject *na_object = descr->na_object;
+ 
+     while (N--) {
+         PyObject *scalar_val = PyArray_Scalar(in, float_descr, NULL);
++        if (descr->has_nan_na) {
++            // check for case when scalar_val is the na_object and store a null string
++            int na_cmp = na_eq_cmp(scalar_val, na_object);
++            if (na_cmp < 0) {
++                Py_DECREF(scalar_val);
++                goto fail;
++            }
++            if (na_cmp) {
++                Py_DECREF(scalar_val);
++                if (NpyString_pack_null(allocator, (npy_packed_static_string *)out) < 0) {
++                    PyErr_SetString(PyExc_MemoryError,
++                                    "Failed to pack null string during float "
++                                    "to string cast");
++                    goto fail;
++                }
++                goto next_step;
++            }
++        }
+         // steals reference to scalar_val
+         if (pyobj_to_string(scalar_val, out, allocator) == -1) {
+             goto fail;
+         }
+ 
++      next_step:
+         in += in_stride;
+         out += out_stride;
+     }
+diff --git a/numpy/_core/src/multiarray/stringdtype/dtype.c b/numpy/_core/src/multiarray/stringdtype/dtype.c
+index 58daa8994cfd..bee5b80d266f 100644
+--- a/numpy/_core/src/multiarray/stringdtype/dtype.c
++++ b/numpy/_core/src/multiarray/stringdtype/dtype.c
+@@ -144,7 +144,7 @@ new_stringdtype_instance(PyObject *na_object, int coerce)
+     return NULL;
+ }
+ 
+-static int
++NPY_NO_EXPORT int
+ na_eq_cmp(PyObject *a, PyObject *b) {
+     if (a == b) {
+         // catches None and other singletons like Pandas.NA
+diff --git a/numpy/_core/src/multiarray/stringdtype/dtype.h b/numpy/_core/src/multiarray/stringdtype/dtype.h
+index 2c2719602c32..9baad65d5c88 100644
+--- a/numpy/_core/src/multiarray/stringdtype/dtype.h
++++ b/numpy/_core/src/multiarray/stringdtype/dtype.h
+@@ -52,6 +52,9 @@ _eq_comparison(int scoerce, int ocoerce, PyObject *sna, PyObject *ona);
+ NPY_NO_EXPORT int
+ stringdtype_compatible_na(PyObject *na1, PyObject *na2, PyObject **out_na);
+ 
++NPY_NO_EXPORT int
++na_eq_cmp(PyObject *a, PyObject *b);
++
+ #ifdef __cplusplus
+ }
+ #endif

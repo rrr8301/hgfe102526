@@ -1,0 +1,130 @@
+diff --git a/doc/source/whatsnew/v3.0.0.rst b/doc/source/whatsnew/v3.0.0.rst
+index 259470a4f1513..7d80bb23c5fda 100644
+--- a/doc/source/whatsnew/v3.0.0.rst
++++ b/doc/source/whatsnew/v3.0.0.rst
+@@ -201,6 +201,7 @@ Other enhancements
+ - :class:`Rolling` and :class:`Expanding` now support ``nunique`` (:issue:`26958`)
+ - :class:`Rolling` and :class:`Expanding` now support aggregations ``first`` and ``last`` (:issue:`33155`)
+ - :func:`read_parquet` accepts ``to_pandas_kwargs`` which are forwarded to :meth:`pyarrow.Table.to_pandas` which enables passing additional keywords to customize the conversion to pandas, such as ``maps_as_pydicts`` to read the Parquet map data type as python dictionaries (:issue:`56842`)
++- :func:`to_numeric` on big integers converts to ``object`` datatype with python integers when not coercing. (:issue:`51295`)
+ - :meth:`.DataFrameGroupBy.transform`, :meth:`.SeriesGroupBy.transform`, :meth:`.DataFrameGroupBy.agg`, :meth:`.SeriesGroupBy.agg`, :meth:`.SeriesGroupBy.apply`, :meth:`.DataFrameGroupBy.apply` now support ``kurt`` (:issue:`40139`)
+ - :meth:`DataFrame.apply` supports using third-party execution engines like the Bodo.ai JIT compiler (:issue:`60668`)
+ - :meth:`DataFrame.iloc` and :meth:`Series.iloc` now support boolean masks in ``__getitem__`` for more consistent indexing behavior (:issue:`60994`)
+@@ -1091,7 +1092,7 @@ I/O
+ - Bug in :meth:`read_csv` raising ``TypeError`` when ``index_col`` is specified and ``na_values`` is a dict containing the key ``None``. (:issue:`57547`)
+ - Bug in :meth:`read_csv` raising ``TypeError`` when ``nrows`` and ``iterator`` are specified without specifying a ``chunksize``. (:issue:`59079`)
+ - Bug in :meth:`read_csv` where the order of the ``na_values`` makes an inconsistency when ``na_values`` is a list non-string values. (:issue:`59303`)
+-- Bug in :meth:`read_csv` with ``engine="c"`` reading big integers as strings. Now reads them as python integers. (:issue:`51295`)
++- Bug in :meth:`read_csv` with ``c`` and ``python`` engines reading big integers as strings. Now reads them as python integers. (:issue:`51295`)
+ - Bug in :meth:`read_csv` with ``engine="c"`` reading large float numbers with preceding integers as strings. Now reads them as floats. (:issue:`51295`)
+ - Bug in :meth:`read_csv` with ``engine="pyarrow"`` and ``dtype="Int64"`` losing precision (:issue:`56136`)
+ - Bug in :meth:`read_excel` raising ``ValueError`` when passing array of boolean values when ``dtype="boolean"``. (:issue:`58159`)
+diff --git a/pandas/_libs/lib.pyx b/pandas/_libs/lib.pyx
+index 8f124eed35a9c..f0da99c795ebf 100644
+--- a/pandas/_libs/lib.pyx
++++ b/pandas/_libs/lib.pyx
+@@ -1386,6 +1386,7 @@ cdef class Seen:
+         bint nan_             # seen_np.nan
+         bint uint_            # seen_uint (unsigned integer)
+         bint sint_            # seen_sint (signed integer)
++        bint overflow_        # seen_overflow
+         bint float_           # seen_float
+         bint object_          # seen_object
+         bint complex_         # seen_complex
+@@ -1414,6 +1415,7 @@ cdef class Seen:
+         self.nan_ = False
+         self.uint_ = False
+         self.sint_ = False
++        self.overflow_ = False
+         self.float_ = False
+         self.object_ = False
+         self.complex_ = False
+@@ -2379,6 +2381,9 @@ def maybe_convert_numeric(
+         ndarray[uint64_t, ndim=1] uints = cnp.PyArray_EMPTY(
+             1, values.shape, cnp.NPY_UINT64, 0
+         )
++        ndarray[object, ndim=1] pyints = cnp.PyArray_EMPTY(
++            1, values.shape, cnp.NPY_OBJECT, 0
++        )
+         ndarray[uint8_t, ndim=1] bools = cnp.PyArray_EMPTY(
+             1, values.shape, cnp.NPY_UINT8, 0
+         )
+@@ -2421,18 +2426,24 @@ def maybe_convert_numeric(
+ 
+             val = int(val)
+             seen.saw_int(val)
++            pyints[i] = val
+ 
+             if val >= 0:
+                 if val <= oUINT64_MAX:
+                     uints[i] = val
+-                else:
++                elif seen.coerce_numeric:
+                     seen.float_ = True
++                else:
++                    seen.overflow_ = True
+ 
+             if oINT64_MIN <= val <= oINT64_MAX:
+                 ints[i] = val
+ 
+             if val < oINT64_MIN or (seen.sint_ and seen.uint_):
+-                seen.float_ = True
++                if seen.coerce_numeric:
++                    seen.float_ = True
++                else:
++                    seen.overflow_ = True
+ 
+         elif util.is_bool_object(val):
+             floats[i] = uints[i] = ints[i] = bools[i] = val
+@@ -2476,6 +2487,7 @@ def maybe_convert_numeric(
+ 
+                 if maybe_int:
+                     as_int = int(val)
++                    pyints[i] = as_int
+ 
+                     if as_int in na_values:
+                         mask[i] = 1
+@@ -2490,7 +2502,7 @@ def maybe_convert_numeric(
+                             if seen.coerce_numeric:
+                                 seen.float_ = True
+                             else:
+-                                raise ValueError("Integer out of range.")
++                                seen.overflow_ = True
+                         else:
+                             if as_int >= 0:
+                                 uints[i] = as_int
+@@ -2529,11 +2541,15 @@ def maybe_convert_numeric(
+         return (floats, None)
+     elif seen.int_:
+         if seen.null_ and convert_to_masked_nullable:
+-            if seen.uint_:
++            if seen.overflow_:
++                return (pyints, mask.view(np.bool_))
++            elif seen.uint_:
+                 return (uints, mask.view(np.bool_))
+             else:
+                 return (ints, mask.view(np.bool_))
+-        if seen.uint_:
++        if seen.overflow_:
++            return (pyints, None)
++        elif seen.uint_:
+             return (uints, None)
+         else:
+             return (ints, None)
+diff --git a/pandas/io/parsers/base_parser.py b/pandas/io/parsers/base_parser.py
+index 1d96385a92cd3..a6a5a7c23b506 100644
+--- a/pandas/io/parsers/base_parser.py
++++ b/pandas/io/parsers/base_parser.py
+@@ -521,7 +521,11 @@ def _infer_types(
+             if values.dtype == np.object_:
+                 na_count = parsers.sanitize_objects(values, na_values)
+ 
+-        if result.dtype == np.object_ and try_num_bool:
++        if (
++            result.dtype == np.object_
++            and try_num_bool
++            and (len(result) == 0 or not isinstance(result[0], int))
++        ):
+             result, bool_mask = libops.maybe_convert_bool(
+                 np.asarray(values),
+                 true_values=self.true_values,

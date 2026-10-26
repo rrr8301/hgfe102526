@@ -1,0 +1,105 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_66652_gpt-5.4-nano/mined/pandas-dev__pandas_66652.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 9413,
+    "output_tokens": 3173,
+    "cost_usd": 0.005849,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66652,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66652",
+      "buggy_commit": "d8659d45c49d09f2f207b002d172e1af1a7555a7",
+      "fixed_commit": "3ac4ba16373ec2d25839b49f425a26864e86f0a1",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 8368,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas correctness bug GH#66652 (Weeks added via Week._apply_array) where unchecked int64 arithmetic can wrap or land exactly on the NPY_NAT sentinel, and where Week(n=2**32) can be truncated to 32-bit behaving like Week(0). The pandas test suite additions assert that these cases raise OverflowError (or produce the correct shifted value) rather than producing NaT/no-op behavior.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "cython",
+            "pytest"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "pip install cython",
+            "pip install .",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "No version pins are provided in the evidence; leave NumPy unpinned but ensure you use a local editable build so the buggy commit and fixed commit can be tested identically."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/tseries/offsets/test_week.py -k \"week_apply_array_lands_on_nat_sentinel or week_apply_array_out_of_bounds or week_apply_array_large_n\"",
+        "reproducing_test": "The three newly-added tests in pandas/tests/tseries/offsets/test_week.py: test_week_apply_array_lands_on_nat_sentinel, test_week_apply_array_out_of_bounds, test_week_apply_array_large_n.",
+        "success_criterion": "On the buggy revision d8659d45c49d, each test in the reproducing set fails because (a) adding Week(-1) to a DatetimeIndex constructed from a value that makes the result equal the iNaT/NPY_NAT sentinel does not raise OverflowError, and/or produces an indistinguishable NaT; (b) adding Week(1) to a DatetimeIndex([Timestamp.max]) does not raise OverflowError despite the array path previously wrapping; and (c) Week(2**32) on a datetime64[s] DatetimeIndex behaves like Week(0) (no-op) instead of producing the correct shifted timestamp. On the fixed revision, all three tests pass: the first two raise OverflowError with message matching \"Overflow in int64 addition\", and the third returns the expected shifted DatetimeIndex rather than a no-op value.",
+        "numerical_probe": "The test suite uses fixed, sentinel/overflow-sensitive inputs: Timestamp(iNaT + 7 * 86400 * 10**9), Timestamp.max, and a datetime64[s] value 946857600 with Week(2**32). These specifically exercise overflow/wrap/NPY_NAT-sentinel and 32-bit truncation behavior in Week._apply_array.",
+        "input_output_examples": [
+          {
+            "input": "dti = DatetimeIndex([Timestamp(iNaT + 7 * 86400 * 10**9)]) ; weekday in {None,1} ; dti + Week(-1, weekday=weekday)",
+            "buggy_output": "No OverflowError is raised (array path stores a wrapped value equal to the iNaT/NPY_NAT sentinel, making the result indistinguishable from missing/NaT).",
+            "expected_output": "Raises OverflowError with match \"Overflow in int64 addition\"."
+          },
+          {
+            "input": "dti = DatetimeIndex([Timestamp.max]) ; weekday in {None,0} ; dti + Week(1, weekday=weekday)",
+            "buggy_output": "No OverflowError is raised (array path previously wrapped instead of raising like the scalar path).",
+            "expected_output": "Raises OverflowError with match \"Overflow in int64 addition\"."
+          },
+          {
+            "input": "dti = DatetimeIndex(np.array([946857600], dtype='M8[s]')) ; result = dti + Week(2**32, weekday=weekday) with weekday in {None,0}",
+            "buggy_output": "Result behaves like Week(0) (i.e., the datetime64 value is unchanged, so tm.assert_index_equal would fail).",
+            "expected_output": "result equals DatetimeIndex(np.array([946857600 + 2**32 * 7 * 86400], dtype='M8[s]'))."
+          }
+        ],
+        "risks": [
+          "Without knowing the exact fixed commit SHA, you must identify the pandas revision that contains the OverflowError/checked-arithmetic fixes for Week._apply_array (PR#66652). The transition is guaranteed only when running the buggy commit d8659d45c49d and the fixed successor that includes those changes.",
+          "The failure modes can depend on which implementation path is taken (array path via Week._apply_array vs scalar path). The reproducing tests explicitly use DatetimeIndex to force the array path.",
+          "Sentinel/overflow behavior depends on datetime dtype handling (datetime64[ns] for the first two tests, datetime64[s] for the large-n test). Running with different dtype coercions may change the observed behavior.",
+          "The evidence does not specify a NumPy version; if behavior differs across NumPy releases, you may need to constrain NumPy to the version used when the defect was observed.",
+          "Architecture/toolchain effects: unchecked arithmetic/32-bit truncation is more likely to reproduce consistently on platforms where C-int truncation occurs in the buggy code path; if running on a non-matching platform/ABI, the large-n test might not fail even on the buggy commit.",
+          "Threading/backends are not specified; pandas extensions are used but threading model is not a known variable in the evidence."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": null,
+          "why": "The tests assert behavior via exceptions and direct index equality (no numeric tolerance). Therefore the oracle is effectively: (1) OverflowError raised for the overflow/wrap/NPY_NAT cases, and (2) exact equality of resulting DatetimeIndex for the large-n shift case."
+        },
+        "fails_on_buggy": "The assertion sees either (1) no OverflowError is raised for the NaT-sentinel and out-of-bounds cases, because the array path wraps/lands on the NPY_NAT sentinel instead of detecting overflow; and/or (2) the large-n test result equals the original value (behaves like Week(0)) due to 32-bit truncation of n rather than widening to int64_t.",
+        "passes_on_fixed": "All three tests pass: OverflowError with message match \"Overflow in int64 addition\" is raised for the sentinel and out-of-bounds additions, and Week(2**32) produces the exact shifted datetime equal to DatetimeIndex(np.array([946857600 + 2**32 * 7 * 86400], dtype='M8[s]'))."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3524,
+        "output_tokens": 1362,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002407
+      },
+      "miner_usage": {
+        "input_tokens": 5889,
+        "output_tokens": 1811,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0034419999999999997,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

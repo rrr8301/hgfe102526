@@ -1,0 +1,75 @@
+diff --git a/jax/_src/pallas/mosaic/lowering.py b/jax/_src/pallas/mosaic/lowering.py
+index c8f910e185f3..bd897deb3d1f 100644
+--- a/jax/_src/pallas/mosaic/lowering.py
++++ b/jax/_src/pallas/mosaic/lowering.py
+@@ -1838,22 +1838,10 @@ def _neg_lowering_rule(ctx: LoweringRuleContext, x):
+ skip_mlir_conversions.add(lax.neg_p)
+ 
+ 
+-def _sign_lowering_helper(x):
+-  if jnp.issubdtype(x.dtype, jnp.unsignedinteger):
+-    return (x != 0).astype(x.dtype)
+-
+-  if jnp.issubdtype(x.dtype, jnp.integer):
+-    return (x > 0).astype(x.dtype) - (x < 0).astype(x.dtype)
+-
+-  if jnp.issubdtype(x.dtype, jnp.floating):
+-    out = (x > 0.).astype(x.dtype) - (x < 0.).astype(x.dtype)
+-    return jnp.where(jnp.isnan(x), jnp.nan, out)
+-
+-  raise NotImplementedError
+-
+-
+ def _sign_lowering_rule(ctx: LoweringRuleContext, x):
+-  return lower_fun(_sign_lowering_helper, multiple_results=False)(ctx, x)
++  return lower_fun(
++      pallas_utils.sign_lowering_helper, multiple_results=False,
++  )(ctx, x)
+ 
+ 
+ lowering_rules[lax.sign_p] = _sign_lowering_rule
+diff --git a/jax/_src/pallas/triton/lowering.py b/jax/_src/pallas/triton/lowering.py
+index 446d87a5f347..dec48847520a 100644
+--- a/jax/_src/pallas/triton/lowering.py
++++ b/jax/_src/pallas/triton/lowering.py
+@@ -1359,15 +1359,9 @@ def _div_lowering_rule(ctx: LoweringRuleContext, x, y):
+   return _floordiv(x, y, signed=signed)
+ 
+ 
+-@register_lowering(lax.sign_p)
+-def _sign_lowering_rule(ctx: LoweringRuleContext, x):
+-  [x_aval] = ctx.avals_in
+-  signed = jnp.issubdtype(x_aval.dtype, jnp.signedinteger)
+-  zero = _full(x.type, 0)
+-  return _sub(
+-      _cast(_greater_than(x, zero, signed=signed), jnp.bool_, x_aval.dtype),
+-      _cast(_less_than(x, zero, signed=signed), jnp.bool_, x_aval.dtype),
+-  )
++register_lowering(lax.sign_p)(
++    lower_fun(pallas_utils.sign_lowering_helper, multiple_results=False)
++)
+ 
+ 
+ @register_lowering(lax.iota_p)
+diff --git a/jax/_src/pallas/utils.py b/jax/_src/pallas/utils.py
+index 6fc816e27b53..cfca0769d13d 100644
+--- a/jax/_src/pallas/utils.py
++++ b/jax/_src/pallas/utils.py
+@@ -210,3 +210,17 @@ def erf_inv_32_lowering_helper(x):
+     p = c + p * w
+ 
+   return jnp.where(jnp.abs(x) == 1.0, jnp.inf * x, p * x)
++
++
++def sign_lowering_helper(x):
++  if jnp.issubdtype(x.dtype, jnp.unsignedinteger):
++    return (x != 0).astype(x.dtype)
++
++  if jnp.issubdtype(x.dtype, jnp.integer):
++    return (x > 0).astype(x.dtype) - (x < 0).astype(x.dtype)
++
++  if jnp.issubdtype(x.dtype, jnp.floating):
++    out = (x > 0.).astype(x.dtype) - (x < 0.).astype(x.dtype)
++    return jnp.where(jnp.isnan(x), jnp.nan, out)
++
++  raise NotImplementedError(f"sign_lowering_helper not implemented for {x.dtype}")

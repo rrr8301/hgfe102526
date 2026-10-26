@@ -1,0 +1,1249 @@
+[
+  {
+    "slug": "statsmodels_10214",
+    "bug_type": "convergence",
+    "image": "python:3.10",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/2 reported example(s))",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "not_reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import warnings\nimport numpy as np\n\nimport statsmodels.tsa.statespace.dynamic_factor_mq as mod\nfrom statsmodels.tools.sm_exceptions import ConvergenceWarning, EstimationWarning\n\n\ndef _record_basic(name, res):\n    # Record mle_retvals keys and converged attribute if present\n    try:\n        rr = res.mle_retvals\n        try:\n            keys = sorted(list(getattr(rr, 'keys', lambda: [])()))\n        except Exception:\n            # Bunch doesn't always expose keys() as method; fall back\n            try:\n                keys = sorted(list(rr.__dict__.keys()))\n            except Exception:\n                keys = None\n        probe(name + '::mle_retvals_type', type(rr).__name__)\n        probe(name + '::mle_retvals_keys', keys)\n        try:\n            conv = rr.converged\n            probe(name + '::converged', conv)\n            probe(name + '::converged_dtype', type(conv).__name__)\n            probe(name + '::converged_repr', repr(conv))\n        except Exception as e:\n            probe(name + '::converged_error', '__error__: ' + type(e).__name__ + ': ' + str(e))\n    except Exception as e:\n        probe(name + '::res_mle_retvals_error', '__error__: ' + type(e).__name__ + ': ' + str(e))\n\n\ndef _get_small_em_model():\n    # Use module helper assumed by the report description.\n    # If not available, create a minimal DynamicFactorMQ instance.\n    try:\n        return mod._get_small_em_model()\n    except AttributeError:\n        # Fallback minimal construction\n        # DynamicFactorMQ requires endog; use a small random dataset.\n        endog = np.arange(20, dtype=float).reshape(10, 2)\n        # 1 factor, 1 lag, 0 irregular? keep defaults as robust as possible\n        model = mod.DynamicFactorMQ(endog=endog, k_factors=1, factor_order=1, idiosyncratic_ar1=False)\n        return model\n\n\n# --- Example 1 ---\nex1_name = \"_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)\"\ntry:\n    modl = _get_small_em_model()\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter('always')\n        res = modl.fit_em(maxiter=1, tolerance=1e-6, disp=False)\n        probe(ex1_name + '::fit_em_result_type', type(res).__name__)\n        _record_basic(ex1_name, res)\n        # Capture warning types/messages relevant\n        msgs = []\n        for wi in w:\n            if isinstance(wi.message, (ConvergenceWarning, EstimationWarning)):\n                msgs.append((type(wi.message).__name__, str(wi.message)))\n        probe(ex1_name + '::warnings', msgs)\nexcept Exception as e:\n    probe(ex1_name, '__error__: ' + type(e).__name__ + ': ' + str(e))\n\n# --- Example 2 ---\nex2_name = \"_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)\"\ntry:\n    modl = _get_small_em_model()\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter('always')\n        res = modl.fit_em(maxiter=500, tolerance=1e-6, disp=False)\n        probe(ex2_name + '::fit_em_result_type', type(res).__name__)\n        _record_basic(ex2_name, res)\n        msgs = []\n        for wi in w:\n            if isinstance(wi.message, (ConvergenceWarning, EstimationWarning)):\n                msgs.append((type(wi.message).__name__, str(wi.message)))\n        probe(ex2_name + '::warnings', msgs)\nexcept Exception as e:\n    probe(ex2_name, '__error__: ' + type(e).__name__ + ': ' + str(e))\n\n\n# --- Example 3 ---\nex3_name = \"_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)\"\ntry:\n    modl = _get_small_em_model()\n\n    # Monkeypatch _em_iteration on the instance/class.\n    # We only need to ensure that the second iteration looks like an llf decreased,\n    # and that it triggers the internal revert logic.\n    orig = getattr(modl, '_em_iteration', None)\n    if orig is None:\n        raise AttributeError('Model has no _em_iteration')\n\n    call_state = {'i': 0}\n\n    def patched_em_iteration(*args, **kwargs):\n        # Increment call counter; assume called once per EM iteration.\n        call_state['i'] += 1\n        i = call_state['i']\n        out = orig(*args, **kwargs)\n        # out expected to be (llf, ...) or dict-like; we will try to adjust llf.\n        # Ensure llf is a scalar float.\n        def as_float(x):\n            try:\n                return float(np.asarray(x).squeeze())\n            except Exception:\n                return float(x)\n\n        if isinstance(out, tuple) and len(out) >= 1:\n            llf = as_float(out[0])\n            # Force a decrease at iteration 2 (i==2)\n            if i == 2:\n                llf = llf - abs(llf) - 1.0\n                out = (llf,) + out[1:]\n            return out\n        elif isinstance(out, dict):\n            if i == 2 and 'llf' in out:\n                out['llf'] = as_float(out['llf']) - abs(as_float(out['llf'])) - 1.0\n            return out\n        else:\n            # Unknown structure; if it has attribute/field llf, try common patterns.\n            try:\n                llf = as_float(getattr(out, 'llf'))\n                if i == 2:\n                    setattr(out, 'llf', llf - abs(llf) - 1.0)\n            except Exception:\n                pass\n            return out\n\n    setattr(modl, '_em_iteration', patched_em_iteration)\n\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter('always')\n        res = modl.fit_em(maxiter=10, tolerance=1e-10, disp=False)\n\n        # Record iter and converged flag/error\n        try:\n            probe(ex3_name + '::mle_retvals_iter', getattr(res.mle_retvals, 'iter', None))\n        except Exception as e:\n            probe(ex3_name + '::mle_retvals_iter_error', '__error__: ' + type(e).__name__ + ': ' + str(e))\n        _record_basic(ex3_name, res)\n\n        msgs = []\n        for wi in w:\n            if isinstance(wi.message, (ConvergenceWarning, EstimationWarning)):\n                msgs.append((type(wi.message).__name__, str(wi.message)))\n        probe(ex3_name + '::warnings', msgs)\nfinally:\n    # Best-effort restore\n    try:\n        if 'modl' in locals() and orig is not None:\n            setattr(modl, '_em_iteration', orig)\n    except Exception:\n        pass",
+        "em_convergence_direct_reproducer": "import numpy as np\nfrom statsmodels.tsa.statespace.dynamic_factor_mq import DynamicFactorMQ\n\nrng = np.random.default_rng(0)\nnobs = 30\nk_endog = 2\nfactor = np.cumsum(rng.standard_normal(nobs)) * 0.3\nendog = factor[:, None] * rng.uniform(0.6, 1.4, k_endog)[None, :] + rng.standard_normal((nobs, k_endog)) * 0.5\n\nmod = DynamicFactorMQ(\n    endog,\n    factors=1,\n    factor_orders=1,\n    idiosyncratic_ar1=False,\n)\n\nres1 = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)\nres2 = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)\n\nmod3 = DynamicFactorMQ(\n    endog,\n    factors=1,\n    factor_orders=1,\n    idiosyncratic_ar1=False,\n)\n\norig_em_iter = mod3._em_iteration\nstate = {'count': 0}\n\ndef em_iter_force_decrease(*args, **kwargs):\n    state['count'] += 1\n    llf, res = orig_em_iter(*args, **kwargs)\n    if state['count'] == 2:\n        llf = llf - 1.0\n    return llf, res\n\nmod3._em_iteration = em_iter_force_decrease\nres3 = mod3.fit_em(maxiter=10, tolerance=1e-10, disp=False)\n\n\ndef get_conv(res):\n    info = {}\n    mle = res.mle_retvals\n    info['has_converged'] = hasattr(mle, 'converged') or ('converged' in getattr(mle, 'keys', lambda: [])())\n    try:\n        info['converged'] = bool(res.mle_retvals.converged)\n    except Exception:\n        info['converged'] = None\n    info['iter'] = getattr(res.mle_retvals, 'iter', None)\n    return info\n\nprobe1 = get_conv(res1)\nprobe2 = get_conv(res2)\nprobe3 = get_conv(res3)\n\nprobe({'s1_has_converged': probe1['has_converged'], 's1_converged': probe1['converged'], 's1_iter': probe1['iter']})\nprobe({'s2_has_converged': probe2['has_converged'], 's2_converged': probe2['converged'], 's2_iter': probe2['iter']})\nprobe({'s3_has_converged': probe3['has_converged'], 's3_converged': probe3['converged'], 's3_iter': probe3['iter']})\n"
+      },
+      "fixed": {
+        "reported_examples": "import warnings\nimport numpy as np\n\nimport statsmodels.tsa.statespace.dynamic_factor_mq as mod\nfrom statsmodels.tools.sm_exceptions import ConvergenceWarning, EstimationWarning\n\n\ndef _record_basic(name, res):\n    # Record mle_retvals keys and converged attribute if present\n    try:\n        rr = res.mle_retvals\n        try:\n            keys = sorted(list(getattr(rr, 'keys', lambda: [])()))\n        except Exception:\n            # Bunch doesn't always expose keys() as method; fall back\n            try:\n                keys = sorted(list(rr.__dict__.keys()))\n            except Exception:\n                keys = None\n        probe(name + '::mle_retvals_type', type(rr).__name__)\n        probe(name + '::mle_retvals_keys', keys)\n        try:\n            conv = rr.converged\n            probe(name + '::converged', conv)\n            probe(name + '::converged_dtype', type(conv).__name__)\n            probe(name + '::converged_repr', repr(conv))\n        except Exception as e:\n            probe(name + '::converged_error', '__error__: ' + type(e).__name__ + ': ' + str(e))\n    except Exception as e:\n        probe(name + '::res_mle_retvals_error', '__error__: ' + type(e).__name__ + ': ' + str(e))\n\n\ndef _get_small_em_model():\n    # Use module helper assumed by the report description.\n    # If not available, create a minimal DynamicFactorMQ instance.\n    try:\n        return mod._get_small_em_model()\n    except AttributeError:\n        # Fallback minimal construction\n        # DynamicFactorMQ requires endog; use a small random dataset.\n        endog = np.arange(20, dtype=float).reshape(10, 2)\n        # 1 factor, 1 lag, 0 irregular? keep defaults as robust as possible\n        model = mod.DynamicFactorMQ(endog=endog, k_factors=1, factor_order=1, idiosyncratic_ar1=False)\n        return model\n\n\n# --- Example 1 ---\nex1_name = \"_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)\"\ntry:\n    modl = _get_small_em_model()\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter('always')\n        res = modl.fit_em(maxiter=1, tolerance=1e-6, disp=False)\n        probe(ex1_name + '::fit_em_result_type', type(res).__name__)\n        _record_basic(ex1_name, res)\n        # Capture warning types/messages relevant\n        msgs = []\n        for wi in w:\n            if isinstance(wi.message, (ConvergenceWarning, EstimationWarning)):\n                msgs.append((type(wi.message).__name__, str(wi.message)))\n        probe(ex1_name + '::warnings', msgs)\nexcept Exception as e:\n    probe(ex1_name, '__error__: ' + type(e).__name__ + ': ' + str(e))\n\n# --- Example 2 ---\nex2_name = \"_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)\"\ntry:\n    modl = _get_small_em_model()\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter('always')\n        res = modl.fit_em(maxiter=500, tolerance=1e-6, disp=False)\n        probe(ex2_name + '::fit_em_result_type', type(res).__name__)\n        _record_basic(ex2_name, res)\n        msgs = []\n        for wi in w:\n            if isinstance(wi.message, (ConvergenceWarning, EstimationWarning)):\n                msgs.append((type(wi.message).__name__, str(wi.message)))\n        probe(ex2_name + '::warnings', msgs)\nexcept Exception as e:\n    probe(ex2_name, '__error__: ' + type(e).__name__ + ': ' + str(e))\n\n\n# --- Example 3 ---\nex3_name = \"_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)\"\ntry:\n    modl = _get_small_em_model()\n\n    # Monkeypatch _em_iteration on the instance/class.\n    # We only need to ensure that the second iteration looks like an llf decreased,\n    # and that it triggers the internal revert logic.\n    orig = getattr(modl, '_em_iteration', None)\n    if orig is None:\n        raise AttributeError('Model has no _em_iteration')\n\n    call_state = {'i': 0}\n\n    def patched_em_iteration(*args, **kwargs):\n        # Increment call counter; assume called once per EM iteration.\n        call_state['i'] += 1\n        i = call_state['i']\n        out = orig(*args, **kwargs)\n        # out expected to be (llf, ...) or dict-like; we will try to adjust llf.\n        # Ensure llf is a scalar float.\n        def as_float(x):\n            try:\n                return float(np.asarray(x).squeeze())\n            except Exception:\n                return float(x)\n\n        if isinstance(out, tuple) and len(out) >= 1:\n            llf = as_float(out[0])\n            # Force a decrease at iteration 2 (i==2)\n            if i == 2:\n                llf = llf - abs(llf) - 1.0\n                out = (llf,) + out[1:]\n            return out\n        elif isinstance(out, dict):\n            if i == 2 and 'llf' in out:\n                out['llf'] = as_float(out['llf']) - abs(as_float(out['llf'])) - 1.0\n            return out\n        else:\n            # Unknown structure; if it has attribute/field llf, try common patterns.\n            try:\n                llf = as_float(getattr(out, 'llf'))\n                if i == 2:\n                    setattr(out, 'llf', llf - abs(llf) - 1.0)\n            except Exception:\n                pass\n            return out\n\n    setattr(modl, '_em_iteration', patched_em_iteration)\n\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter('always')\n        res = modl.fit_em(maxiter=10, tolerance=1e-10, disp=False)\n\n        # Record iter and converged flag/error\n        try:\n            probe(ex3_name + '::mle_retvals_iter', getattr(res.mle_retvals, 'iter', None))\n        except Exception as e:\n            probe(ex3_name + '::mle_retvals_iter_error', '__error__: ' + type(e).__name__ + ': ' + str(e))\n        _record_basic(ex3_name, res)\n\n        msgs = []\n        for wi in w:\n            if isinstance(wi.message, (ConvergenceWarning, EstimationWarning)):\n                msgs.append((type(wi.message).__name__, str(wi.message)))\n        probe(ex3_name + '::warnings', msgs)\nfinally:\n    # Best-effort restore\n    try:\n        if 'modl' in locals() and orig is not None:\n            setattr(modl, '_em_iteration', orig)\n    except Exception:\n        pass",
+        "em_convergence_direct_reproducer": "import numpy as np\nfrom statsmodels.tsa.statespace.dynamic_factor_mq import DynamicFactorMQ\nfrom statsmodels.tools.sm_exceptions import ConvergenceWarning, EstimationWarning\n\n# deterministic small dataset\nrng = np.random.default_rng(0)\nnobs = 30\nk_endog = 2\nfactor = np.cumsum(rng.standard_normal(nobs)) * 0.3\nendog = factor[:, None] * rng.uniform(0.6, 1.4, k_endog)[None, :] + rng.standard_normal((nobs, k_endog)) * 0.5\n\nmod = DynamicFactorMQ(\n    endog,\n    factors=1,\n    factor_orders=1,\n    idiosyncratic_ar1=False,\n)\n\n# Scenario 1: maxiter=1\nres1 = None\nwarn1 = None\ntry:\n    import warnings\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter('always')\n        res1 = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)\n        warn1 = [(type(x.message).__name__, str(x.message)) for x in w]\nexcept Exception as e:\n    warn1 = [('EXC', repr(e))]\n\n# Scenario 2: maxiter=500\nres2 = None\nwarn2 = None\ntry:\n    import warnings\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter('always')\n        res2 = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)\n        warn2 = [(type(x.message).__name__, str(x.message)) for x in w]\nexcept Exception as e:\n    warn2 = [('EXC', repr(e))]\n\n# Scenario 3: force llf decrease at iteration 2 (monkeypatch internal _em_iteration)\nmod3 = DynamicFactorMQ(\n    endog,\n    factors=1,\n    factor_orders=1,\n    idiosyncratic_ar1=False,\n)\n\norig_em_iter = mod3._em_iteration\nstate = {'count': 0}\n\ndef em_iter_force_decrease(*args, **kwargs):\n    state['count'] += 1\n    llf, res = orig_em_iter(*args, **kwargs)\n    # induce llf decrease at/after second call\n    if state['count'] == 2:\n        llf = llf - 1.0\n    return llf, res\n\nmod3._em_iteration = em_iter_force_decrease\n\nres3 = None\nwarn3 = None\ntry:\n    import warnings\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter('always')\n        res3 = mod3.fit_em(maxiter=10, tolerance=1e-10, disp=False)\n        warn3 = [(type(x.message).__name__, str(x.message)) for x in w]\nexcept Exception as e:\n    warn3 = [('EXC', repr(e))]\n\n\ndef get_conv(res):\n    info = {}\n    mle = res.mle_retvals\n    info['has_converged'] = 'converged' in getattr(mle, 'keys', lambda: mle)() if hasattr(mle, 'keys') else hasattr(mle, '__contains__') and ('converged' in mle)\n    # safer: try direct access\n    try:\n        info['converged'] = bool(res.mle_retvals.converged)\n    except Exception:\n        info['converged'] = None\n    info['iter'] = getattr(res.mle_retvals, 'iter', None)\n    return info\n\nout = {\n    's1': get_conv(res1) if res1 is not None else None,\n    's2': get_conv(res2) if res2 is not None else None,\n    's3': get_conv(res3) if res3 is not None else None,\n}\n\n# emit probe points: one value per scenario\n# also record whether any warning types appeared for sanity\n\ndef warn_types(w):\n    return sorted(set([t for (t, msg) in (w or []) if t != 'EXC']))\n\nprobe1 = out['s1']; probe2 = out['s2']; probe3 = out['s3']\n\nprobe({'s1_has_converged': probe1['has_converged'], 's1_converged': probe1['converged'], 's1_iter': probe1['iter'], 's1_warning_types': warn_types(warn1)})\nprobe({'s2_has_converged': probe2['has_converged'], 's2_converged': probe2['converged'], 's2_iter': probe2['iter'], 's2_warning_types': warn_types(warn2)})\nprobe({'s3_has_converged': probe3['has_converged'], 's3_converged': probe3['converged'], 's3_iter': probe3['iter'], 's3_warning_types': warn_types(warn3)})\n"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/2 reported example(s))",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "not_reproduced",
+      "success_criterion": "Running the two selected tests on the buggy commit fails (AttributeError/assertion failure due to the missing res.mle_retvals.converged entry), and the same tests pass once the fix (converged = bool(not terminate and delta <= tolerance)) is applied.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 3,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 3,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "em_convergence_direct_reproducer",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: unsupported operand type(s) for -: 'SmootherResults' and 'float'"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: probe() missing 1 required positional argument: 'value'",
+                "values do not match the reference (length mismatch: 0 vs 3)"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_count": 1,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_types": [
+                "ConvergenceWarning"
+              ],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_messages": [
+                "EM reached maximum number of iterations (1), without achieving convergence: llf=-66.564, convergence criterion=inf (while specified tolerance was 1e-06)"
+              ],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::has_mle_retvals": true,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::iter": 1,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::maxiter::exception": "AttributeError: 'Bunch' object has no attribute 'maxiter'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::maxiter": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::tolerance::exception": "AttributeError: 'Bunch' object has no attribute 'tolerance'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::tolerance": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged::exception": "AttributeError: 'Bunch' object has no attribute 'converged'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnflag::exception": "AttributeError: 'Bunch' object has no attribute 'warnflag'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnflag": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::mle_retvals_type": "Bunch",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged_value": "__error__: AttributeError: 'Bunch' object has no attribute 'converged'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged_item": "__error__: KeyError: 'converged'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_count": 0,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_types": [],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_messages": [],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::has_mle_retvals": true,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::iter": 92,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::maxiter::exception": "AttributeError: 'Bunch' object has no attribute 'maxiter'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::maxiter": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::tolerance::exception": "AttributeError: 'Bunch' object has no attribute 'tolerance'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::tolerance": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged::exception": "AttributeError: 'Bunch' object has no attribute 'converged'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnflag::exception": "AttributeError: 'Bunch' object has no attribute 'warnflag'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnflag": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::mle_retvals_type": "Bunch",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged_value": "__error__: AttributeError: 'Bunch' object has no attribute 'converged'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged_item": "__error__: KeyError: 'converged'",
+              "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)": "__error__: TypeError: only length-1 arrays can be converted to Python scalars"
+            },
+            "fixed_values": {
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_count": 1,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_types": [
+                "ConvergenceWarning"
+              ],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_messages": [
+                "EM reached maximum number of iterations (1), without achieving convergence: llf=-66.564, convergence criterion=inf (while specified tolerance was 1e-06)"
+              ],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::has_mle_retvals": true,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::iter": 1,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::maxiter::exception": "AttributeError: 'Bunch' object has no attribute 'maxiter'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::maxiter": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::tolerance::exception": "AttributeError: 'Bunch' object has no attribute 'tolerance'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::tolerance": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged": false,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnflag::exception": "AttributeError: 'Bunch' object has no attribute 'warnflag'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnflag": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::mle_retvals_type": "Bunch",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged_value": false,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged_item": false,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_count": 0,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_types": [],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_messages": [],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::has_mle_retvals": true,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::iter": 92,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::maxiter::exception": "AttributeError: 'Bunch' object has no attribute 'maxiter'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::maxiter": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::tolerance::exception": "AttributeError: 'Bunch' object has no attribute 'tolerance'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::tolerance": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged": true,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnflag::exception": "AttributeError: 'Bunch' object has no attribute 'warnflag'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnflag": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::mle_retvals_type": "Bunch",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged_value": true,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged_item": true,
+              "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)": "__error__: TypeError: only length-1 arrays can be converted to Python scalars"
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)",
+            "expected_output": "res.mle_retvals.converged is False",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "res.mle_retvals has no 'converged' entry; res.mle_retvals.converged raises AttributeError (Bunch key missing). ConvergenceWarning 'maximum number of iterations' is emitted.",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_count",
+              "observed": 1,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_count",
+              "observed": 1,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)",
+            "expected_output": "res.mle_retvals.converged is True",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "res.mle_retvals has no 'converged' entry, so genuine tolerance convergence is not exposed as a boolean; res.mle_retvals.converged raises AttributeError.",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_count",
+              "observed": 0,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_count",
+              "observed": 0,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)",
+            "expected_output": "res.mle_retvals.iter < 10 and res.mle_retvals.converged is False",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "EstimationWarning 'Log-likelihood decreased'; revert decrements i so res.mle_retvals.iter < 10; no converged flag, so iter < maxiter suggests convergence.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)",
+              "observed": "__error__: TypeError: only length-1 arrays can be converted to Python scalars",
+              "evaluation_error": "TypeError: only length-1 arrays can be converted to Python scalars",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)",
+              "observed": "__error__: TypeError: only length-1 arrays can be converted to Python scalars",
+              "evaluation_error": "TypeError: only length-1 arrays can be converted to Python scalars",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 2,
+            "n_failed": 2,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 3,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata",
+            "cython>=3.0.13",
+            "meson-python>=0.18.0",
+            "numpy>=2.0.0",
+            "packaging>=21.3",
+            "pytest>=8.4.1"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-09-04T17:57:10-04:00",
+        "fixed_commit_date": "2026-09-05T07:23:06+01:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-09-05T07:23:06+01:00",
+        "build": {
+          "git": "present",
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.10/site-packages/statsmodels/__init__.py",
+            "build_requires": [
+              "meson-python",
+              "cython>=3.0.13,<4",
+              "scipy>=1.13,<2",
+              "setuptools_scm>=9.2.0,<10"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.2.6",
+              "pandas": "2.3.3",
+              "matplotlib": "3.10.9",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.49.0",
+              "meson-python": "0.20.0",
+              "cython": "3.3.0",
+              "scipy": "1.15.3",
+              "setuptools-scm": "9.2.2"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.1",
+              "cython": "cython==3.3.0"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.4.1,<10",
+              "pytest-randomly==5.0.0",
+              "pytest-run-parallel==0.10.0",
+              "pytest-xdist==3.8.0",
+              "pytest-cov==7.1.0",
+              "meson",
+              "ninja; sys_platform != \"emscripten\""
+            ],
+            "output": "--- end of build log ---\nv25+g50ef1a666.d20260928) (2.2.6)\nCollecting wrapt>=1.0\n  Downloading wrapt-2.5.0-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (231 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 231.1/231.1 kB 92.0 MB/s eta 0:00:00\nCollecting interface-meta>=1.2.0\n  Downloading interface_meta-2.0.1-py3-none-any.whl (15 kB)\nCollecting narwhals>=1.17\n  Downloading narwhals-2.26.0-py3-none-any.whl (474 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 474.0/474.0 kB 97.9 MB/s eta 0:00:00\nRequirement already satisfied: typing-extensions>=4.2.0 in /usr/local/lib/python3.10/site-packages (from formulaic>=1.1.0->statsmodels==0.15.1.dev25+g50ef1a666.d20260928) (4.16.0)\nRequirement already satisfied: pytz>=2020.1 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260928) (2026.4)\nRequirement already satisfied: tzdata>=2022.7 in /usr/local/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260928) (2026.4)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260928) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260928) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.1.dev25+g50ef1a666.d20260928-cp310-cp310-linux_x86_64.whl size=12325099 sha256=1941ac89d94ed54e3667afe702b99d8988f8c3177065eaf2fd9c5a047a5c2443\n  Stored in directory: /tmp/pip-ephem-wheel-cache-xi0ttnhm/wheels/ed/f7/86/c0f1039ac56a217e74c3b8eda25eb10695c47995525191ed3e\nSuccessfully built statsmodels\nInstalling collected packages: wrapt, patsy, narwhals, interface-meta, formulaic, statsmodels\nSuccessfully installed formulaic-1.2.2 interface-meta-2.0.1 narwhals-2.26.0 patsy-1.0.3 statsmodels-0.15.1.dev25+g50ef1a666.d20260928 wrapt-2.5.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.10/site-packages/statsmodels/__init__.py",
+            "build_requires": [
+              "meson-python",
+              "cython>=3.0.13,<4",
+              "scipy>=1.13,<2",
+              "setuptools_scm>=9.2.0,<10"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.2.6",
+              "pandas": "2.3.3",
+              "matplotlib": "3.10.9",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.49.0",
+              "meson-python": "0.20.0",
+              "cython": "3.3.0",
+              "scipy": "1.15.3",
+              "setuptools-scm": "9.2.2"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.1",
+              "cython": "cython==3.3.0"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.4.1,<10",
+              "pytest-randomly==5.0.0",
+              "pytest-run-parallel==0.10.0",
+              "pytest-xdist==3.8.0",
+              "pytest-cov==7.1.0",
+              "meson",
+              "ninja; sys_platform != \"emscripten\""
+            ],
+            "output": "--- end of build log ---\norkspace/.venvs/fixed/lib/python3.10/site-packages (from statsmodels==0.15.1.dev27+g7216b142d) (1.15.3)\nRequirement already satisfied: typing-extensions>=4.2.0 in /usr/local/lib/python3.10/site-packages (from formulaic>=1.1.0->statsmodels==0.15.1.dev27+g7216b142d) (4.16.0)\nCollecting interface-meta>=1.2.0\n  Downloading interface_meta-2.0.1-py3-none-any.whl (15 kB)\nCollecting wrapt>=1.0\n  Downloading wrapt-2.5.0-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (231 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 231.1/231.1 kB 96.1 MB/s eta 0:00:00\nCollecting narwhals>=1.17\n  Downloading narwhals-2.26.0-py3-none-any.whl (474 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 474.0/474.0 kB 60.6 MB/s eta 0:00:00\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (2.9.0.post0)\nRequirement already satisfied: pytz>=2020.1 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (2026.4)\nRequirement already satisfied: tzdata>=2022.7 in /usr/local/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (2026.4)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.1.dev27+g7216b142d-cp310-cp310-linux_x86_64.whl size=12325021 sha256=312bfc4822e44ea96c66b65ce453bf13a98ae3f572465bf350d6615a96262967\n  Stored in directory: /tmp/pip-ephem-wheel-cache-_euixpnr/wheels/e7/d9/e6/2becdd66929be2a2e7d7caf6055a3b033c7fa76967b6c0543a\nSuccessfully built statsmodels\nInstalling collected packages: wrapt, patsy, narwhals, interface-meta, formulaic, statsmodels\nSuccessfully installed formulaic-1.2.2 interface-meta-2.0.1 narwhals-2.26.0 patsy-1.0.3 statsmodels-0.15.1.dev27+g7216b142d wrapt-2.5.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 3,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 3,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 2,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "em_convergence_direct_reproducer",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: unsupported operand type(s) for -: 'SmootherResults' and 'float'"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: probe() missing 1 required positional argument: 'value'",
+                "values do not match the reference (length mismatch: 0 vs 3)"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_count": 1,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_types": [
+                "ConvergenceWarning"
+              ],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_messages": [
+                "EM reached maximum number of iterations (1), without achieving convergence: llf=-66.564, convergence criterion=inf (while specified tolerance was 1e-06)"
+              ],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::has_mle_retvals": true,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::iter": 1,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::maxiter::exception": "AttributeError: 'Bunch' object has no attribute 'maxiter'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::maxiter": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::tolerance::exception": "AttributeError: 'Bunch' object has no attribute 'tolerance'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::tolerance": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged::exception": "AttributeError: 'Bunch' object has no attribute 'converged'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnflag::exception": "AttributeError: 'Bunch' object has no attribute 'warnflag'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnflag": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::mle_retvals_type": "Bunch",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged_value": "__error__: AttributeError: 'Bunch' object has no attribute 'converged'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged_item": "__error__: KeyError: 'converged'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_count": 0,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_types": [],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_messages": [],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::has_mle_retvals": true,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::iter": 92,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::maxiter::exception": "AttributeError: 'Bunch' object has no attribute 'maxiter'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::maxiter": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::tolerance::exception": "AttributeError: 'Bunch' object has no attribute 'tolerance'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::tolerance": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged::exception": "AttributeError: 'Bunch' object has no attribute 'converged'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnflag::exception": "AttributeError: 'Bunch' object has no attribute 'warnflag'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnflag": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::mle_retvals_type": "Bunch",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged_value": "__error__: AttributeError: 'Bunch' object has no attribute 'converged'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged_item": "__error__: KeyError: 'converged'",
+              "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)": "__error__: TypeError: only length-1 arrays can be converted to Python scalars"
+            },
+            "fixed_values": {
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_count": 1,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_types": [
+                "ConvergenceWarning"
+              ],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_messages": [
+                "EM reached maximum number of iterations (1), without achieving convergence: llf=-66.564, convergence criterion=inf (while specified tolerance was 1e-06)"
+              ],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::has_mle_retvals": true,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::iter": 1,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::maxiter::exception": "AttributeError: 'Bunch' object has no attribute 'maxiter'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::maxiter": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::tolerance::exception": "AttributeError: 'Bunch' object has no attribute 'tolerance'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::tolerance": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged": false,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnflag::exception": "AttributeError: 'Bunch' object has no attribute 'warnflag'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnflag": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::mle_retvals_type": "Bunch",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged_value": false,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::converged_item": false,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_count": 0,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_types": [],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_messages": [],
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::has_mle_retvals": true,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::iter": 92,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::maxiter::exception": "AttributeError: 'Bunch' object has no attribute 'maxiter'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::maxiter": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::tolerance::exception": "AttributeError: 'Bunch' object has no attribute 'tolerance'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::tolerance": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged": true,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnflag::exception": "AttributeError: 'Bunch' object has no attribute 'warnflag'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnflag": null,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::mle_retvals_type": "Bunch",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged_value": true,
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::converged_item": true,
+              "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)": "__error__: TypeError: only length-1 arrays can be converted to Python scalars"
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 3,
+        "n_judged": 2,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 1,
+        "n_contested": 0,
+        "unobserved": [
+          "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)"
+        ],
+        "verdict": "not_reproduced",
+        "examples": [
+          {
+            "input": "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)",
+            "expected_output": "res.mle_retvals.converged is False",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "res.mle_retvals has no 'converged' entry; res.mle_retvals.converged raises AttributeError (Bunch key missing). ConvergenceWarning 'maximum number of iterations' is emitted.",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_count",
+              "observed": 1,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)::warnings_count",
+              "observed": 1,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)",
+            "expected_output": "res.mle_retvals.converged is True",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "res.mle_retvals has no 'converged' entry, so genuine tolerance convergence is not exposed as a boolean; res.mle_retvals.converged raises AttributeError.",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_count",
+              "observed": 0,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)::warnings_count",
+              "observed": 0,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)",
+            "expected_output": "res.mle_retvals.iter < 10 and res.mle_retvals.converged is False",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "EstimationWarning 'Log-likelihood decreased'; revert decrements i so res.mle_retvals.iter < 10; no converged flag, so iter < maxiter suggests convergence.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)",
+              "observed": "__error__: TypeError: only length-1 arrays can be converted to Python scalars",
+              "evaluation_error": "TypeError: only length-1 arrays can be converted to Python scalars",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)",
+              "observed": "__error__: TypeError: only length-1 arrays can be converted to Python scalars",
+              "evaluation_error": "TypeError: only length-1 arrays can be converted to Python scalars",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 2,
+          "n_failed": 2,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 3,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "Running the two selected tests on the buggy commit fails (AttributeError/assertion failure due to the missing res.mle_retvals.converged entry), and the same tests pass once the fix (converged = bool(not terminate and delta <= tolerance)) is applied."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata",
+          "cython>=3.0.13",
+          "meson-python>=0.18.0",
+          "numpy>=2.0.0",
+          "packaging>=21.3",
+          "pytest>=8.4.1"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-09-04T17:57:10-04:00",
+      "fixed_commit_date": "2026-09-05T07:23:06+01:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-09-05T07:23:06+01:00",
+      "build": {
+        "git": "present",
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.10/site-packages/statsmodels/__init__.py",
+          "build_requires": [
+            "meson-python",
+            "cython>=3.0.13,<4",
+            "scipy>=1.13,<2",
+            "setuptools_scm>=9.2.0,<10"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.2.6",
+            "pandas": "2.3.3",
+            "matplotlib": "3.10.9",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.49.0",
+            "meson-python": "0.20.0",
+            "cython": "3.3.0",
+            "scipy": "1.15.3",
+            "setuptools-scm": "9.2.2"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.1",
+            "cython": "cython==3.3.0"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.4.1,<10",
+            "pytest-randomly==5.0.0",
+            "pytest-run-parallel==0.10.0",
+            "pytest-xdist==3.8.0",
+            "pytest-cov==7.1.0",
+            "meson",
+            "ninja; sys_platform != \"emscripten\""
+          ],
+          "output": "--- end of build log ---\nv25+g50ef1a666.d20260928) (2.2.6)\nCollecting wrapt>=1.0\n  Downloading wrapt-2.5.0-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (231 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 231.1/231.1 kB 92.0 MB/s eta 0:00:00\nCollecting interface-meta>=1.2.0\n  Downloading interface_meta-2.0.1-py3-none-any.whl (15 kB)\nCollecting narwhals>=1.17\n  Downloading narwhals-2.26.0-py3-none-any.whl (474 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 474.0/474.0 kB 97.9 MB/s eta 0:00:00\nRequirement already satisfied: typing-extensions>=4.2.0 in /usr/local/lib/python3.10/site-packages (from formulaic>=1.1.0->statsmodels==0.15.1.dev25+g50ef1a666.d20260928) (4.16.0)\nRequirement already satisfied: pytz>=2020.1 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260928) (2026.4)\nRequirement already satisfied: tzdata>=2022.7 in /usr/local/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260928) (2026.4)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260928) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260928) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.1.dev25+g50ef1a666.d20260928-cp310-cp310-linux_x86_64.whl size=12325099 sha256=1941ac89d94ed54e3667afe702b99d8988f8c3177065eaf2fd9c5a047a5c2443\n  Stored in directory: /tmp/pip-ephem-wheel-cache-xi0ttnhm/wheels/ed/f7/86/c0f1039ac56a217e74c3b8eda25eb10695c47995525191ed3e\nSuccessfully built statsmodels\nInstalling collected packages: wrapt, patsy, narwhals, interface-meta, formulaic, statsmodels\nSuccessfully installed formulaic-1.2.2 interface-meta-2.0.1 narwhals-2.26.0 patsy-1.0.3 statsmodels-0.15.1.dev25+g50ef1a666.d20260928 wrapt-2.5.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.10/site-packages/statsmodels/__init__.py",
+          "build_requires": [
+            "meson-python",
+            "cython>=3.0.13,<4",
+            "scipy>=1.13,<2",
+            "setuptools_scm>=9.2.0,<10"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.2.6",
+            "pandas": "2.3.3",
+            "matplotlib": "3.10.9",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.49.0",
+            "meson-python": "0.20.0",
+            "cython": "3.3.0",
+            "scipy": "1.15.3",
+            "setuptools-scm": "9.2.2"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.1",
+            "cython": "cython==3.3.0"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.4.1,<10",
+            "pytest-randomly==5.0.0",
+            "pytest-run-parallel==0.10.0",
+            "pytest-xdist==3.8.0",
+            "pytest-cov==7.1.0",
+            "meson",
+            "ninja; sys_platform != \"emscripten\""
+          ],
+          "output": "--- end of build log ---\norkspace/.venvs/fixed/lib/python3.10/site-packages (from statsmodels==0.15.1.dev27+g7216b142d) (1.15.3)\nRequirement already satisfied: typing-extensions>=4.2.0 in /usr/local/lib/python3.10/site-packages (from formulaic>=1.1.0->statsmodels==0.15.1.dev27+g7216b142d) (4.16.0)\nCollecting interface-meta>=1.2.0\n  Downloading interface_meta-2.0.1-py3-none-any.whl (15 kB)\nCollecting wrapt>=1.0\n  Downloading wrapt-2.5.0-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (231 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 231.1/231.1 kB 96.1 MB/s eta 0:00:00\nCollecting narwhals>=1.17\n  Downloading narwhals-2.26.0-py3-none-any.whl (474 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 474.0/474.0 kB 60.6 MB/s eta 0:00:00\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (2.9.0.post0)\nRequirement already satisfied: pytz>=2020.1 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (2026.4)\nRequirement already satisfied: tzdata>=2022.7 in /usr/local/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (2026.4)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.1.dev27+g7216b142d-cp310-cp310-linux_x86_64.whl size=12325021 sha256=312bfc4822e44ea96c66b65ce453bf13a98ae3f572465bf350d6615a96262967\n  Stored in directory: /tmp/pip-ephem-wheel-cache-_euixpnr/wheels/e7/d9/e6/2becdd66929be2a2e7d7caf6055a3b033c7fa76967b6c0543a\nSuccessfully built statsmodels\nInstalling collected packages: wrapt, patsy, narwhals, interface-meta, formulaic, statsmodels\nSuccessfully installed formulaic-1.2.2 interface-meta-2.0.1 narwhals-2.26.0 patsy-1.0.3 statsmodels-0.15.1.dev27+g7216b142d wrapt-2.5.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 5,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the EM convergence-flag bug in DynamicFactorMQ by showing the selected tests fail on the buggy revision and pass on the fixed revision (and that 'mle_retvals.converged' is missing on buggy but present on fixed).",
+          "milestones": [
+            "buggy_tests_observe_failure [buggy] \u2014 Selected EM convergence tests fail on the buggy revision, demonstrating the missing/incorrect 'mle_retvals.converged' behavior. (1 steps, verify: test_ran, test_fails)",
+            "buggy_probe_converged_missing [buggy] \u2014 Directly probe fit_em results on buggy revision to show 'mle_retvals.converged' is absent or otherwise not retrievable. (1 steps, verify: examples_reproduced)",
+            "fixed_tests_pass [fixed] \u2014 Selected EM convergence tests pass on the fixed revision. (1 steps, verify: test_ran, test_passes)",
+            "fixed_probe_converged_present [fixed] \u2014 Directly probe fit_em results on fixed revision to show 'mle_retvals.converged' is present and matches expected booleans. (1 steps, verify: examples_reproduced)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs statsmodels.tsa.statespace.tests.test_dynamic_factor_mq -k \"test_em_convergence_flag or test_em_convergence_flag_after_revert\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 3.89
+      },
+      {
+        "verification": {
+          "milestone": "buggy_tests_observe_failure",
+          "verified": true,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.0,
+          1.0,
+          0.0,
+          92.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_probe_converged_missing",
+          "verified": false,
+          "results": [
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/3 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 3 never evaluated \u2014 the preamble does not bind everything they need: _get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False); _get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False); _get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failed 'converged key missing' milestone with probes that directly reproduce the EM-convergence boolean behavior from the mined examples on both buggy and fixed revisions, then verify the fixed revision restores the expected 'converged' value.",
+          "milestones": [
+            "buggy_probe_examples_converged_behavior [buggy] \u2014 On the buggy revision, evaluate the three mined EM fit_em example expressions and record that res.mle_retvals.converged is missing or not retrievable (thereby reproducing the defect without relying on the broken test module). (2 steps, verify: steps_succeeded)",
+            "fixed_probe_examples_converged_behavior [fixed] \u2014 On the fixed revision, evaluate the same three mined EM example expressions and record that res.mle_retvals.converged exists and matches the expected booleans (False for maxiter=1, True for maxiter=500, and False after forced llf decrease revert). (1 steps, verify: steps_succeeded, examples_reproduced)",
+            "revisions_show_defect_fixed [fixed] \u2014 Confirm the buggy and fixed revisions differ in the evaluated example outputs for mle_retvals.converged/iter, demonstrating the convergence-flag bug is fixed. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.0,
+          1.0,
+          0.0,
+          92.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.0,
+          1.0,
+          0.0,
+          92.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_probe_examples_converged_behavior",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.0,
+          1.0,
+          0.0,
+          92.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "fixed_probe_examples_converged_behavior",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/3 mined example(s) reproduced (verdict not_reproduced, 0 still wrong on fixed); 1 never evaluated \u2014 the preamble does not bind everything they need: _get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failed converged-key example evaluation with direct probes and then verify buggy vs fixed differ by the converged boolean behavior for the three mined EM scenarios.",
+          "milestones": [
+            "fixed_probe_converged_boolean_via_reproducer [fixed] \u2014 On the fixed revision, directly evaluate a minimal reproducer for the three EM-convergence scenarios and record whether res.mle_retvals.converged exists and matches expected booleans (False for maxiter=1, True for maxiter=500, False after forced llf decrease revert). (2 steps, verify: steps_succeeded)",
+            "buggy_vs_fixed_revisions_differ_on_converged [buggy] \u2014 Show that buggy vs fixed produce different availability/value for mle_retvals.converged in the three EM cases, and that fixed matches the expected booleans while buggy does not provide the converged key. (1 steps, verify: steps_succeeded)",
+            "fixed_restores_converged_expected_values [fixed] \u2014 Using the paired probe results, confirm the fixed revision provides converged with correct boolean values for all three cases while buggy lacks it (or differs), establishing the convergence flag fix. (1 steps, verify: steps_succeeded, probe_ran)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -c \"from statsmodels.tsa.statespace.dynamic_factor_mq import DynamicFactorMQ; import numpy as np; print('ok', DynamicFactorMQ)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 1.22
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "em_convergence_mined_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[fixed] run_numerical_probe(em_convergence_mined_examples) \u2014 Probe the three EM scenarios using the mined expressions as close as possible but evaluated as Python code to avoid the check harness preamble-binding failure; record converged/iter and whether converged key exists."
+      },
+      {
+        "verification": {
+          "milestone": "fixed_probe_converged_boolean_via_reproducer",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[fixed] run_numerical_probe(em_convergence_mined_examples) \u2014 Probe the three EM scenarios using the mined expressions as close as possible but evaluated as Python code to avoid the check harness preamble-binding failure; record converged/iter and whether converged key exists. did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Re-establish, without relying on the non-executed reproducer probe, that the fixed revision exposes mle_retvals.converged with correct booleans for all three EM scenarios and that the buggy revision does not provide/does not match the expected behavior.",
+          "milestones": [
+            "fixed_probe_converged_boolean_via_reproducer [fixed] \u2014 On the fixed revision, run a direct numerical reproducer (not report-harness bound) that fits three small DynamicFactorMQ EM scenarios and records whether res.mle_retvals has 'converged' and its boolean value; verify it matches expected [False, True, False] and that iter/maxiter behavior is consiste (2 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "buggy_vs_fixed_revisions_differ_on_converged [buggy] \u2014 Run the identical direct numerical reproducer on the buggy revision and confirm it differs from fixed in converged-key availability/value for the three scenarios: expected mismatches include missing/None converged values. (1 steps, verify: steps_succeeded, probe_ran, revisions_differ)",
+            "run_selected_em_convergence_tests [fixed] \u2014 Verify the actual failing reproducer tests now succeed on fixed and still fail on buggy (to confirm the fix affects the reported convergence-flag behavior). (1 steps, verify: steps_succeeded, test_ran, test_passes)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "em_convergence_direct_reproducer",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: TypeError: probe() missing 1 required positional argument: 'value'",
+          "values do not match the reference (length mismatch: 0 vs 3)"
+        ],
+        "expected": [
+          0,
+          1,
+          0
+        ],
+        "observed": []
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -c \"from statsmodels.tsa.statespace.dynamic_factor_mq import DynamicFactorMQ; import inspect; import statsmodels; print('ok', DynamicFactorMQ, statsmodels.__version__)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 1.19
+      },
+      {
+        "verification": {
+          "milestone": "fixed_probe_converged_boolean_via_reproducer",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'em_convergence_direct_reproducer': probe raised: TypeError: probe() missing 1 required positional argument: 'value'; values do not match the reference (length mismatch: 0 vs 3)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "em_convergence_direct_reproducer",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: TypeError: unsupported operand type(s) for -: 'SmootherResults' and 'float'"
+        ],
+        "expected": [
+          null,
+          null,
+          null
+        ],
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_vs_fixed_revisions_differ_on_converged",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": false,
+              "detail": "no difference established (transition fail->missing, numeric persistent)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs statsmodels.tsa.statespace.tests.test_dynamic_factor_mq -k test_em_convergence_flag -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 2.6
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs statsmodels.tsa.statespace.tests.test_dynamic_factor_mq -k test_em_convergence_flag -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 2.41
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_em_convergence_flag",
+          "command": "python -I -m pytest --pyargs statsmodels.tsa.statespace.tests.test_dynamic_factor_mq -k test_em_convergence_flag -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "statsmodels",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_em_convergence_flag",
+              "command": "python -I -m pytest --pyargs statsmodels.tsa.statespace.tests.test_dynamic_factor_mq -k test_em_convergence_flag -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.0,
+          1.0,
+          0.0,
+          92.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.0,
+          1.0,
+          0.0,
+          92.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: TypeError: Unknown keyword arguments: ['k_factors', 'factor_order']."
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: TypeError: Unknown keyword arguments: ['k_factors', 'factor_order']."
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "example_probe_repair": {
+          "examples_repaired": [
+            "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)"
+          ],
+          "observed_before": 2,
+          "observed_after": 0
+        }
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "exception",
+            "checked": 3,
+            "recorded": 2,
+            "error": null,
+            "could_not_evaluate": 2
+          },
+          "fixed": {
+            "status": "exception",
+            "checked": 3,
+            "recorded": 2,
+            "error": null,
+            "could_not_evaluate": 2
+          },
+          "preamble": "generated probe",
+          "observed": 2
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "not_reproduced",
+        "examples": "0/2"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/2 reported example(s))"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 6,
+      "input_tokens": 20642,
+      "output_tokens": 11020,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.017903
+    }
+  }
+]

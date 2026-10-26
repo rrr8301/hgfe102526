@@ -1,0 +1,108 @@
+{
+  "input": "pipeline-gpt-5.4-nano/scipy_24742_gpt-5.4-nano/mined/scipy__scipy_24742.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 12975,
+    "output_tokens": 2851,
+    "cost_usd": 0.006159,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 24742,
+      "reference": "https://github.com/scipy/scipy/pull/24742",
+      "buggy_commit": "cbef678e05c5a30b53b7d05606ed3dde074f7b48",
+      "fixed_commit": "0a86361920dc920e8fe9089f5591a9f6ec76d657",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 6348,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce SciPy correctness bug in `scipy.stats.linregress` for exactly two input points (n=2): buggy revision returns `pvalue=0.0`, `stderr=0.0`, `intercept_stderr=0.0` instead of `NaN`. Use OpenBLAS 0.3.30 with the specified configuration, install SciPy from the buggy commit cbef678e05c5, run the specific linregress test that asserts NaN inference for the two-point case; it fails on buggy and passes on the fixed revision where the PR changes expected results.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.13.7",
+          "pip_packages": [
+            "numpy",
+            "pybind11==2.13.6",
+            "pytest",
+            "packaging",
+            "Cython"
+          ],
+          "system_packages": [
+            "pkg-config",
+            "gfortran",
+            "python3-dev",
+            "build-essential",
+            "libopenblas-dev (or OpenBLAS sources/config to match 0.3.30)"
+          ],
+          "build_commands": [
+            "python -m pip install -U pip wheel setuptools Cython pytest packaging numpy pybind11==2.13.6",
+            "git clone https://github.com/scipy/scipy.git",
+            "cd scipy",
+            "git checkout cbef678e05c5",
+            "export OPENBLAS_VERSION=0.3.30",
+            "export OPENBLAS_HOME=/path/to/openblas-0.3.30",
+            "# Ensure OpenBLAS matches the documented configuration: USE_64BITINT=0, USE_OPENMP=0, HASWELL, DYNAMIC_ARCH=1, etc. (see risks)",
+            "# Configure build so OpenBLAS (not system BLAS/LAPACK) is used; example approach: set BLAS/LAPACK roots via env and/or --with-blas/--with-lapack flags if available for your build tooling",
+            "python -m pip install -v . --no-build-isolation -Csetup-args=\"--blas=${OPENBLAS_HOME} --lapack=${OPENBLAS_HOME}\""
+          ],
+          "pinned_because": [
+            "pybind11==2.13.6 (explicit documented constraint)",
+            "OpenBLAS 0.3.30 with USE_64BITINT=NO, NO_CBLAS=NO_LAPACK=NO_LAPACKE=, DYNAMIC_ARCH=ON, DYNAMIC_OLDER=OFF, NO_AFFINITY=1, USE_OPENMP=0, HASWELL, MAX_THREADS=128 (explicit documented constraint; numerically relevant)"
+          ]
+        },
+        "test_command": "python -m pytest scipy/stats/tests/test_stats.py -k \"linregress_two_points_nan_inference\"",
+        "reproducing_test": "test_linregress_two_points_nan_inference (adds gh-24684 coverage): constructs x=[0.,1.], y=[0.,1.], calls stats.linregress(x,y), then asserts res.pvalue, res.stderr, res.intercept_stderr are NaN (while slope/intercept remain correct).",
+        "success_criterion": "On buggy revision cbef678e05c5, `xp_assert_equal(res.pvalue, NaN)`, `xp_assert_equal(res.stderr, NaN)`, or `xp_assert_equal(res.intercept_stderr, NaN)` fails because the results are `0.0` (i.e., zero is returned instead of NaN for the two-point degenerate degrees-of-freedom case). On the fixed revision (the PR that implements the NaN inference behavior from gh-24684), the same assertions pass because `pvalue`, `stderr`, and `intercept_stderr` are `NaN`.",
+        "numerical_probe": "None required beyond the test above; the transition is decided entirely by whether those three fields are NaN vs 0.0 for x=[0.,1.], y=[0.,1.].",
+        "input_output_examples": [
+          {
+            "input": "stats.linregress([0, 1], [0, 1])",
+            "buggy_output": "LinregressResult(..., pvalue=0.0, stderr=0.0, intercept_stderr=0.0)",
+            "expected_output": "LinregressResult(..., pvalue=NaN, stderr=NaN, intercept_stderr=NaN)"
+          }
+        ],
+        "risks": [
+          "OpenBLAS configuration is numerically relevant in the provided evidence. Reproduction may fail to transition if OpenBLAS is not built/installed exactly as documented (0.3.30 with USE_64BITINT=NO, USE_OPENMP=0, DYNAMIC_ARCH=ON, etc.). If you cannot match the exact OpenBLAS build, expect possible non-transition.",
+          "This test likely should be backend-independent (pure Python/NumPy computations), but SciPy may use different code paths depending on array API backend (`xp` fixture). Ensure you run under the same `xp` setting used by SciPy\u2019s test suite (typically NumPy; the test uses the `xp` fixture).",
+          "If the fixed revision is not the one that includes the added test `test_linregress_two_points_nan_inference` (or if it\u2019s present but the logic change is incomplete), the transition may not occur; ensure the comparison is between cbef678e05c5 and the revision where gh-24684\u2019s NaN behavior was implemented.",
+          "Platform/toolchain: requires building SciPy; differences in compilers/optimization flags could theoretically affect floating-point handling. Use the same compiler family/flags as your CI baseline if possible."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "SciPy PR/test update described in the provided diff and issue evidence (gh-24684): asserts exact NaN equality for res.pvalue, res.stderr, res.intercept_stderr when n==2 degenerate case.",
+          "why": "The test uses `xp_assert_equal` to compare to `xp.asarray(xp.nan)`, so the oracle is exact (NaN vs not-NaN), not tolerance-based."
+        },
+        "fails_on_buggy": "The test asserts NaN for `res.pvalue`, `res.stderr`, `res.intercept_stderr`. On cbef678e05c5, the observed behavior is that these fields are `0.0` for x=[0.,1.], y=[0.,1.], so the NaN assertions fail.",
+        "passes_on_fixed": "On the fixed revision corresponding to the gh-24684 PR, `linregress` returns `NaN` for `pvalue`, `stderr`, and `intercept_stderr` for exactly two points, so the NaN equality assertions pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3296,
+        "output_tokens": 1367,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002368
+      },
+      "miner_usage": {
+        "input_tokens": 9679,
+        "output_tokens": 1484,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0037909999999999997,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

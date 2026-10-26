@@ -1,0 +1,104 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_67974_gpt-5.4-nano/mined/pandas-dev__pandas_67974.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 10816,
+    "output_tokens": 3170,
+    "cost_usd": 0.006125,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 67974,
+      "reference": "https://github.com/pandas-dev/pandas/pull/67974",
+      "buggy_commit": "14ae93f64c2017ccab6febd9329773cb7de47b9a",
+      "fixed_commit": "00398c9ee6b775d2b11621b57c69072e9aa2431e",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 8301,
+      "withheld": [],
+      "strategy": {
+        "summary": "Build pandas from the buggy and fixed revisions with a NumPy version consistent with pandas\u2019 documented minimums, then run the specific regression tests that encode GH#65431\u2019s corrected pre-cast adoption guard. The buggy revision should fail the lossy pre-cast and SparseArray NaN cases (either by raising or by producing the wrong value without the expected warning), while the fixed revision should match the provided expected DataFrames.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "pyarrow"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "git clone https://github.com/pandas-dev/pandas.git",
+            "cd pandas",
+            "git checkout 14ae93f64c20",
+            "python -m pip install -U pip setuptools wheel",
+            "python -m pip install cython",
+            "python -m pip install .",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy: only a documented minimum supported version exists in the provided evidence; the strategy must choose a NumPy version within pandas\u2019 supported range but cannot infer an exact pin from the evidence.",
+            "pyarrow: required only if you want the StringDtype(na_value=np.nan), 2**70 case to run with the 'int64[pyarrow]' parametrizations; the tests themselves skip if pyarrow is unavailable."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/indexing/test_loc.py -k 'test_loc_setitem_with_expansion_lossy_pre_cast or test_loc_setitem_with_expansion_sparse_na'",
+        "reproducing_test": "pandas/tests/indexing/test_loc.py::TestLocSetitemExpansion::test_loc_setitem_with_expansion_lossy_pre_cast\nand\npandas/tests/indexing/test_loc.py::TestLocSetitemExpansion::test_loc_setitem_with_expansion_sparse_na",
+        "success_criterion": "On the buggy revision (14ae93f64c20), the test suite fails: either (1) `test_loc_setitem_with_expansion_lossy_pre_cast` fails because the buggy pre-cast is adopted unconditionally leading to the wrong dtype/value outcome and/or an unexpected exception, and/or because the expected `Pandas4Warning` with an 'incompatible dtype' message is not produced; and/or (2) `test_loc_setitem_with_expansion_sparse_na` fails because the appended `np.nan` is turned into `0` (resulting in `isna()` being all-False) instead of producing a SparseArray ending with `np.nan`. On the fixed revision (the PR\u2019s merge commit, i.e., the commit after 14ae93f64c20 in PR#67974), both tests pass by declining the optimization when casted results don\u2019t land back on the column dtype or don\u2019t preserve every value, producing the expected widened/object column or the expected SparseArray with `np.nan` retained and emitting the incompatible-dtype warning in the lossy cases.",
+        "numerical_probe": "Not required separately; the tests\u2019 assertions cover the correctness outcomes (value retention/widening) rather than checking numeric precision directly.",
+        "input_output_examples": [
+          {
+            "input": "df = pd.DataFrame({\"a\": pd.arrays.SparseArray([0, 1, 2], fill_value=0)}); df.loc[3] = [np.nan]",
+            "buggy_output": "SparseArray yields an appended value equivalent to 0 instead of NaN (e.g., `df[\"a\"].isna().tolist()` becomes [False, False, False, False])",
+            "expected_output": "SparseArray keeps NaN at the appended position (e.g., expected frame has SparseArray([0.0, 1.0, 2.0, np.nan]))"
+          },
+          {
+            "input": "df = pd.DataFrame({\"a\": pd.Series([1, 2], dtype=pd.StringDtype(na_value=np.nan))}); df.loc[2] = [2**70]",
+            "buggy_output": "Raises (e.g., OverflowError from cast) instead of producing the expected widened object result with a Pandas4Warning",
+            "expected_output": "DataFrame({'a': pd.Series([1, 2, 2**70], dtype=object)}) plus `Pandas4Warning` matching 'incompatible dtype'"
+          }
+        ],
+        "risks": [
+          "Exact Python version and exact NumPy version are not specified in the evidence; choose a NumPy version within pandas\u2019 supported range, but if you accidentally pick an incompatible NumPy (too old/new) the test may fail for unrelated reasons or may skip certain casting paths.",
+          "The `pyarrow`-dependent parametrizations in `test_loc_setitem_with_expansion_lossy_pre_cast` are skipped if `pyarrow` is not installed. To maximize coverage of the lossy-pre-cast regression, install pyarrow; otherwise the test still exercises the `StringDtype` and other non-pyarrow cases.",
+          "Some failures (especially the exception-vs-silent-wrong-value split) can be sensitive to build options and platform specifics (e.g., whether pyarrow casting raises OverflowError vs another exception type). The oracle here is the test assertions themselves, which are designed to be deterministic across platforms that run those code paths.",
+          "If pandas is built without required extension dependencies or with a significantly different compiler/toolchain, the reproduction may not transition (build differences can change code paths)."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": "The expected DataFrames and warning behavior are encoded directly in the provided patched tests: `test_loc_setitem_with_expansion_lossy_pre_cast` constructs `expected = pd.DataFrame({'a': pd.Series([*original, item], dtype=object)})` and asserts `tm.assert_frame_equal(df, expected)` under `tm.assert_produces_warning(Pandas4Warning, match='incompatible dtype')`; `test_loc_setitem_with_expansion_sparse_na` asserts exact `tm.assert_frame_equal` against `SparseArray([0.0, 1.0, 2.0, np.nan])`.",
+          "why": "No separate numeric tolerance/oracle is required; the regression is caught by dtype/value equality and warning emission as asserted by pandas\u2019 own tests."
+        },
+        "fails_on_buggy": "The test assertion should fail on 14ae93f64c20: (a) `test_loc_setitem_with_expansion_sparse_na` should not produce the expected SparseArray ending with `np.nan` (instead it keeps the pre-cast/coerced value, turning NaN into 0), so `tm.assert_frame_equal` fails; and/or (b) `test_loc_setitem_with_expansion_lossy_pre_cast` should either raise unexpectedly (e.g., OverflowError for 2**70 into StringDtype with future.infer_string disabled/spelled-out dtype) or produce a DataFrame that doesn\u2019t match the expected object-widened frame, and it may not emit the required `Pandas4Warning` about incompatible dtype.",
+        "passes_on_fixed": "On the PR\u2019s fixed revision (the commit that includes the guard: adopt pre-cast only when casted_dtype matches orig dtype and all values compare equal, with numpy EA unwrapping), both tests pass: the lossy setitem-with-expansion widens to object and emits the incompatible-dtype warning, and SparseArray setitem retains `np.nan` in the appended position."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 4471,
+        "output_tokens": 1537,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002815
+      },
+      "miner_usage": {
+        "input_tokens": 6345,
+        "output_tokens": 1633,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0033100000000000004,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

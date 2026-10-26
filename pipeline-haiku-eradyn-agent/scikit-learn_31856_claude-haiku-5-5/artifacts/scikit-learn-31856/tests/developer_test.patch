@@ -1,0 +1,79 @@
+diff --git a/sklearn/linear_model/tests/test_sgd.py b/sklearn/linear_model/tests/test_sgd.py
+index a01d402aaab01..87284f117d0e4 100644
+--- a/sklearn/linear_model/tests/test_sgd.py
++++ b/sklearn/linear_model/tests/test_sgd.py
+@@ -1771,6 +1771,53 @@ def test_ocsvm_vs_sgdocsvm():
+     assert corrcoef >= 0.9
+ 
+ 
++def test_sgd_oneclass_convergence():
++    # Check that the optimization does not end early and that the stopping criterion
++    # is working. Non-regression test for #30027
++    for nu in [0.1, 0.5, 0.9]:
++        # no need for large max_iter
++        model = SGDOneClassSVM(
++            nu=nu, max_iter=100, tol=1e-3, learning_rate="constant", eta0=1e-3
++        )
++        model.fit(iris.data)
++        # 6 is the minimal number of iterations that should be surpassed, after which
++        # the optimization can stop
++        assert model.n_iter_ > 6
++
++
++def test_sgd_oneclass_vs_linear_oneclass():
++    # Test convergence vs. liblinear `OneClassSVM` with kernel="linear"
++    for nu in [0.1, 0.5, 0.9]:
++        # allow enough iterations, small dataset
++        model = SGDOneClassSVM(
++            nu=nu, max_iter=20000, tol=None, learning_rate="constant", eta0=1e-3
++        )
++        model_ref = OneClassSVM(kernel="linear", nu=nu, tol=1e-6)  # reference model
++        model.fit(iris.data)
++        model_ref.fit(iris.data)
++
++        preds = model.predict(iris.data)
++        dec_fn = model.decision_function(iris.data)
++
++        preds_ref = model_ref.predict(iris.data)
++        dec_fn_ref = model_ref.decision_function(iris.data)
++
++        dec_fn_corr = np.corrcoef(dec_fn, dec_fn_ref)[0, 1]
++        preds_corr = np.corrcoef(preds, preds_ref)[0, 1]
++        # check weights and intercept concatenated together for correlation
++        coef_corr = np.corrcoef(
++            np.concatenate([model.coef_, -model.offset_]),
++            np.concatenate([model_ref.coef_.flatten(), model_ref.intercept_]),
++        )[0, 1]
++        # share of predicted 1's
++        share_ones = (preds == 1).sum() / len(preds)
++
++        assert dec_fn_corr > 0.99
++        assert preds_corr > 0.95
++        assert coef_corr > 0.99
++        assert_allclose(1 - share_ones, nu)
++
++
+ def test_l1_ratio():
+     # Test if l1 ratio extremes match L1 and L2 penalty settings.
+     X, y = datasets.make_classification(
+diff --git a/sklearn/tests/test_multioutput.py b/sklearn/tests/test_multioutput.py
+index f1afa10030f57..83c35bb3a626b 100644
+--- a/sklearn/tests/test_multioutput.py
++++ b/sklearn/tests/test_multioutput.py
+@@ -425,14 +425,14 @@ def test_multi_output_classification_partial_fit_sample_weights():
+     Xw = [[1, 2, 3], [4, 5, 6], [1.5, 2.5, 3.5]]
+     yw = [[3, 2], [2, 3], [3, 2]]
+     w = np.asarray([2.0, 1.0, 1.0])
+-    sgd_linear_clf = SGDClassifier(random_state=1, max_iter=20)
++    sgd_linear_clf = SGDClassifier(random_state=1, max_iter=20, tol=None)
+     clf_w = MultiOutputClassifier(sgd_linear_clf)
+     clf_w.fit(Xw, yw, w)
+ 
+     # unweighted, but with repeated samples
+     X = [[1, 2, 3], [1, 2, 3], [4, 5, 6], [1.5, 2.5, 3.5]]
+     y = [[3, 2], [3, 2], [2, 3], [3, 2]]
+-    sgd_linear_clf = SGDClassifier(random_state=1, max_iter=20)
++    sgd_linear_clf = SGDClassifier(random_state=1, max_iter=20, tol=None)
+     clf = MultiOutputClassifier(sgd_linear_clf)
+     clf.fit(X, y)
+     X_test = [[1.5, 2.5, 3.5]]

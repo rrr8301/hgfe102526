@@ -1,0 +1,131 @@
+diff --git a/modules/dnn/src/cuda/eltwise_ops.cu b/modules/dnn/src/cuda/eltwise_ops.cu
+index 16f6cccf6b16..667d13af226c 100644
+--- a/modules/dnn/src/cuda/eltwise_ops.cu
++++ b/modules/dnn/src/cuda/eltwise_ops.cu
+@@ -132,8 +132,23 @@ void eltwise_op(const Stream& stream, TensorSpan<T> output, TensorView<T> x, Ten
+     }
+     else
+     {
+-        CV_Assert(is_shape_compatible(output, x));
+-        CV_Assert(is_shape_compatible(output, y));
++        auto inShape1 = x.shape_as_vector();
++        auto inShape2 = y.shape_as_vector();
++        auto outShape = output.shape_as_vector();
++
++        std::size_t x_ndims = inShape1.size(), y_ndims = inShape2.size();
++        if (x_ndims >= y_ndims) {
++            for (std::size_t i = 0; i < (x_ndims - y_ndims); i++) {
++               inShape2.insert(inShape2.begin(), 1);
++            }
++        } else {
++            for (std::size_t i = 0; i < (y_ndims - x_ndims); i++) {
++               inShape1.insert(inShape1.begin(), 1);
++            }
++        }
++
++        CV_Assert(is_shape_compatible1(outShape, inShape1));
++        CV_Assert(is_shape_compatible1(outShape, inShape2));
+ 
+         /* matching singleton axes in both input tensors can be eliminated
+          *
+@@ -148,20 +163,21 @@ void eltwise_op(const Stream& stream, TensorSpan<T> output, TensorView<T> x, Ten
+          * x: [1, 256, 32, 32] -> [256, 32, 32]
+          * y: [1, 256, 1, 1] -> [256, 1, 1]
+          */
+-        for (int r = 0; r < output.rank(); r++)
+-        {
+-            while (x.rank() > r && y.rank() > r && x.get_axis_size(r) == 1 && y.get_axis_size(r) == 1) {
+-                CV_Assert(output.get_axis_size(r) == 1);
+-
+-                x.squeeze(r);
+-                y.squeeze(r);
+-                output.squeeze(r);
++        int eliminate_times = 0;
++        for (std::size_t i = 0; i < outShape.size(); i++) {
++            if (inShape1[i] == 1 && inShape2[i] == 1 && outShape[i] == 1 && i != (outShape.size() - 1)) {
++                eliminate_times++;
++            } else {
++                break;
++            }
++        }
++        if (eliminate_times > 0) {
++            for (int i = 0; i < eliminate_times; i++) {
++                inShape1.erase(inShape1.begin());
++                inShape2.erase(inShape2.begin());
++                outShape.erase(outShape.begin());
+             }
+         }
+-
+-        auto inShape1 = x.shape_as_vector();
+-        auto inShape2 = y.shape_as_vector();
+-        auto outShape = output.shape_as_vector();
+ 
+         /* contiguous axes that do not broadcast can be merged into one axis
+          *
+diff --git a/modules/dnn/src/cuda4dnn/csl/tensor.hpp b/modules/dnn/src/cuda4dnn/csl/tensor.hpp
+index 5a1286de99d6..8f495ac8071c 100644
+--- a/modules/dnn/src/cuda4dnn/csl/tensor.hpp
++++ b/modules/dnn/src/cuda4dnn/csl/tensor.hpp
+@@ -1187,6 +1187,23 @@ namespace cv { namespace dnn { namespace cuda4dnn { namespace csl {
+         return true;
+     }
+ 
++    template <typename ShapeType>
++    bool is_shape_compatible1(const ShapeType &x_shape, const ShapeType &y_shape) noexcept {
++        const auto x_ndims = x_shape.size(), y_ndims = y_shape.size();
++
++        if (x_ndims != y_ndims) {
++            return false;
++        }
++
++        for (int i = 0; i < x_ndims; i++) {
++            if (x_shape[i] != y_shape[i] && x_shape[i] != 1 && y_shape[i] != 1) {
++                 return false;
++            }
++        }
++
++        return true;
++    }
++
+     /** returns the rank to which the given tensor can be squeezed to */
+     template <class TensorType>
+     std::size_t get_effective_rank(const TensorType& x) noexcept {
+diff --git a/modules/dnn/src/layers/nary_eltwise_layers.cpp b/modules/dnn/src/layers/nary_eltwise_layers.cpp
+index c988ec69f299..18c15d7263f3 100644
+--- a/modules/dnn/src/layers/nary_eltwise_layers.cpp
++++ b/modules/dnn/src/layers/nary_eltwise_layers.cpp
+@@ -797,19 +797,6 @@ class NaryEltwiseLayerImpl CV_FINAL : public NaryEltwiseLayer
+     {
+         auto context = reinterpret_cast<csl::CSLContext*>(context_);
+ 
+-        auto input_0_shape = inputs[0].dynamicCast<CUDABackendWrapper>()->getShape();
+-        for (int i = 1; i < inputs.size(); i++)
+-        {
+-            auto input_i_shape = inputs[i].dynamicCast<CUDABackendWrapper>()->getShape();
+-            if (input_0_shape.size() != input_i_shape.size())
+-                return Ptr<BackendNode>();
+-            // check if the shape can be supported by `eltwise_ops.cu`, or return the default BackendNode
+-            for (int j = 0; j < input_0_shape.size(); j++)
+-                if (input_0_shape[j] != input_i_shape[j] &&
+-                    input_0_shape[j] != 1 && input_i_shape[j] != 1)
+-                    return Ptr<BackendNode>();
+-        }
+-
+         cuda4dnn::EltwiseOpType op_ = cuda4dnn::EltwiseOpType::SUM;
+         switch (op) {
+             case OPERATION::MAX:
+diff --git a/modules/dnn/src/net_impl_fuse.cpp b/modules/dnn/src/net_impl_fuse.cpp
+index dfa542bd4184..b81bf14accf0 100644
+--- a/modules/dnn/src/net_impl_fuse.cpp
++++ b/modules/dnn/src/net_impl_fuse.cpp
+@@ -728,6 +728,10 @@ void Net::Impl::fuseLayers(const std::vector<LayerPin>& blobsToKeep_)
+                     if(inp_i_data->skip || inp_i_data->consumers.size() != 1)
+                         break;
+ #ifdef HAVE_CUDA
++                    /* Risk: Not every operation in "NaryEltwise" is supported in the CUDA backend. There is a chance
++                             that Concat's output is filled with data in both host and device, leading to data missing.
++                             See https://github.com/opencv/opencv/issues/24721 for more details.
++                    */
+                     if (preferableBackend == DNN_BACKEND_CUDA &&
+                         (inp_i_data->layerInstance->supportBackend(DNN_BACKEND_CUDA) == false ||
+                          (inp_i_data->layerInstance->type != "Convolution" &&

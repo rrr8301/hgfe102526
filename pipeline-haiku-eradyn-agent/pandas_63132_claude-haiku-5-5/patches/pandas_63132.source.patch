@@ -1,0 +1,80 @@
+diff --git a/.gitignore b/.gitignore
+index d951f3fb9cbad..a4a21293ab1ee 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -21,6 +21,7 @@
+ .noseids
+ .ipynb_checkpoints
+ .tags
++tags
+ .cache/
+ .vscode/
+ 
+diff --git a/doc/source/whatsnew/v3.0.0.rst b/doc/source/whatsnew/v3.0.0.rst
+index c96bb7f663368..b01689a9b715e 100644
+--- a/doc/source/whatsnew/v3.0.0.rst
++++ b/doc/source/whatsnew/v3.0.0.rst
+@@ -1237,6 +1237,7 @@ Groupby/resample/rolling
+ - Bug in :meth:`.DataFrameGroupBy.groups` and :meth:`.SeriesGroupby.groups` that would not respect groupby argument ``dropna`` (:issue:`55919`)
+ - Bug in :meth:`.DataFrameGroupBy.median` where nat values gave an incorrect result. (:issue:`57926`)
+ - Bug in :meth:`.DataFrameGroupBy.quantile` when ``interpolation="nearest"`` is inconsistent with :meth:`DataFrame.quantile` (:issue:`47942`)
++- Bug in :meth:`.DataFrameGroupBy.sum` and :meth:`.SeriesGroupby.groups` returning ``NaN`` on overflow. These methods now returns ``inf`` or ``-inf`` on overflow. (:issue:`60303`)
+ - Bug in :meth:`.DataFrameGroupBy` reductions where non-Boolean values were allowed for the ``numeric_only`` argument; passing a non-Boolean value will now raise (:issue:`62778`)
+ - Bug in :meth:`.Resampler.interpolate` on a :class:`DataFrame` with non-uniform sampling and/or indices not aligning with the resulting resampled index would result in wrong interpolation (:issue:`21351`)
+ - Bug in :meth:`.Series.rolling` when used with a :class:`.BaseIndexer` subclass and computing min/max (:issue:`46726`)
+diff --git a/pandas/_libs/groupby.pyx b/pandas/_libs/groupby.pyx
+index 9f8ff86cbcb7e..c23a88390aa64 100644
+--- a/pandas/_libs/groupby.pyx
++++ b/pandas/_libs/groupby.pyx
+@@ -5,6 +5,7 @@ from cython cimport (
+ )
+ from libc.math cimport (
+     NAN,
++    isfinite,
+     sqrt,
+ )
+ from libc.stdlib cimport (
+@@ -778,9 +779,9 @@ def group_sum(
+                 if not isna_entry:
+                     nobs[lab, j] += 1
+ 
+-                    if sum_t is object:
++                    if sum_t is object or sum_t is int64_t or sum_t is uint64_t:
+                         # NB: this does not use 'compensation' like the non-object
+-                        #  track does.
++                        #  and non-integer track does.
+                         if nobs[lab, j] == 1:
+                             # i.e. we haven't added anything yet; avoid TypeError
+                             #  if e.g. val is a str and sumx[lab, j] is 0
+@@ -793,13 +794,29 @@ def group_sum(
+                         y = val - compensation[lab, j]
+                         t = sumx[lab, j] + y
+                         compensation[lab, j] = t - sumx[lab, j] - y
+-                        if compensation[lab, j] != compensation[lab, j]:
+-                            # GH#53606
++
++                        # Handle float overflow
++                        if (
++                            sum_t is float32_t or sum_t is float64_t
++                        ) and not isfinite(compensation[lab, j]):
++                            # GH#53606; GH#60303
+                             # If val is +/- infinity compensation is NaN
+                             # which would lead to results being NaN instead
+                             # of +/- infinity. We cannot use util.is_nan
+                             # because of no gil
+                             compensation[lab, j] = 0
++
++                        # Handle complex overflow
++                        if (
++                            sum_t is complex64_t or sum_t is complex128_t
++                        ) and not isfinite(compensation[lab, j].real):
++                            compensation[lab, j].real = 0
++
++                        if (
++                            sum_t is complex64_t or sum_t is complex128_t
++                        ) and not isfinite(compensation[lab, j].imag):
++                            compensation[lab, j].imag = 0
++
+                         sumx[lab, j] = t
+                 elif not skipna:
+                     if uses_mask:

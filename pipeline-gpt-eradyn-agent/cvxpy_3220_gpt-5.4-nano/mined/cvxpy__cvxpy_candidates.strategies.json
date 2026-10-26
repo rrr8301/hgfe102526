@@ -1,0 +1,94 @@
+{
+  "input": "pipeline-gpt-5.4-nano/cvxpy_3220_gpt-5.4-nano/mined/cvxpy__cvxpy_3220.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 9739,
+    "output_tokens": 2676,
+    "cost_usd": 0.005294,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "cvxpy/cvxpy",
+      "pr_number": 3220,
+      "reference": "https://github.com/cvxpy/cvxpy/pull/3220",
+      "buggy_commit": "8fb412018aefc516a50bd0261c883f8071023595",
+      "fixed_commit": "a08ce56ad4658e1f82de01a774697cfd55786702",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 7073,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce cvxpy/cvxpy#3220 by running the new regression test that inspects the DNLP warm-start initialization produced by `sum_largest_canon` for `sum_largest(x, k)`. The buggy revision computes `q` from the k-th smallest (equivalently max of non-top-k) and initializes `t` only for top-k indices, making the warm-start infeasible for \u201cmiddle\u201d elements (those with `x_i > q` but not in top-k). The fixed revision computes `q` as the k-th largest threshold and sets `t = max(0, x-q)` for all elements so feasibility inequalities hold.",
+        "needs_build": false,
+        "language": "Python",
+        "environment": {
+          "python_version": ">= 3.11",
+          "pip_packages": [
+            "cvxpy",
+            "numpy",
+            "scipy",
+            "clarabel",
+            "osqp",
+            "scs",
+            "highspy"
+          ],
+          "system_packages": [],
+          "build_commands": [],
+          "pinned_because": [
+            "To ensure the availability and behavior of the DNLP warm-start path for `sum_largest_canon`, install a CVXPY version that includes the PR\u2019s test; then run that test against two revisions: the buggy commit `8fb412018aef` and the fixed commit (the PR\u2019s merged revision).",
+            "SCS/OSQP/Clarabel/highspy may be pulled in transitively by cvxpy; the specific bug reproduces purely from canonicalization/warm-start logic and does not require a solver, but keeping dependencies consistent avoids unrelated test failures."
+          ]
+        },
+        "test_command": "pytest -q cvxpy/tests/nlp_tests/test_huber_sum_largest.py::TestSumLargestCanonWarmStart::test_warmstart_feasibility",
+        "reproducing_test": "TestSumLargestCanonWarmStart.test_warmstart_feasibility (added in the diff)",
+        "success_criterion": "On the buggy revision (cvxpy at commit `8fb412018aef`), the test fails: `q` is computed incorrectly (k-th smallest threshold) and `t` is only nonzero on top-k indices, so either the `assert q.value == pytest.approx(8.0)` fails and/or the feasibility check `assert np.all(x.value <= t.value + q.value + 1e-10)` fails for middle elements (6.0 and 8.0 in the provided vector). On the fixed revision (the commit after PR #3220), `q` is computed as the k-th largest threshold (= 8.0 for the given x and k=2) and `t` is initialized for all elements as `max(0, x-q)`, so both `q/t` assertions and the feasibility inequalities pass.",
+        "numerical_probe": "The test uses DNLP warm-start initialization returned by `sum_largest_canon(sum_largest(x,2), [x])`. It extracts `t` and `q` from `obj.args[0].args[0]` and `obj.args[1].args[1]`, then checks feasibility `x.value <= t.value + q.value + 1e-10` and nonnegativity `t.value >= -1e-10`. It also asserts `q.value == approx(8.0)` and exact expected `t` values at indices corresponding to the top-k elements.",
+        "input_output_examples": [
+          {
+            "input": "x.value = [1.0, 10.0, 6.0, 8.0, 3.0, 9.0], k=2",
+            "buggy_output": "Warm-start produces an incorrect `q` computed from the k-th smallest and initializes `t` only for top-k indices, making `x_i <= t_i + q` violated for middle elements (notably indices with values 6.0 and 8.0).",
+            "expected_output": "Warm-start produces `q = 8.0` (k-th largest threshold) and `t = max(0, x-q)` for all elements, so `x <= t+q` holds for all i."
+          }
+        ],
+        "risks": [
+          "The environment constraints for this reproduction are not solver-related: the test inspects canonicalizer output/warm-start values without calling IPOPT. Still, running the full test file may include other tests that rely on solvers; run only the single test node provided in `test_command` to avoid unrelated failures.",
+          "This defect transition depends on the DNLP warm-start code path in `sum_largest_canon`. If dependency versions or build flags change that code path, the test may behave differently (e.g., returning `None` warm-start values).",
+          "The evidence does not specify exact fixed commit hash; you must test the PR\u2019s merged/fixed revision and compare against `8fb412018aef`.",
+          "Only run on a compatible Python (>=3.11 per the provided environment) because the repo/test may assume modern packaging behavior. No special architecture assumptions were provided; however, if CI uses a specific BLAS/LAPACK stack, it could affect unrelated numeric tests (again, mitigate by running only this test node)."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "The regression test in the provided diff encodes the expected warm-start structure: `q.value == approx(8.0)`, `t.value` equals an all-zeros vector except `t[1]=10-8` and `t[5]=9-8`, and feasibility inequalities `x.value <= t.value + q.value + 1e-10` and `t.value >= -1e-10`.",
+          "why": "This test does not require external numeric reference solutions; it directly asserts the algebraic warm-start initialization required by the epigraph LP constraints for `sum_k_largest(x)`."
+        },
+        "fails_on_buggy": "The test fails because on `8fb412018aef` the warm-start `q`/`t` are initialized with the bug: `q` corresponds to the wrong threshold and `t` is only partially initialized. As a result, `q.value` will not match `approx(8.0)` and/or `np.all(x.value <= t.value + q.value + 1e-10)` will be false for middle elements (those where `x_i` lies between the incorrect `q` and the top-k values).",
+        "passes_on_fixed": "The test passes on the fixed revision because `sum_largest_canon` initializes `q` as the minimum of the k largest values (k-th largest threshold) and initializes `t` for all entries as `max(0, x-q)`, making `x_i <= t_i + q` and `t_i >= 0` hold for every i, including the middle elements."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3296,
+        "output_tokens": 1394,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002402
+      },
+      "miner_usage": {
+        "input_tokens": 6443,
+        "output_tokens": 1282,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002892,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

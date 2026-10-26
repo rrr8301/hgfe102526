@@ -1,0 +1,147 @@
+diff --git a/pandas/tests/arrays/period/test_constructors.py b/pandas/tests/arrays/period/test_constructors.py
+index 92fede5a23485..119a774ecbec7 100644
+--- a/pandas/tests/arrays/period/test_constructors.py
++++ b/pandas/tests/arrays/period/test_constructors.py
+@@ -4,7 +4,10 @@
+ from pandas._libs.tslibs import iNaT
+ from pandas._libs.tslibs.offsets import MonthEnd
+ from pandas._libs.tslibs.period import IncompatibleFrequency
+-from pandas.errors import Pandas4Warning
++from pandas.errors import (
++    OutOfBoundsDatetime,
++    Pandas4Warning,
++)
+ 
+ import pandas as pd
+ import pandas._testing as tm
+@@ -221,6 +224,36 @@ def test_int_deprecation_warns_once_all_dtypes(values):
+     tm.assert_period_array_equal(result, expected)
+ 
+ 
++@pytest.mark.filterwarnings("ignore:Passing integer data:pandas.errors.Pandas4Warning")
++@pytest.mark.parametrize("val", [2**63, 2**64 - 5])
++def test_from_sequence_uint64_out_of_bounds(val):
++    # GH#64231 uint64 values above int64 max used to wrap in the cast to
++    #  int64, silently giving a negative (BC) year or NaT
++    arr = np.array([val], dtype=np.uint64)
++    msg = f'Parsing "{val}" to datetime overflows'
++    with pytest.raises(OutOfBoundsDatetime, match=msg):
++        PeriodArray._from_sequence(arr, dtype="period[D]")
++
++
++@pytest.mark.parametrize("dtype", ["Int64", "int64", "int64[pyarrow]", object])
++def test_from_sequence_integers_container_independent(dtype):
++    # GH#64227 the integer container must not change how the integers are
++    #  read; the numpy-int64 path used to read 200701 as year 200701 while
++    #  every other path read it as 2007-01
++    if "pyarrow" in str(dtype):
++        pytest.importorskip("pyarrow")
++    values = pd.array([200701, 200702], dtype=dtype)
++
++    depr_msg = "Passing integer data"
++    with tm.assert_produces_warning(Pandas4Warning, match=depr_msg):
++        result = PeriodArray._from_sequence(values, dtype="period[M]")
++
++    expected = PeriodArray._from_sequence(
++        [pd.Period("2007-01", "M"), pd.Period("2007-02", "M")], dtype="period[M]"
++    )
++    tm.assert_period_array_equal(result, expected)
++
++
+ def test_from_td64nat_sequence_raises():
+     # GH#44507
+     td = pd.NaT.to_numpy("m8[ns]")
+diff --git a/pandas/tests/indexes/period/test_constructors.py b/pandas/tests/indexes/period/test_constructors.py
+index b3895caef107e..03c709576e5d2 100644
+--- a/pandas/tests/indexes/period/test_constructors.py
++++ b/pandas/tests/indexes/period/test_constructors.py
+@@ -1,3 +1,5 @@
++import re
++
+ import numpy as np
+ import pytest
+ 
+@@ -411,29 +413,27 @@ def test_constructor_datetime64arr(self):
+         expected = PeriodIndex(vals.astype("M8[ns]"), freq="D")
+         tm.assert_index_equal(pi, expected)
+ 
+-    def test_constructor_int_array_out_of_bounds(self):
+-        # GH#64158 integer values are interpreted as years; out-of-int32-range
+-        #  values used to silently wrap instead of raising like Period(int)
+-        arr = np.array([2**32 + 1985], dtype=np.int64)
+-        msg = "Out of bounds year: 4294969281"
++    @pytest.mark.parametrize(
++        "val", [2**32 + 1985, 10**18, 2**31 - 1, -(2**32), 100000, 999]
++    )
++    def test_constructor_int_array_out_of_bounds(self, val):
++        # GH#64158 an integer that Period(int) rejects is rejected here too,
++        #  with the same error; these used to silently wrap or give a bogus
++        #  year. The parser's wording moves with the dateutil and python
++        #  version, so take the scalar's error as the expected one.
++        try:
++            Period(str(val), freq="Y")
++        except ValueError as err:
++            expected = err
++        else:
++            raise AssertionError(f"Period({val}) did not raise")
++
++        arr = np.array([val], dtype=np.int64)
+         depr_msg = "Passing integer data"
+         with tm.assert_produces_warning(Pandas4Warning, match=depr_msg):
+-            with pytest.raises(OutOfBoundsDatetime, match=msg):
++            with pytest.raises(type(expected), match=re.escape(str(expected))):
+                 PeriodIndex(arr, freq="Y")
+ 
+-        # negative out-of-range and a nanosecond-epoch-like value also raise
+-        for val in [-(2**32), 10**18]:
+-            with tm.assert_produces_warning(Pandas4Warning, match=depr_msg):
+-                with pytest.raises(OutOfBoundsDatetime, match="Out of bounds year"):
+-                    PeriodIndex(np.array([val], dtype=np.int64), freq="Y")
+-
+-        # int32 boundaries and >4-digit years remain valid; for freq="Y" the
+-        #  ordinal is year - 1970
+-        for val in [2**31 - 1, -(2**31), 100000]:
+-            with tm.assert_produces_warning(Pandas4Warning, match=depr_msg):
+-                result = PeriodIndex(np.array([val], dtype=np.int64), freq="Y")
+-            assert result.asi8[0] == val - 1970
+-
+     @pytest.mark.filterwarnings(
+         "ignore:Passing integer data:pandas.errors.Pandas4Warning"
+     )
+@@ -447,6 +447,19 @@ def test_constructor_int_array_out_of_bounds_ordinal(self, dtype):
+         with pytest.raises(OutOfBoundsDatetime, match=msg):
+             PeriodIndex(arr, freq="ns")
+ 
++    @pytest.mark.parametrize("dtype", [np.int64, object])
++    @pytest.mark.parametrize("val", [2000, 200701, 20000101])
++    def test_constructor_int_array_matches_scalar(self, val, dtype):
++        # GH#64158 the int64-array path read the integer as a literal calendar
++        #  year, so it disagreed with Period(int, freq) and with the
++        #  object-dtype path for anything but a four-digit year
++        expected = PeriodIndex([Period(str(val), freq="D")])
++
++        depr_msg = "Passing integer data"
++        with tm.assert_produces_warning(Pandas4Warning, match=depr_msg):
++            result = PeriodIndex(np.array([val], dtype=dtype), freq="D")
++        tm.assert_index_equal(result, expected)
++
+     @pytest.mark.parametrize("box", [None, "series", "index"])
+     def test_constructor_datetime64arr_ok(self, box):
+         # https://github.com/pandas-dev/pandas/issues/23438
+diff --git a/pandas/tests/series/test_constructors.py b/pandas/tests/series/test_constructors.py
+index 77826e9eb44a5..b87b149305ef8 100644
+--- a/pandas/tests/series/test_constructors.py
++++ b/pandas/tests/series/test_constructors.py
+@@ -1309,9 +1309,11 @@ def test_constructor_infer_period(self, data_constructor):
+         assert result.dtype == "Period[D]"
+ 
+     def test_construct_from_ints_including_iNaT_scalar_period_dtype(self):
++        # GH#64158 the integers are read as calendar years, so they have to be
++        #  years Period(int, freq) accepts
+         msg = "Passing integer data"
+         with tm.assert_produces_warning(Pandas4Warning, match=msg):
+-            series = Series([0, 1000, 2000, pd._libs.iNaT], dtype="period[D]")
++            series = Series([1000, 2000, 3000, pd._libs.iNaT], dtype="period[D]")
+ 
+         val = series[3]
+         assert isna(val)

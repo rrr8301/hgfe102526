@@ -1,0 +1,97 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_66648_gpt-5.4-nano/mined/pandas-dev__pandas_66648.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 13242,
+    "output_tokens": 3463,
+    "cost_usd": 0.006976,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66648,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66648",
+      "buggy_commit": "e0839ed77b2f536d49ccee27a22697b9ff9b38b3",
+      "fixed_commit": "fd9e79889f7f080409e8a447a78e738bcf8b7d35",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 7211,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas correctness bug (GH#66648 / GH#66552) where adding a DateOffset to datetime64 can (a) land exactly on the iNaT sentinel and incorrectly return NaT instead of raising OverflowError, and (b) when doing finer-resolution promotion (e.g. M8[s] -> ns), can wrap to an unrelated date instead of raising OutOfBoundsDatetime. The reproduction forces the exact pandas arithmetic paths exercised by the PR\u2019s test edits in pandas/tests/arithmetic/test_datetime64.py and verifies that the added pytest assertions fail on the buggy commit e0839ed77b2f and pass on the fixed revision.",
+        "needs_build": true,
+        "language": "python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "No versions are specified in the provided evidence for NumPy/python-dateutil/tzdata/Cython (constraints are unbounded). You must still install NumPy and Cython, but the exact versions should match the pandas CI/lock used by your project environment to ensure the same iNaT/out-of-bounds arithmetic behavior.",
+            "The test relies on pandas\u2019 compiled C/Cython extensions (DatetimeArray arithmetic, iNaT handling), so editable source build is required."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/arithmetic/test_datetime64.py -k \"dt64arr_add_dateoffset_lands_on_nat_sentinel or dt64arr_add_dateoffset_reso_promotion_out_of_bounds or dt64arr_add_dateoffset_nat_still_propagates\"",
+        "reproducing_test": "pandas/tests/arithmetic/test_datetime64.py::TestDatetimeIndexArithmetic::test_dt64arr_add_dateoffset_lands_on_nat_sentinel + ::test_dt64arr_add_dateoffset_reso_promotion_out_of_bounds + ::test_dt64arr_add_dateoffset_nat_still_propagates",
+        "success_criterion": "On the buggy revision e0839ed77b2f, at least one of the two overflow/out-of-bounds assertions fails: (1) adding a DateOffset with the appropriate sign to a DatetimeIndex containing iNaT+Timedelta does NOT raise OverflowError with message \"Overflow in int64 addition\" (because the raw numpy add produces iNaT and it is treated as missing), and/or (2) adding DateOffset(nanoseconds=1) to M8[s] datetime64 wraps to an unrelated date instead of raising OutOfBoundsDatetime with message \"Out of bounds nanosecond timestamp: 2500-01-01\". After checking out the fixed revision from PR #66648, the same pytest run passes (both exception-raising assertions succeed for tz-naive and tz='UTC').",
+        "numerical_probe": "The test does not directly assert numeric results; it asserts exception behavior during DateOffset arithmetic. The numerical trigger is constructing datetime64 values that (after applying the DateOffset timedelta component) land exactly on the iNaT sentinel, and constructing M8[s] values that, after finer-resolution promotion to nanoseconds, should be out-of-bounds.",
+        "input_output_examples": [
+          {
+            "input": "pd.Series([Timestamp(iNaT + 1)]) + pd.DateOffset(nanoseconds=-1)",
+            "buggy_output": "0   NaT          # sum fits in int64 but *is* iNaT\\ndtype: datetime64[ns]",
+            "expected_output": null
+          },
+          {
+            "input": "pd.DatetimeIndex(np.array([\"2500-01-01\"], dtype=\"M8[s]\")) + pd.DateOffset(nanoseconds=1)",
+            "buggy_output": "DatetimeIndex([\"1915-06-14 00:25:26.290448385\"], ...)",
+            "expected_output": null
+          }
+        ],
+        "risks": [
+          "Unpinned dependency versions: the evidence does not provide NumPy/python-dateutil/tzdata/Cython version constraints. The bug is in pandas arithmetic, but exact behavior can be sensitive to dependency versions and compilation flags; keep the NumPy version consistent between buggy and fixed runs.",
+          "Platform/toolchain sensitivity: pandas\u2019 iNaT and datetime arithmetic are implemented partly in Cython/C; building with different compilers/flags or on a different architecture could mask or expose the bug. Ensure you use the same build environment for both revisions.",
+          "Time zone path sensitivity: tz-aware cases exercise the UTC fast path in DatetimeArray._add_offset. If your environment lacks tzdata on the platform, tz_localize('UTC') may behave differently; however 'UTC' is typically available as a standard zone. Still, keep tzdata installed consistently.",
+          "If the fixed revision differs from what you checked out (e.g., cherry-picks not applied), the test may still fail; you must run against the exact PR-fixed code state corresponding to pandas-dev/pandas#66648."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": null,
+          "why": "The oracle is exception-raising behavior enforced by the PR\u2019s pytest assertions (OverflowError/OutOfBoundsDatetime with a specific match string), not a tolerance-based numeric comparison."
+        },
+        "fails_on_buggy": "When running the PR-added tests on revision e0839ed77b2f, obj + DateOffset(**{key: -val for key, val in kwds.items()}) and/or obj - DateOffset(**kwds) does not raise OverflowError with match \"Overflow in int64 addition\" for the parametrized kwds={days:1} and {nanoseconds:1}, across tz=None and tz='UTC'. This happens because the buggy code used a raw numpy int64 addition that produces a result exactly equal to the iNaT sentinel; pandas then incorrectly treats it as missing (NaT) rather than as an overflow/out-of-bounds condition. Similarly, in test_dt64arr_add_dateoffset_reso_promotion_out_of_bounds, obj + DateOffset(nanoseconds=1) on M8[s] may return a wrapped unrelated datetime instead of raising OutOfBoundsDatetime with match \"Out of bounds nanosecond timestamp: 2500-01-01\".",
+        "passes_on_fixed": "On the fixed revision for PR #66648, both tests pass because pandas routes these operations through add_overflowsafe/astype_overflowsafe so that (a) sums landing exactly on iNaT are rejected as overflows (raising OverflowError) and (b) finer-resolution promotion that would go out of bounds raises OutOfBoundsDatetime instead of wrapping. test_dt64arr_add_dateoffset_nat_still_propagates also continues to pass for missing operands by ensuring NaT remains NaT."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3472,
+        "output_tokens": 1496,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002564
+      },
+      "miner_usage": {
+        "input_tokens": 9770,
+        "output_tokens": 1967,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.004411999999999999,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

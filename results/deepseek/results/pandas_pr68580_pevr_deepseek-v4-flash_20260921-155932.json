@@ -1,0 +1,1561 @@
+[
+  {
+    "slug": "pandas_68580",
+    "bug_type": "correctness",
+    "image": "python:3.11",
+    "status": "REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 4/6 reported example(s) show the reported difference between the revisions; the numerical oracle agrees (defect signal present on buggy, absent on fixed)",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "flipped",
+    "examples_verdict": "reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import numpy as np\nimport pandas as pd\nfrom pandas.core.arrays.sparse import SparseArray\nvalues = np.array([1, 2, 3], dtype=\"i8\").astype(\"M8[s]\")\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"SparseArray(np.array([True, False])).shift(1)\", \"SparseArray(np.array([True, False])).shift(1)\", [], \"SparseArray(np.array([np.nan, True], dtype=object), fill_value=False)\"], [\"SparseArray(np.array([True, False])).shift(1, fill_value=True)\", \"SparseArray(np.array([True, False])).shift(1, fill_value=True)\", [], \"SparseArray(np.array([True, True]))\"], [\"SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)\", \"SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)\", [], \"result.dtype == pd.SparseDtype(object, 0) and result[0] is True\"], [\"SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)\", \"SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)\", [], \"SparseArray(np.array([2, 1, 2]))\"], [\"values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)\", \"SparseArray(values).shift(1)\", [\"values = np.array([1, 2, 3], dtype='i8').astype('M8[s]')\"], \"SparseArray(np.array(['NaT', values[0], values[1]], dtype='M8[s]'))\"], [\"SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))\", \"SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))\", [], \"SparseArray(np.array([values[2], values[0], values[1]], dtype='M8[s]'))\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "sparse_shift_subtype_promotion": "import numpy as np\nimport pandas as pd\nfrom pandas.core.arrays.sparse import SparseArray\n\n\ndef _score(fn, predicate):\n    try:\n        res = fn()\n    except Exception:\n        return 0.0\n    try:\n        return 1.0 if predicate(res) else 0.0\n    except Exception:\n        return 0.0\n\n\n_dt = np.array([1, 2, 3], dtype=\"i8\").astype(\"M8[s]\")\n\nprobe(\n    \"bool_default_fill\",\n    _score(\n        lambda: SparseArray(np.array([True, False])).shift(1),\n        lambda r: r.dtype.subtype == object\n        and r.fill_value == False  # noqa: E712\n        and bool(r[1])\n        and pd.isna(r[0]),\n    ),\n)\n\nprobe(\n    \"bool_explicit_fill\",\n    _score(\n        lambda: SparseArray(np.array([True, False])).shift(1, fill_value=True),\n        lambda r: list(r) == [True, True],\n    ),\n)\n\nprobe(\n    \"int64_bool_fill\",\n    _score(\n        lambda: SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True),\n        lambda r: r.dtype == pd.SparseDtype(object, 0) and r[0] is True,\n    ),\n)\n\nprobe(\n    \"int64_float_fill\",\n    _score(\n        lambda: SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0),\n        lambda r: r.dtype.subtype == np.int64 and list(r) == [2, 1, 2],\n    ),\n)\n\nprobe(\n    \"datetime_default_fill\",\n    _score(\n        lambda: SparseArray(_dt).shift(1),\n        lambda r: r.dtype.subtype == _dt.dtype and pd.isna(r[0]) and r[1] == _dt[0],\n    ),\n)\n\nprobe(\n    \"datetime_timestamp_fill\",\n    _score(\n        lambda: SparseArray(_dt).shift(1, fill_value=pd.Timestamp(_dt[2])),\n        lambda r: r.dtype.subtype == _dt.dtype and r[0] == _dt[2],\n    ),\n)\n",
+        "sparse_shift_subtype_promotion_v2": "import numpy as np\nimport pandas as pd\nfrom pandas.core.arrays.sparse import SparseArray\n\n\ndef score(fn, check):\n    try:\n        res = fn()\n    except Exception:\n        return 0.0\n    try:\n        return 1.0 if check(res) else 0.0\n    except Exception:\n        return 0.0\n\n\ndef dense(arr):\n    return np.asarray(arr)\n\n\n# case 1: bool subtype with the default NA fill -> buggy raises ValueError\ndef case1():\n    return SparseArray(np.array([True, False])).shift(1)\n\n\ndef check1(r):\n    d = dense(r)\n    return (r.dtype.subtype == np.dtype(object) and bool(pd.isna(d[0]))\n            and bool(d[1]) is True)\n\n\n# case 2: bool subtype with an explicit bool fill -> no promotion needed either way\ndef case2():\n    return SparseArray(np.array([True, False])).shift(1, fill_value=True)\n\n\ndef check2(r):\n    d = dense(r)\n    return (r.dtype.subtype == np.dtype(bool) and bool(d[0]) and bool(d[1]))\n\n\n# case 3: int64 subtype with a bool fill -> buggy stores the True fill as 1 (int64)\ndef case3():\n    return SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)\n\n\ndef check3(r):\n    return (r.dtype.subtype == np.dtype(object)\n            and isinstance(r[0], (bool, np.bool_)) and bool(r[0]))\n\n\n# case 4: int64 subtype with a float fill -> buggy widens int64 to float64\ndef case4():\n    return SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)\n\n\ndef check4(r):\n    return (r.dtype.subtype == np.dtype(\"int64\")\n            and np.array_equal(dense(r), np.array([2, 1, 2])))\n\n\nvalues = np.array([1, 2, 3], dtype=\"i8\").astype(\"M8[s]\")\n\n\n# case 5: datetime64[s] subtype with the default fill -> buggy raises DTypePromotionError\ndef case5():\n    return SparseArray(values).shift(1)\n\n\ndef check5(r):\n    d = dense(r)\n    return (r.dtype.subtype == np.dtype(\"M8[s]\") and bool(np.isnat(d[0]))\n            and bool(d[1] == values[0]) and bool(d[2] == values[1]))\n\n\n# case 6: datetime64[s] subtype with a Timestamp fill -> buggy raises TypeError\ndef case6():\n    return SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))\n\n\ndef check6(r):\n    d = dense(r)\n    return (r.dtype.subtype == np.dtype(\"M8[s]\")\n            and bool(d[0] == values[2]) and bool(d[1] == values[0])\n            and bool(d[2] == values[1]))\n\n\nprobe(\"case1_bool_default_fill\", score(case1, check1))\nprobe(\"case2_bool_explicit_bool_fill\", score(case2, check2))\nprobe(\"case3_int64_bool_fill\", score(case3, check3))\nprobe(\"case4_int64_float_fill\", score(case4, check4))\nprobe(\"case5_datetime_default_fill\", score(case5, check5))\nprobe(\"case6_datetime_timestamp_fill\", score(case6, check6))\n"
+      },
+      "fixed": {
+        "sparse_shift_subtype_promotion_v2": "import numpy as np\nimport pandas as pd\nfrom pandas.core.arrays.sparse import SparseArray\n\n\ndef score(fn, check):\n    try:\n        res = fn()\n    except Exception:\n        return 0.0\n    try:\n        return 1.0 if check(res) else 0.0\n    except Exception:\n        return 0.0\n\n\ndef dense(arr):\n    return np.asarray(arr)\n\n\n# case 1: bool subtype with the default NA fill -> buggy raises ValueError\ndef case1():\n    return SparseArray(np.array([True, False])).shift(1)\n\n\ndef check1(r):\n    d = dense(r)\n    return (r.dtype.subtype == np.dtype(object) and bool(pd.isna(d[0]))\n            and bool(d[1]) is True)\n\n\n# case 2: bool subtype with an explicit bool fill -> no promotion needed either way\ndef case2():\n    return SparseArray(np.array([True, False])).shift(1, fill_value=True)\n\n\ndef check2(r):\n    d = dense(r)\n    return (r.dtype.subtype == np.dtype(bool) and bool(d[0]) and bool(d[1]))\n\n\n# case 3: int64 subtype with a bool fill -> buggy stores the True fill as 1 (int64)\ndef case3():\n    return SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)\n\n\ndef check3(r):\n    return (r.dtype.subtype == np.dtype(object)\n            and isinstance(r[0], (bool, np.bool_)) and bool(r[0]))\n\n\n# case 4: int64 subtype with a float fill -> buggy widens int64 to float64\ndef case4():\n    return SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)\n\n\ndef check4(r):\n    return (r.dtype.subtype == np.dtype(\"int64\")\n            and np.array_equal(dense(r), np.array([2, 1, 2])))\n\n\nvalues = np.array([1, 2, 3], dtype=\"i8\").astype(\"M8[s]\")\n\n\n# case 5: datetime64[s] subtype with the default fill -> buggy raises DTypePromotionError\ndef case5():\n    return SparseArray(values).shift(1)\n\n\ndef check5(r):\n    d = dense(r)\n    return (r.dtype.subtype == np.dtype(\"M8[s]\") and bool(np.isnat(d[0]))\n            and bool(d[1] == values[0]) and bool(d[2] == values[1]))\n\n\n# case 6: datetime64[s] subtype with a Timestamp fill -> buggy raises TypeError\ndef case6():\n    return SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))\n\n\ndef check6(r):\n    d = dense(r)\n    return (r.dtype.subtype == np.dtype(\"M8[s]\")\n            and bool(d[0] == values[2]) and bool(d[1] == values[0])\n            and bool(d[2] == values[1]))\n\n\nprobe(\"case1_bool_default_fill\", score(case1, check1))\nprobe(\"case2_bool_explicit_bool_fill\", score(case2, check2))\nprobe(\"case3_int64_bool_fill\", score(case3, check3))\nprobe(\"case4_int64_float_fill\", score(case4, check4))\nprobe(\"case5_datetime_default_fill\", score(case5, check5))\nprobe(\"case6_datetime_timestamp_fill\", score(case6, check6))\n",
+        "reported_examples": "import numpy as np\nimport pandas as pd\nfrom pandas.core.arrays.sparse import SparseArray\nvalues = np.array([1, 2, 3], dtype=\"i8\").astype(\"M8[s]\")\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"SparseArray(np.array([True, False])).shift(1)\", \"SparseArray(np.array([True, False])).shift(1)\", [], \"SparseArray(np.array([np.nan, True], dtype=object), fill_value=False)\"], [\"SparseArray(np.array([True, False])).shift(1, fill_value=True)\", \"SparseArray(np.array([True, False])).shift(1, fill_value=True)\", [], \"SparseArray(np.array([True, True]))\"], [\"SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)\", \"SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)\", [], \"result.dtype == pd.SparseDtype(object, 0) and result[0] is True\"], [\"SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)\", \"SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)\", [], \"SparseArray(np.array([2, 1, 2]))\"], [\"values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)\", \"SparseArray(values).shift(1)\", [\"values = np.array([1, 2, 3], dtype='i8').astype('M8[s]')\"], \"SparseArray(np.array(['NaT', values[0], values[1]], dtype='M8[s]'))\"], [\"SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))\", \"SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))\", [], \"SparseArray(np.array([values[2], values[0], values[1]], dtype='M8[s]'))\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n"
+      }
+    },
+    "report": {
+      "status": "REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 4/6 reported example(s) show the reported difference between the revisions; the numerical oracle agrees (defect signal present on buggy, absent on fixed)",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "flipped",
+      "examples_verdict": "reproduced",
+      "success_criterion": "On the buggy commit (with only the PR test functions added), the three selected tests FAIL \u2014 test_shift_bool_subtype and test_shift_datetimelike_subtype error with ValueError/DTypePromotionError/TypeError and test_shift_fill_value_promotion fails its dtype/`is True` assertions \u2014 and each would PASS once the array.py fix is applied.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 10,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 10,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "reported_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced NaN"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced NaN"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "SparseArray(np.array([True, False])).shift(1)": "__error__: ValueError: fill_value must be a valid value for the SparseDtype.subtype",
+              "expected::SparseArray(np.array([True, False])).shift(1)": [
+                "nan",
+                true
+              ],
+              "SparseArray(np.array([True, False])).shift(1, fill_value=True)": [
+                true,
+                true
+              ],
+              "expected::SparseArray(np.array([True, False])).shift(1, fill_value=True)": [
+                true,
+                true
+              ],
+              "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)": [
+                1,
+                1,
+                2
+              ],
+              "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)": [
+                2.0,
+                1.0,
+                2.0
+              ],
+              "expected::SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)": [
+                2,
+                1,
+                2
+              ],
+              "values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)": "__error__: DTypePromotionError: The DType <class 'numpy.dtypes.DateTime64DType'> could not be promoted by <class 'numpy.dtypes._PyFloatDType'>. This means that no common DType exists for the given inputs. For example they cannot be ",
+              "expected::values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)": [
+                null,
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ],
+              "SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))": "__error__: TypeError: Cannot interpret 'Timestamp('1970-01-01 00:00:03')' as a data type",
+              "expected::SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))": [
+                "Timestamp('1970-01-01 00:00:03')",
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ]
+            },
+            "fixed_values": {
+              "SparseArray(np.array([True, False])).shift(1)": [
+                "nan",
+                true
+              ],
+              "expected::SparseArray(np.array([True, False])).shift(1)": [
+                "nan",
+                true
+              ],
+              "SparseArray(np.array([True, False])).shift(1, fill_value=True)": [
+                true,
+                true
+              ],
+              "expected::SparseArray(np.array([True, False])).shift(1, fill_value=True)": [
+                true,
+                true
+              ],
+              "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)": [
+                true,
+                1,
+                2
+              ],
+              "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)": [
+                2,
+                1,
+                2
+              ],
+              "expected::SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)": [
+                2,
+                1,
+                2
+              ],
+              "values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)": [
+                null,
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ],
+              "expected::values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)": [
+                null,
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ],
+              "SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))": [
+                "Timestamp('1970-01-01 00:00:03')",
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ],
+              "expected::SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))": [
+                "Timestamp('1970-01-01 00:00:03')",
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ]
+            }
+          },
+          {
+            "label": "sparse_shift_subtype_promotion",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=1.000e+00, tol=2.000e-09)"
+              ]
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "bool_default_fill": 0.0,
+              "bool_explicit_fill": 1.0,
+              "int64_bool_fill": 0.0,
+              "int64_float_fill": 0.0,
+              "datetime_default_fill": 0.0,
+              "datetime_timestamp_fill": 0.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "sparse_shift_subtype_promotion_v2",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=1.000e+00, tol=1.000e-07)"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "case1_bool_default_fill": 0.0,
+              "case2_bool_explicit_bool_fill": 1.0,
+              "case3_int64_bool_fill": 0.0,
+              "case4_int64_float_fill": 0.0,
+              "case5_datetime_default_fill": 0.0,
+              "case6_datetime_timestamp_fill": 0.0
+            },
+            "fixed_values": {
+              "case1_bool_default_fill": 1.0,
+              "case2_bool_explicit_bool_fill": 1.0,
+              "case3_int64_bool_fill": 1.0,
+              "case4_int64_float_fill": 1.0,
+              "case5_datetime_default_fill": 1.0,
+              "case6_datetime_timestamp_fill": 1.0
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "SparseArray(np.array([True, False])).shift(1)",
+            "expected_output": "SparseArray(np.array([np.nan, True], dtype=object), fill_value=False)",
+            "expected_value": [
+              "nan",
+              true
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "ValueError: fill_value must be a valid value for the SparseDtype.subtype (np.result_type(nan, bool) promoted the NA fill to float64)",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "SparseArray(np.array([True, False])).shift(1)",
+              "observed": "__error__: ValueError: fill_value must be a valid value for the SparseDtype.subtype",
+              "evaluation_error": "ValueError: fill_value must be a valid value for the SparseDtype.subtype",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(np.array([True, False])).shift(1)",
+              "observed": [
+                "nan",
+                true
+              ],
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "SparseArray(np.array([True, False])).shift(1, fill_value=True)",
+            "expected_output": "SparseArray(np.array([True, True]))",
+            "expected_value": [
+              true,
+              true
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "No promotion needed, but the result was routed through np.result_type rather than _promote_for_fill",
+            "outcome": "fix_only",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "SparseArray(np.array([True, False])).shift(1, fill_value=True)",
+              "observed": [
+                true,
+                true
+              ],
+              "evaluation_error": "",
+              "matches_expected": true,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(np.array([True, False])).shift(1, fill_value=True)",
+              "observed": [
+                true,
+                true
+              ],
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)",
+            "expected_output": "result.dtype == pd.SparseDtype(object, 0) and result[0] is True",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "np.result_type is not value-aware: the True fill was stored as 1 (int64 subtype)",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)",
+              "observed": [
+                1,
+                1,
+                2
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)",
+              "observed": [
+                true,
+                1,
+                2
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)",
+            "expected_output": "SparseArray(np.array([2, 1, 2])) (int64 subtype retained)",
+            "expected_value": [
+              2,
+              1,
+              2
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "fill_value=2.0 widened int64 to float64 where dense Series.shift keeps int64",
+            "outcome": "fix_only",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)",
+              "observed": [
+                2.0,
+                1.0,
+                2.0
+              ],
+              "evaluation_error": "",
+              "matches_expected": true,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)",
+              "observed": [
+                2,
+                1,
+                2
+              ],
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)",
+            "expected_output": "SparseArray(np.array(['NaT', values[0], values[1]], dtype='M8[s]'))",
+            "expected_value": [
+              null,
+              "Timestamp('1970-01-01 00:00:01')",
+              "Timestamp('1970-01-01 00:00:02')"
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "numpy.exceptions.DTypePromotionError: np.result_type cannot promote a datetimelike dtype against the NA fill value",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)",
+              "observed": "__error__: DTypePromotionError: The DType <class 'numpy.dtypes.DateTime64DType'> could not be promoted by <class 'numpy.dtypes._PyFloatDType'>. This means that no common DType exists for the given inputs. For example they cannot be ",
+              "evaluation_error": "DTypePromotionError: The DType <class 'numpy.dtypes.DateTime64DType'> could not be promoted by <class 'numpy.dtypes._PyFloatDType'>. This means that no common DType exists for the given inputs. For ex",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)",
+              "observed": [
+                null,
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ],
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))",
+            "expected_output": "SparseArray(np.array([values[2], values[0], values[1]], dtype='M8[s]'))",
+            "expected_value": [
+              "Timestamp('1970-01-01 00:00:03')",
+              "Timestamp('1970-01-01 00:00:01')",
+              "Timestamp('1970-01-01 00:00:02')"
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "TypeError: Cannot interpret 'Timestamp(...)' as a data type (np.result_type received a value where it wants a dtype)",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))",
+              "observed": "__error__: TypeError: Cannot interpret 'Timestamp('1970-01-01 00:00:03')' as a data type",
+              "evaluation_error": "TypeError: Cannot interpret 'Timestamp('1970-01-01 00:00:03')' as a data type",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))",
+              "observed": [
+                "Timestamp('1970-01-01 00:00:03')",
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ],
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 5,
+            "n_failed": 3,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 1,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata",
+            "cython>=3.1.0",
+            "meson>=1.2.3",
+            "meson-python>=0.19.0",
+            "numpy>=2.0.0",
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1",
+            "pytest-cython>=0.4.0"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-09-13T08:16:25-07:00",
+        "fixed_commit_date": "2026-09-13T08:16:45-07:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-09-13T08:16:45-07:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.2",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.49.0",
+              "meson-python": "0.21.1",
+              "meson": "1.12.0",
+              "wheel": "0.48.0",
+              "cython": "3.3.0",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.0",
+              "cython": "cython==3.3.0"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1886.gc55b1c98f8.dirty) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1886.gc55b1c98f8.dirty) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1886.gc55b1c98f8.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1886.gc55b1c98f8.dirty-cp311-cp311-linux_x86_64.whl size=16093375 sha256=9363a6d654d6aa94c896af0c05afbe896a63f73aaf326389f22471ec9ad97126\n  Stored in directory: /tmp/pip-ephem-wheel-cache-nz73ek1p/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1886.gc55b1c98f8.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.2",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.49.0",
+              "meson-python": "0.21.1",
+              "meson": "1.12.0",
+              "wheel": "0.48.0",
+              "cython": "3.3.0",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.0",
+              "cython": "cython==3.3.0"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1887.g47f59b339d) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1887.g47f59b339d) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1887.g47f59b339d) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1887.g47f59b339d-cp311-cp311-linux_x86_64.whl size=16093084 sha256=a947b2b41ba3beeeb47c0d22384acc37a2543f4a5c9b4e8fe3f786db8c6ecc59\n  Stored in directory: /tmp/pip-ephem-wheel-cache-uju95a_b/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1887.g47f59b339d\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 10,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 10,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 3,
+        "verdict": "flipped",
+        "pairs": [
+          {
+            "label": "reported_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced NaN"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced NaN"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "SparseArray(np.array([True, False])).shift(1)": "__error__: ValueError: fill_value must be a valid value for the SparseDtype.subtype",
+              "expected::SparseArray(np.array([True, False])).shift(1)": [
+                "nan",
+                true
+              ],
+              "SparseArray(np.array([True, False])).shift(1, fill_value=True)": [
+                true,
+                true
+              ],
+              "expected::SparseArray(np.array([True, False])).shift(1, fill_value=True)": [
+                true,
+                true
+              ],
+              "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)": [
+                1,
+                1,
+                2
+              ],
+              "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)": [
+                2.0,
+                1.0,
+                2.0
+              ],
+              "expected::SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)": [
+                2,
+                1,
+                2
+              ],
+              "values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)": "__error__: DTypePromotionError: The DType <class 'numpy.dtypes.DateTime64DType'> could not be promoted by <class 'numpy.dtypes._PyFloatDType'>. This means that no common DType exists for the given inputs. For example they cannot be ",
+              "expected::values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)": [
+                null,
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ],
+              "SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))": "__error__: TypeError: Cannot interpret 'Timestamp('1970-01-01 00:00:03')' as a data type",
+              "expected::SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))": [
+                "Timestamp('1970-01-01 00:00:03')",
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ]
+            },
+            "fixed_values": {
+              "SparseArray(np.array([True, False])).shift(1)": [
+                "nan",
+                true
+              ],
+              "expected::SparseArray(np.array([True, False])).shift(1)": [
+                "nan",
+                true
+              ],
+              "SparseArray(np.array([True, False])).shift(1, fill_value=True)": [
+                true,
+                true
+              ],
+              "expected::SparseArray(np.array([True, False])).shift(1, fill_value=True)": [
+                true,
+                true
+              ],
+              "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)": [
+                true,
+                1,
+                2
+              ],
+              "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)": [
+                2,
+                1,
+                2
+              ],
+              "expected::SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)": [
+                2,
+                1,
+                2
+              ],
+              "values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)": [
+                null,
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ],
+              "expected::values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)": [
+                null,
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ],
+              "SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))": [
+                "Timestamp('1970-01-01 00:00:03')",
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ],
+              "expected::SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))": [
+                "Timestamp('1970-01-01 00:00:03')",
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ]
+            }
+          },
+          {
+            "label": "sparse_shift_subtype_promotion",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=1.000e+00, tol=2.000e-09)"
+              ]
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "bool_default_fill": 0.0,
+              "bool_explicit_fill": 1.0,
+              "int64_bool_fill": 0.0,
+              "int64_float_fill": 0.0,
+              "datetime_default_fill": 0.0,
+              "datetime_timestamp_fill": 0.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "sparse_shift_subtype_promotion_v2",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=1.000e+00, tol=1.000e-07)"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "case1_bool_default_fill": 0.0,
+              "case2_bool_explicit_bool_fill": 1.0,
+              "case3_int64_bool_fill": 0.0,
+              "case4_int64_float_fill": 0.0,
+              "case5_datetime_default_fill": 0.0,
+              "case6_datetime_timestamp_fill": 0.0
+            },
+            "fixed_values": {
+              "case1_bool_default_fill": 1.0,
+              "case2_bool_explicit_bool_fill": 1.0,
+              "case3_int64_bool_fill": 1.0,
+              "case4_int64_float_fill": 1.0,
+              "case5_datetime_default_fill": 1.0,
+              "case6_datetime_timestamp_fill": 1.0
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 6,
+        "n_judged": 6,
+        "n_reproduced": 4,
+        "evaluable": true,
+        "n_diverged": 1,
+        "n_unobserved": 0,
+        "n_contested": 0,
+        "unobserved": [],
+        "verdict": "reproduced",
+        "examples": [
+          {
+            "input": "SparseArray(np.array([True, False])).shift(1)",
+            "expected_output": "SparseArray(np.array([np.nan, True], dtype=object), fill_value=False)",
+            "expected_value": [
+              "nan",
+              true
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "ValueError: fill_value must be a valid value for the SparseDtype.subtype (np.result_type(nan, bool) promoted the NA fill to float64)",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "SparseArray(np.array([True, False])).shift(1)",
+              "observed": "__error__: ValueError: fill_value must be a valid value for the SparseDtype.subtype",
+              "evaluation_error": "ValueError: fill_value must be a valid value for the SparseDtype.subtype",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(np.array([True, False])).shift(1)",
+              "observed": [
+                "nan",
+                true
+              ],
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "SparseArray(np.array([True, False])).shift(1, fill_value=True)",
+            "expected_output": "SparseArray(np.array([True, True]))",
+            "expected_value": [
+              true,
+              true
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "No promotion needed, but the result was routed through np.result_type rather than _promote_for_fill",
+            "outcome": "fix_only",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "SparseArray(np.array([True, False])).shift(1, fill_value=True)",
+              "observed": [
+                true,
+                true
+              ],
+              "evaluation_error": "",
+              "matches_expected": true,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(np.array([True, False])).shift(1, fill_value=True)",
+              "observed": [
+                true,
+                true
+              ],
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)",
+            "expected_output": "result.dtype == pd.SparseDtype(object, 0) and result[0] is True",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "np.result_type is not value-aware: the True fill was stored as 1 (int64 subtype)",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)",
+              "observed": [
+                1,
+                1,
+                2
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=True)",
+              "observed": [
+                true,
+                1,
+                2
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)",
+            "expected_output": "SparseArray(np.array([2, 1, 2])) (int64 subtype retained)",
+            "expected_value": [
+              2,
+              1,
+              2
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "fill_value=2.0 widened int64 to float64 where dense Series.shift keeps int64",
+            "outcome": "fix_only",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)",
+              "observed": [
+                2.0,
+                1.0,
+                2.0
+              ],
+              "evaluation_error": "",
+              "matches_expected": true,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(np.array([1, 2, 3])).shift(1, fill_value=2.0)",
+              "observed": [
+                2,
+                1,
+                2
+              ],
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)",
+            "expected_output": "SparseArray(np.array(['NaT', values[0], values[1]], dtype='M8[s]'))",
+            "expected_value": [
+              null,
+              "Timestamp('1970-01-01 00:00:01')",
+              "Timestamp('1970-01-01 00:00:02')"
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "numpy.exceptions.DTypePromotionError: np.result_type cannot promote a datetimelike dtype against the NA fill value",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)",
+              "observed": "__error__: DTypePromotionError: The DType <class 'numpy.dtypes.DateTime64DType'> could not be promoted by <class 'numpy.dtypes._PyFloatDType'>. This means that no common DType exists for the given inputs. For example they cannot be ",
+              "evaluation_error": "DTypePromotionError: The DType <class 'numpy.dtypes.DateTime64DType'> could not be promoted by <class 'numpy.dtypes._PyFloatDType'>. This means that no common DType exists for the given inputs. For ex",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "values = np.array([1, 2, 3], dtype='i8').astype('M8[s]'); SparseArray(values).shift(1)",
+              "observed": [
+                null,
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ],
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))",
+            "expected_output": "SparseArray(np.array([values[2], values[0], values[1]], dtype='M8[s]'))",
+            "expected_value": [
+              "Timestamp('1970-01-01 00:00:03')",
+              "Timestamp('1970-01-01 00:00:01')",
+              "Timestamp('1970-01-01 00:00:02')"
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "TypeError: Cannot interpret 'Timestamp(...)' as a data type (np.result_type received a value where it wants a dtype)",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))",
+              "observed": "__error__: TypeError: Cannot interpret 'Timestamp('1970-01-01 00:00:03')' as a data type",
+              "evaluation_error": "TypeError: Cannot interpret 'Timestamp('1970-01-01 00:00:03')' as a data type",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "SparseArray(values).shift(1, fill_value=pd.Timestamp(values[2]))",
+              "observed": [
+                "Timestamp('1970-01-01 00:00:03')",
+                "Timestamp('1970-01-01 00:00:01')",
+                "Timestamp('1970-01-01 00:00:02')"
+              ],
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 5,
+          "n_failed": 3,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 1,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "On the buggy commit (with only the PR test functions added), the three selected tests FAIL \u2014 test_shift_bool_subtype and test_shift_datetimelike_subtype error with ValueError/DTypePromotionError/TypeError and test_shift_fill_value_promotion fails its dtype/`is True` assertions \u2014 and each would PASS once the array.py fix is applied."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata",
+          "cython>=3.1.0",
+          "meson>=1.2.3",
+          "meson-python>=0.19.0",
+          "numpy>=2.0.0",
+          "pytest>=8.3.4",
+          "pytest-xdist>=3.6.1",
+          "pytest-cython>=0.4.0"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-09-13T08:16:25-07:00",
+      "fixed_commit_date": "2026-09-13T08:16:45-07:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-09-13T08:16:45-07:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.2",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.49.0",
+            "meson-python": "0.21.1",
+            "meson": "1.12.0",
+            "wheel": "0.48.0",
+            "cython": "3.3.0",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.0",
+            "cython": "cython==3.3.0"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1886.gc55b1c98f8.dirty) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1886.gc55b1c98f8.dirty) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1886.gc55b1c98f8.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1886.gc55b1c98f8.dirty-cp311-cp311-linux_x86_64.whl size=16093375 sha256=9363a6d654d6aa94c896af0c05afbe896a63f73aaf326389f22471ec9ad97126\n  Stored in directory: /tmp/pip-ephem-wheel-cache-nz73ek1p/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1886.gc55b1c98f8.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.2",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.49.0",
+            "meson-python": "0.21.1",
+            "meson": "1.12.0",
+            "wheel": "0.48.0",
+            "cython": "3.3.0",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.0",
+            "cython": "cython==3.3.0"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1887.g47f59b339d) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1887.g47f59b339d) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1887.g47f59b339d) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1887.g47f59b339d-cp311-cp311-linux_x86_64.whl size=16093084 sha256=a947b2b41ba3beeeb47c0d22384acc37a2543f4a5c9b4e8fe3f786db8c6ecc59\n  Stored in directory: /tmp/pip-ephem-wheel-cache-uju95a_b/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1887.g47f59b339d\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 3,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce GH#68580: on the buggy sparse-array commit, SparseArray.shift(periods, fill_value) mis-computes the result subtype via np.result_type (raising for bool/datetimelike subtypes, silently disagreeing with Series.shift for int64), while the fixed commit computes it via _promote_for_fill \u2014 the three added PR tests and the report's own I/O examples fail on buggy and pass on fixed.",
+          "milestones": [
+            "buggy_environment_ready [buggy] \u2014 Confirm the pre-built buggy virtualenv at /workspace/buggy imports pandas from its own build and that the three added reproducing tests are collectible by their module path. (2 steps, verify: steps_succeeded)",
+            "buggy_defect_observable [buggy] \u2014 Show the reported defect on the buggy revision: the three added tests fail, and a numeric probe plus the report's own I/O examples record the buggy behaviour (bool subtype shift raises, int64 fill_value=True stored as 1, fill_value=2.0 widens to float64, datetimelike subtypes raise). (3 steps, verify: test_ran, test_fails, probe_ran, probe_shows_defect)",
+            "fixed_behavior_differs [fixed] \u2014 Show the fixed revision resolves the bug: the same three tests pass, the identical paired probe scores all-ones, the reported expected outputs are produced, and the two revisions therefore differ. (4 steps, verify: test_passes, probe_clean, examples_reproduced, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -c \"import numpy as np, pandas as pd; from pandas.core.arrays.sparse import SparseArray; print(pd.__version__, np.__version__, pd.__file__); print(SparseArray)\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 0.49
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_array -k \"test_shift_bool_subtype or test_shift_fill_value_promotion or test_shift_datetimelike_subtype\" --collect-only -q --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.63
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_array -k \"test_shift_bool_subtype or test_shift_fill_value_promotion or test_shift_datetimelike_subtype\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.41
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "sparse_shift_subtype_promotion",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n  - the code looks like Rust.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(sparse_shift_subtype_promotion) \u2014 Pair-labeled probe that scores value-level correctness of six shift cases (bool default fill, bool fill_value=True, int64 fill_value=True, int64 fill_value=2.0, datetime64 default fill, datetime64 Timestamp fill); the buggy build scores zeros because of the ValueError/DTypePromotionError/TypeError a"
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced NaN"
+        ],
+        "expected": null,
+        "observed": [
+          "nan",
+          1.0,
+          1.0,
+          2.0,
+          2.0,
+          1.0,
+          2.0,
+          2.0,
+          1.0,
+          2.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_defect_observable",
+          "verified": false,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Re-measure GH#68580 with a contract-valid paired probe: on the buggy revision SparseArray.shift(periods, fill_value) scores zero for bool/datetimelike/int64 subtype promotion cases (raising or wrongly promoting), the three added tests fail, and the reported buggy outputs are recorded; on the fixed revision the same probe, tests and reported examples succeed and the revisions differ.",
+          "milestones": [
+            "buggy_defect_measured [buggy] \u2014 Show the reported defect on the buggy revision with a probe that actually records observations: the three added tests fail, and a paired 0/1-scored probe records the buggy outcomes (bool default fill raises, int64 fill_value=True stored as 1, fill_value=2.0 widens to float64, datetimelike subtypes r (3 steps, verify: steps_succeeded, test_ran, test_fails, probe_ran, probe_shows_defect)",
+            "fixed_behavior_confirmed [fixed] \u2014 Show the fixed revision resolves the bug: the same three tests pass, the identical paired probe records all-ones, the report's expected outputs are produced, and the two revisions therefore differ. (4 steps, verify: steps_succeeded, test_passes, probe_ran, probe_clean, examples_reproduced, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_array -k \"test_shift_bool_subtype or test_shift_fill_value_promotion or test_shift_datetimelike_subtype\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.44
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "sparse_shift_subtype_promotion",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "values do not match the reference (finite compare: abs_err=1.000e+00, tol=2.000e-09)"
+        ],
+        "expected": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "observed": [
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced NaN"
+        ],
+        "expected": null,
+        "observed": [
+          "nan",
+          1.0,
+          1.0,
+          2.0,
+          2.0,
+          1.0,
+          2.0,
+          2.0,
+          1.0,
+          2.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_defect_measured",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_array -k \"test_shif` exited 1: LED .venv/lib/python3.11/site-packages/pandas/tests/arrays/sparse/test_array.py::test_shift_datetimelike_subtype[ns-m8]\n====================== 10 failed, 163 deselected in 0.68s ======================"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'sparse_shift_subtype_promotion': values do not match the reference (finite compare: abs_err=1.000e+00, tol=2.000e-09)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Prove GH#68580 with paired, contract-valid evidence: on the buggy build the three added SparseArray.shift subtype/fill tests fail and the identical six-case value probe scores zeros, on the fixed build the same tests pass and the probe scores all ones, and the two revisions differ.",
+          "milestones": [
+            "buggy_defect_remeasured [buggy] \u2014 On the buggy build, the three GH#68580 test functions fail, the same six-case value probe used on the fixed build records zeros (wrong subtype / raised), and the report's own examples are recorded. A failing pytest run is the intended outcome here, so this milestone claims only what that run and the (3 steps, verify: test_ran, test_fails, probe_ran, probe_shows_defect)",
+            "fixed_behavior_confirmed [fixed] \u2014 On the fixed build the same three GH#68580 tests pass, the identical paired six-case probe records all-ones (clean), the report's examples yield their expected values, and the recorded observations therefore differ between the two revisions. (3 steps, verify: steps_succeeded, test_ran, test_passes, probe_ran, probe_clean, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_array -k \"test_shift_bool_subtype or test_shift_fill_value_promotion or test_shift_datetimelike_subtype\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.43
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "sparse_shift_subtype_promotion_v2",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "values do not match the reference (finite compare: abs_err=1.000e+00, tol=1.000e-07)"
+        ],
+        "expected": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "observed": [
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced NaN"
+        ],
+        "expected": null,
+        "observed": [
+          "nan",
+          1.0,
+          1.0,
+          2.0,
+          2.0,
+          1.0,
+          2.0,
+          2.0,
+          1.0,
+          2.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_defect_remeasured",
+          "verified": true,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'sparse_shift_subtype_promotion_v2': values do not match the reference (finite compare: abs_err=1.000e+00, tol=1.000e-07)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs pandas.tests.arrays.sparse.test_array -k \"test_shift_bool_subtype or test_shift_fill_value_promotion or test_shift_datetimelike_subtype\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.0
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "sparse_shift_subtype_promotion_v2",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "observed": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced NaN"
+        ],
+        "expected": null,
+        "observed": [
+          "nan",
+          "nan",
+          1.0,
+          2.0,
+          2.0,
+          1.0,
+          2.0,
+          2.0,
+          1.0,
+          2.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "fixed_behavior_confirmed",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on fixed"
+            },
+            {
+              "check": "test_passes",
+              "passed": true,
+              "detail": "test pass on fixed (milestone required pass)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": true,
+              "detail": "every probe is clean on fixed"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": true,
+              "detail": "the reproducing test goes FAIL -> PASS"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "flipped",
+        "examples_verdict": "reproduced",
+        "examples": "4/6"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 4/6 reported example(s) show the reported difference between the revisions; the numerical oracle agrees (defect signal present on buggy, absent on fixed)"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "deepseek-v4-flash",
+      "calls": 3,
+      "input_tokens": 15446,
+      "output_tokens": 48853,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.071282
+    }
+  }
+]

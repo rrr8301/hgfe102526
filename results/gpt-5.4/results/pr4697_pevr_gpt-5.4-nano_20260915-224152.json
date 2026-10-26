@@ -1,0 +1,740 @@
+[
+  {
+    "slug": "burn_4697",
+    "bug_type": "special_value",
+    "image": "rust:1-slim",
+    "status": "REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed; the reported values could not be checked automatically in this language",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "inconclusive",
+    "examples_verdict": "not_observed",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "fully_masked_attention_fallback_nan_check": "// Rust numerical probe; harness calls fn body().\n// Goal: detect NaNs and quantify max abs for fully masked rows in attention_fallback.\n\nuse burn_tensor::module::attention_fallback;\nuse burn_tensor::module::attention;\nuse burn_tensor::ops::AttentionModuleOptions;\nuse burn_tensor::Distribution;\nuse burn_tensor::TensorData;\nuse num_traits::Float;\n\n// Use the backend used by existing tests in burn-backend-tests.\n// We avoid test-only imports; instead we use a concrete TestBackend consistent with the crate.\nuse burn_tensor::backend::ndarray::NdArrayBackend;\nuse burn_tensor::backend::ndarray::NdArray;\nuse burn_tensor::tests::util::TestTensor;\nuse burn_tensor::tests::util::TestTensorBool;\nuse burn_tensor::tests::util::TestBackend;\n\n// Helper to check NaNs.\nfn has_nan(v: &[f32]) -> bool {\n    v.iter().any(|x| x.is_nan())\n}\n\npub fn body() {\n    // Deterministic tensors: use fixed random seed.\n    // Note: if TestTensor::random supports seeded RNG, use it; otherwise this still exercises\n    // the special-value path with fully masked keys.\n\n    type T = TestTensor<4>;\n    type TB = TestTensorBool<4>;\n\n    let query: T = T::random([1, 1, 4, 8], Distribution::Uniform(-1., 1.));\n    let key: T = T::random([1, 1, 4, 8], Distribution::Uniform(-1., 1.));\n    let value: T = T::random([1, 1, 4, 8], Distribution::Uniform(-1., 1.));\n\n    // Fully mask every key position for each query row.\n    // mask shape: [batch, heads, query_len, key_len]\n    // In the report tests, mask has true where key is allowed; true=masked? assumes false means allowed.\n    // To match reported behavior, set all mask entries true (fully masked).\n    let mask: TB = TB::full([1, 1, 4, 4], true);\n\n    let out = attention_fallback::<TestBackend>(\n        query.clone().into(),\n        key.clone().into(),\n        value.clone().into(),\n        Some(mask.clone().into()),\n        None,\n        Default::default(),\n    );\n\n    let output_data = out.into_data();\n    let values = output_data.as_slice::<f32>().unwrap();\n\n    let nan_present = has_nan(values);\n    let max_abs = values.iter().fold(0.0_f32, |acc, &x| acc.max(x.abs()));\n\n    probe_scalar(\"buggy_fullmask_nan_present\", nan_present as i32 as f32);\n    probe_scalar(\"buggy_fullmask_max_abs\", max_abs);\n}\n"
+      },
+      "fixed": {
+        "fully_masked_attention_fallback_nan_check": "// Same Rust numerical probe as buggy; harness calls fn body().\n\nuse burn_tensor::module::attention_fallback;\nuse burn_tensor::ops::AttentionModuleOptions;\nuse burn_tensor::Distribution;\nuse burn_tensor::TensorData;\nuse num_traits::Float;\n\nuse burn_tensor::tests::util::TestTensor;\nuse burn_tensor::tests::util::TestTensorBool;\nuse burn_tensor::tests::util::TestBackend;\n\nfn has_nan(v: &[f32]) -> bool {\n    v.iter().any(|x| x.is_nan())\n}\n\npub fn body() {\n    type T = TestTensor<4>;\n    type TB = TestTensorBool<4>;\n\n    let query: T = T::random([1, 1, 4, 8], Distribution::Uniform(-1., 1.));\n    let key: T = T::random([1, 1, 4, 8], Distribution::Uniform(-1., 1.));\n    let value: T = T::random([1, 1, 4, 8], Distribution::Uniform(-1., 1.));\n\n    let mask: TB = TB::full([1, 1, 4, 4], true);\n\n    let out = attention_fallback::<TestBackend>(\n        query.clone().into(),\n        key.clone().into(),\n        value.clone().into(),\n        Some(mask.clone().into()),\n        None,\n        Default::default(),\n    );\n\n    let output_data = out.into_data();\n    let values = output_data.as_slice::<f32>().unwrap();\n\n    let nan_present = has_nan(values);\n    let max_abs = values.iter().fold(0.0_f32, |acc, &x| acc.max(x.abs()));\n\n    probe_scalar(\"fixed_fullmask_nan_present\", nan_present as i32 as f32);\n    probe_scalar(\"fixed_fullmask_max_abs\", max_abs);\n}\n"
+      }
+    },
+    "report": {
+      "status": "REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed; the reported values could not be checked automatically in this language",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "inconclusive",
+      "examples_verdict": "not_observed",
+      "success_criterion": "Reproduction is successful if running `cargo test -p burn-backend-tests -- attention` at the buggy commit reports failure of test_attention_fully_masked_rows_no_nan and test_attention_fully_masked_rows_causal_no_nan due to NaN/near-zero assertions, and the same command passes at the fixed commit fcc8dacdf4716f57b26ab18b6d355f780c9b6ffa.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 101,
+            "failure_kind": "",
+            "passed": 0,
+            "failed": 1,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 1,
+            "failed": 0,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "fully_masked_attention_fallback_nan_check",
+            "outcome": "unusable",
+            "buggy": {
+              "present": null,
+              "reasons": [
+                "probe produced no structured output"
+              ]
+            },
+            "fixed": {
+              "present": null,
+              "reasons": [
+                "probe produced no structured output"
+              ]
+            },
+            "buggy_status": "harness_error",
+            "fixed_status": "harness_error",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          }
+        ],
+        "examples": [
+          {
+            "input": "attention_fallback::<TestBackend>(query, key, value, Some(mask), None, Default::default()) with query/key/value each TestTensor::<4>::random([1, 1, 4, 8], Distribution::Uniform(-1., 1.)) and mask = TestTensorBool::<4>::full([1, 1, 4, 4], true). This corresponds to test_attention_fully_masked_rows_no",
+            "expected_output": "No NaN; every output element has absolute value < 1e-4 (fully masked rows produce ~0). Assertions: !values.iter().any(|v| v.is_nan()) and all(|v| v.abs() < tol).",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Every output element is NaN because every row's softmax performs -inf - (-inf) (or 0/0) in the naive fallback.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "Same random query/key/value shape [1, 1, 4, 8] from Uniform(-1., 1.); bool mask is [1,1,4,4] with only key column 0 true (rows all start with true,false,false,false); attention_fallback called with AttentionModuleOptions { is_causal: true, ..Default::default() }. This corresponds to test_attention_f",
+            "expected_output": "No NaN anywhere; row 0 values are ~0 (each abs < 1e-4), while rows 1-3 retain valid positions and therefore have at least one output value with abs > 1e-4.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Row 0 of the output (the first head_dim = 8 values) is NaN. Causal masking lets row 0 attend only to key 0, and the bool mask masks exactly key 0, so row 0 is fully masked and its softmax computes NaN.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 5,
+            "n_failed": 4,
+            "ran_test": true,
+            "failed_setup_or_build": [
+              "cargo test -p burn-backend-tests -- attention --no-run",
+              "cd /workspace/buggy && cargo test -p burn-backend-tests -- attention"
+            ]
+          },
+          "fixed": {
+            "n_commands": 2,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [],
+          "skipped": "the spec names no test dependencies"
+        },
+        "error": "",
+        "buggy_commit_date": "2026-03-31T12:03:28-04:00",
+        "fixed_commit_date": "2026-03-31T11:36:37-05:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [],
+          "skipped": "the instance names no system packages"
+        },
+        "era": "2026-03-31T11:36:37-05:00",
+        "build": {
+          "skipped": "not a compiled Python instance"
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": true,
+            "reason": ""
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": true,
+            "reason": ""
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 101,
+        "failure_kind": "",
+        "passed": 0,
+        "failed": 1,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 1,
+        "failed": 0,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 1,
+        "verdict": "inconclusive",
+        "pairs": [
+          {
+            "label": "fully_masked_attention_fallback_nan_check",
+            "outcome": "unusable",
+            "buggy": {
+              "present": null,
+              "reasons": [
+                "probe produced no structured output"
+              ]
+            },
+            "fixed": {
+              "present": null,
+              "reasons": [
+                "probe produced no structured output"
+              ]
+            },
+            "buggy_status": "harness_error",
+            "fixed_status": "harness_error",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 2,
+        "n_judged": 0,
+        "n_reproduced": 0,
+        "evaluable": false,
+        "n_diverged": 0,
+        "n_unobserved": 2,
+        "n_contested": 0,
+        "unobserved": [
+          "attention_fallback::<TestBackend>(query, key, value, Some(mask), None, Default::default()) with query/key/value each TestTensor::<4>::random([1, 1, 4, 8], Distribution::Uniform(-1., 1.)) and mask = TestTensorBool::<4>::full([1, 1, 4, 4], true). This corresponds to test_attention_fully_masked_rows_no",
+          "Same random query/key/value shape [1, 1, 4, 8] from Uniform(-1., 1.); bool mask is [1,1,4,4] with only key column 0 true (rows all start with true,false,false,false); attention_fallback called with AttentionModuleOptions { is_causal: true, ..Default::default() }. This corresponds to test_attention_f"
+        ],
+        "verdict": "not_observed",
+        "examples": [
+          {
+            "input": "attention_fallback::<TestBackend>(query, key, value, Some(mask), None, Default::default()) with query/key/value each TestTensor::<4>::random([1, 1, 4, 8], Distribution::Uniform(-1., 1.)) and mask = TestTensorBool::<4>::full([1, 1, 4, 4], true). This corresponds to test_attention_fully_masked_rows_no",
+            "expected_output": "No NaN; every output element has absolute value < 1e-4 (fully masked rows produce ~0). Assertions: !values.iter().any(|v| v.is_nan()) and all(|v| v.abs() < tol).",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Every output element is NaN because every row's softmax performs -inf - (-inf) (or 0/0) in the naive fallback.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "Same random query/key/value shape [1, 1, 4, 8] from Uniform(-1., 1.); bool mask is [1,1,4,4] with only key column 0 true (rows all start with true,false,false,false); attention_fallback called with AttentionModuleOptions { is_causal: true, ..Default::default() }. This corresponds to test_attention_f",
+            "expected_output": "No NaN anywhere; row 0 values are ~0 (each abs < 1e-4), while rows 1-3 retain valid positions and therefore have at least one output value with abs > 1e-4.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Row 0 of the output (the first head_dim = 8 values) is NaN. Causal masking lets row 0 attend only to key 0, and the bool mask masks exactly key 0, so row 0 is fully masked and its softmax computes NaN.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 5,
+          "n_failed": 4,
+          "ran_test": true,
+          "failed_setup_or_build": [
+            "cargo test -p burn-backend-tests -- attention --no-run",
+            "cd /workspace/buggy && cargo test -p burn-backend-tests -- attention"
+          ]
+        },
+        "fixed": {
+          "n_commands": 2,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "Reproduction is successful if running `cargo test -p burn-backend-tests -- attention` at the buggy commit reports failure of test_attention_fully_masked_rows_no_nan and test_attention_fully_masked_rows_causal_no_nan due to NaN/near-zero assertions, and the same command passes at the fixed commit fcc8dacdf4716f57b26ab18b6d355f780c9b6ffa."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [],
+        "skipped": "the spec names no test dependencies"
+      },
+      "error": "",
+      "buggy_commit_date": "2026-03-31T12:03:28-04:00",
+      "fixed_commit_date": "2026-03-31T11:36:37-05:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [],
+        "skipped": "the instance names no system packages"
+      },
+      "era": "2026-03-31T11:36:37-05:00",
+      "build": {
+        "skipped": "not a compiled Python instance"
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": true,
+          "reason": ""
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": true,
+          "reason": ""
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 4,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the special-value numerical bug where attention_fallback emits NaNs for fully masked rows on the buggy revision, and verify the fix removes NaNs and yields near-zero outputs.",
+          "milestones": [
+            "buggy_build_and_run_attention_tests [buggy] \u2014 Establish that the attention regression tests fail on the buggy revision (NaNs present). (2 steps, verify: steps_succeeded, test_ran, test_fails)",
+            "buggy_probe_fully_masked_rows_no_nan_examples [buggy] \u2014 Directly observe the reported NaN behavior from the patch-added scenarios on the buggy revision. (2 steps, verify: steps_succeeded, examples_reproduced, probe_shows_defect)",
+            "fixed_build_and_run_attention_tests [fixed] \u2014 Verify the attention regression tests pass on the fixed revision (no NaNs, near-zero outputs). (2 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "fixed_probe_fully_masked_rows_no_nan_examples [fixed] \u2014 Directly observe the absence of NaNs and near-zero outputs from the patch-added scenarios on the fixed revision. (1 steps, verify: steps_succeeded, examples_reproduced, probe_clean)",
+            "compare_revisions [fixed] \u2014 Confirm buggy and fixed revisions differ in reproducing the NaN defect for fully masked attention rows. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cargo test -p burn-backend-tests -- attention --no-run",
+        "purpose": "build",
+        "exit_code": 101,
+        "runtime_s": 47.86
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cargo test -p burn-backend-tests -- attention",
+        "purpose": "test",
+        "exit_code": 101,
+        "runtime_s": 0.72
+      },
+      {
+        "verification": {
+          "milestone": "buggy_build_and_run_attention_tests",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cargo test -p burn-backend-tests -- attention --no-run` exited 101: in 47.65s\n     Running unittests src/lib.rs (target/debug/deps/burn_backend_tests-0179d4a02b2a8548)\nerror: Unrecognized option: 'no-run'\nerror: test failed, to rerun pass `-p burn-backend-tests --lib`; `cargo test -p burn-backend-tests -- attention` exited 101: s/cubecl.rs (target/debug/deps/cubecl-536358d8dfa02fd4)\n     Running tests/tensor.rs (target/debug/deps/tensor-a9d178bcd3c75eef)\nerror: test failed, to rerun pass `-p burn-backend-tests --test tensor`"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce and quantify the NaN special-value defect in attention_fallback for fully masked rows on the buggy revision, and verify the fix removes NaNs and yields near-zero outputs on the fixed revision (without relying on the broken cargo test selector options).",
+          "milestones": [
+            "buggy_build_compiles_attention_crate [buggy] \u2014 Ensure the buggy revision builds the relevant burn-backend-tests artifacts so we can run probes/examples without relying on the failing test selector invocation. (1 steps, verify: steps_succeeded)",
+            "buggy_probe_fully_masked_rows_no_nan_examples [buggy] \u2014 Directly observe the NaN behavior for fully masked attention rows using the report-provided scenarios on the buggy revision. (1 steps, verify: steps_succeeded, examples_reproduced, probe_shows_defect)",
+            "fixed_build_compiles_attention_crate [fixed] \u2014 Ensure the fixed revision builds the relevant artifacts so we can run the same reported example evaluations. (1 steps, verify: steps_succeeded)",
+            "fixed_probe_fully_masked_rows_no_nan_examples [fixed] \u2014 Directly observe the absence of NaNs and near-zero outputs for the fully-masked scenarios on the fixed revision. (1 steps, verify: steps_succeeded, examples_reproduced, probe_clean)",
+            "compare_revisions_reproducing_defect [fixed] \u2014 Confirm the buggy and fixed revisions differ on the defect signal (NaNs present on buggy and absent on fixed) for the same reported scenarios. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && cargo test -p burn-backend-tests -- attention",
+        "purpose": "build",
+        "exit_code": 101,
+        "runtime_s": 0.72
+      },
+      {
+        "verification": {
+          "milestone": "buggy_build_compiles_attention_crate",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && cargo test -p burn-backend-tests -- attention` exited 101: s/cubecl.rs (target/debug/deps/cubecl-536358d8dfa02fd4)\n     Running tests/tensor.rs (target/debug/deps/tensor-a9d178bcd3c75eef)\nerror: test failed, to rerun pass `-p burn-backend-tests --test tensor`"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "buggy_build_compiles_attention_crate",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 2,
+          "detail": [
+            "`cd /workspace/buggy && cargo test -p burn-backend-tests -- attention` exited 101: s/cubecl.rs (target/debug/deps/cubecl-536358d8dfa02fd4)\n     Running tests/tensor.rs (target/debug/deps/tensor-a9d178bcd3c75eef)\nerror: test failed, to rerun pass `-p burn-backend-tests --test tensor`"
+          ]
+        }
+      },
+      {
+        "step_error": "the reported examples cannot be evaluated in 'rust' (only python, javascript, typescript can evaluate an expression given as text) \u2014 record them with run_numerical_probe instead, naming each record exactly as the example's input",
+        "step": "[buggy] check_reported_examples(the reported examples) \u2014 Evaluate the reported attention_fallback expressions for the fully-masked scenarios and record whether NaNs appear and what the values are."
+      },
+      {
+        "verification": {
+          "milestone": "buggy_probe_fully_masked_rows_no_nan_examples",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] check_reported_examples(the reported examples) \u2014 Evaluate the reported attention_fallback expressions for the fully-masked scenarios and record whether NaNs appear and what the values are. did not execute"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/2 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 2 never evaluated \u2014 the preamble does not bind everything they need: attention_fallback::<TestBackend>(query, key, value, Some(mask), None, Default::default()) with query/key/value each TestTensor::<4>::random([1, 1, 4, 8], Distribution::Uniform(-1., 1.)) and mask = TestTensorBool::<4>::full([1, 1, 4, 4], true). This corresponds to test_attention_fully_masked_rows_no; Same random query/key/value shape [1, 1, 4, 8] from Uniform(-1., 1.); bool mask is [1,1,4,4] with only key column 0 true (rows all start with true,false,false,false); attention_fallback called with AttentionModuleOptions { is_causal: true, ..Default::default() }. This corresponds to test_attention_f"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce and quantify NaN special-value defect in burn attention_fallback for fully masked rows on buggy, and verify fix removes NaNs and yields near-zero outputs on fixed\u2014without relying on broken cargo test selector options.",
+          "milestones": [
+            "buggy_probe_fully_masked_rows_no_nan_replacer [buggy] \u2014 On the buggy revision, directly compute attention_fallback on fully masked scenarios and confirm NaNs appear (or at least for the fully masked row), matching the report's intent, using run_numerical_probe (since check_reported_examples cannot evaluate Rust expressions). (2 steps, verify: steps_succeeded)",
+            "fixed_probe_fully_masked_rows_no_nan_replacer [fixed] \u2014 On the fixed revision, run the same deterministic numerical probe for fully masked scenarios and confirm NaNs are absent and fully masked rows have near-zero outputs (abs < ~1e-4). (1 steps, verify: steps_succeeded)",
+            "compare_revisions_reproducing_defect_replacer [fixed] \u2014 Confirm the buggy and fixed probes differ in the presence/absence of NaNs for the fully masked scenarios. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "ls -la /workspace/buggy && (find /workspace/buggy -maxdepth 3 -type d -name \"burn-tensor\" | head) && (find /workspace/buggy -maxdepth 3 -type f -name \"attention_fallback*\" | head)",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.17
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "fully_masked_attention_fallback_nan_check",
+        "language": "rust",
+        "status": "probe_generation_error",
+        "errors": [
+          "a Rust probe must define `fn body()` \u2014 the harness calls it.",
+          "do not define `fn main()`; the harness owns the entry point.",
+          "record at least one observation with `probe_scalar(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: rust\n\nProblems:\n  - a Rust probe must define `fn body()` \u2014 the harness calls it.\n  - do not define `fn main()`; the harness owns the entry point.\n  - record at least one observation with `probe_scalar(name, value)`.\n  - the code looks like JavaScript/TypeScript.\n\nThe rust probe contract: Rust items that define `fn body()` \u2014 NOT fn main. `use` lines are fine; the probe is built as an example of the crate, so `use <crate_name>::\u2026` resolves to THIS revision's public API. Record with probe_scalar(name, v), probe_values(name, &[..]), probe_text(name, s), probe_iteration(&[(\"residual\", r)]).\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(fully_masked_attention_fallback_nan_check) \u2014 Build a Rust-based numerical probe that reproduces the two scenarios with deterministic tensors (fixed seed) and checks for NaNs and near-zero outputs for fully masked rows; record outputs elementwise and also record row-wise flags for NaN presence and max abs."
+      },
+      {
+        "verification": {
+          "milestone": "buggy_probe_fully_masked_rows_no_nan_replacer",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(fully_masked_attention_fallback_nan_check) \u2014 Build a Rust-based numerical probe that reproduces the two scenarios with deterministic tensors (fixed seed) and checks for NaNs and near-zero outputs for fully masked rows; record outputs elementwise and also record row-wise flags for NaN presence and max abs. did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "buggy_probe_fully_masked_rows_no_nan_replacer",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 3,
+          "detail": [
+            "[buggy] run_numerical_probe(fully_masked_attention_fallback_nan_check) \u2014 Build a Rust-based numerical probe that reproduces the two scenarios with deterministic tensors (fixed seed) and checks for NaNs and near-zero outputs for fully masked rows; record outputs elementwise and also record row-wise flags for NaN presence and max abs. did not execute"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "fully_masked_attention_fallback_nan_check",
+        "language": "rust",
+        "status": "probe_generation_error",
+        "errors": [
+          "a Rust probe must define `fn body()` \u2014 the harness calls it.",
+          "do not define `fn main()`; the harness owns the entry point.",
+          "record at least one observation with `probe_scalar(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: rust\n\nProblems:\n  - a Rust probe must define `fn body()` \u2014 the harness calls it.\n  - do not define `fn main()`; the harness owns the entry point.\n  - record at least one observation with `probe_scalar(name, value)`.\n  - the code looks like JavaScript/TypeScript.\n\nThe rust probe contract: Rust items that define `fn body()` \u2014 NOT fn main. `use` lines are fine; the probe is built as an example of the crate, so `use <crate_name>::\u2026` resolves to THIS revision's public API. Record with probe_scalar(name, v), probe_values(name, &[..]), probe_text(name, s), probe_iteration(&[(\"residual\", r)]).\n\nRegenerate only the probe, following that contract.",
+        "step": "[fixed] run_numerical_probe(fully_masked_attention_fallback_nan_check) \u2014 Run the same numerical probe as on buggy revision to ensure outputs are finite and near-zero for fully masked rows."
+      },
+      {
+        "verification": {
+          "milestone": "fixed_probe_fully_masked_rows_no_nan_replacer",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[fixed] run_numerical_probe(fully_masked_attention_fallback_nan_check) \u2014 Run the same numerical probe as on buggy revision to ensure outputs are finite and near-zero for fully masked rows. did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failing Rust-based probe milestone with a probe that runs attention_fallback fully-masked scenarios on both revisions and verifies NaNs are absent and outputs are near-zero on fixed (and present on buggy), without relying on broken cargo test selector options.",
+          "milestones": [
+            "probe_rust_contract_fix_for_fullmask [buggy] \u2014 Run a numerical probe for fully masked rows using Rust but with the correct harness contract (`fn body()`), and confirm it executes on both revisions (buggy shows NaNs; fixed does not). (2 steps, verify: steps_succeeded)",
+            "compare_revisions_defect_presence_removed [fixed] \u2014 Confirm buggy and fixed probe results differ: NaNs present in buggy, absent in fixed, and max abs is near-zero on fixed. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "fully_masked_attention_fallback_nan_check",
+        "language": "rust",
+        "status": "harness_error",
+        "pathology": null,
+        "reasons": [
+          "probe produced no structured output"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "fully_masked_attention_fallback_nan_check",
+        "language": "rust",
+        "status": "harness_error",
+        "pathology": null,
+        "reasons": [
+          "probe produced no structured output"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "probe_rust_contract_fix_for_fullmask",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "probe 'fully_masked_attention_fallback_nan_check' did not complete: harness_error; probe 'fully_masked_attention_fallback_nan_check' did not complete: harness_error"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "probe_rust_contract_fix_for_fullmask",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 4,
+          "detail": [
+            "probe 'fully_masked_attention_fallback_nan_check' did not complete: harness_error; probe 'fully_masked_attention_fallback_nan_check' did not complete: harness_error"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "echo \"Relying on numerical probe outputs recorded under label fully_masked_attention_fallback_nan_check.\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.12
+      },
+      {
+        "verification": {
+          "milestone": "compare_revisions_defect_presence_removed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": false,
+              "detail": "no difference established (transition fail->missing, numeric inconclusive)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cargo test -p burn-backend-tests test_attention_fully_masked_rows_no_nan -- --nocapture",
+        "purpose": "test",
+        "exit_code": 101,
+        "runtime_s": 0.67
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cargo test -p burn-backend-tests test_attention_fully_masked_rows_no_nan -- --nocapture",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 47.11
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_attention_fully_masked_rows_no_nan",
+          "command": "cargo test -p burn-backend-tests test_attention_fully_masked_rows_no_nan -- --nocapture",
+          "package": "burn-backend-tests",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 101,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_attention_fully_masked_rows_no_nan",
+              "command": "cargo test -p burn-backend-tests test_attention_fully_masked_rows_no_nan -- --nocapture",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "inconclusive",
+        "examples_verdict": "not_observed",
+        "examples": "0/0"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed; the reported values could not be checked automatically in this language"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 4,
+      "input_tokens": 13129,
+      "output_tokens": 5414,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.009393
+    }
+  }
+]

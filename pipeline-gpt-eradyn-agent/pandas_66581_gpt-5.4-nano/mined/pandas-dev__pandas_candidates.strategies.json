@@ -1,0 +1,105 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_66581_gpt-5.4-nano/mined/pandas-dev__pandas_66581.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 10330,
+    "output_tokens": 2867,
+    "cost_usd": 0.00565,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66581,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66581",
+      "buggy_commit": "e681865cdb4b625d479ec20af9d1db813432181d",
+      "fixed_commit": "12d8a044697ff24147e804e2396eafe10747840c",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 8037,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas#66581 (GH#66552): tz-naive `Timestamp +/- timedelta64 ndarray` wraps instead of raising on buggy revisions; ensure the added-overflow tests fail on the buggy revision and pass on the fixed one by building/using pandas with the specific compiled C extensions that implement `_Timestamp.__add__/__sub__` and routing through `_addsub_timedelta64_array`/`add_overflowsafe`.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.11 (or any CPython 3.10-3.12; keep consistent between buggy and fixed runs)",
+          "pip_packages": [
+            "numpy",
+            "cython",
+            "python-dateutil",
+            "tzdata (optional; only needed on Windows/Emscripten)",
+            "pytest"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip",
+            "python -m pip install numpy cython python-dateutil pytest",
+            "git clone https://github.com/pandas-dev/pandas.git",
+            "cd pandas",
+            "git checkout e681865cdb4b",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "Cython is required to build pandas from source (documented dependency) so the extension modules containing `_Timestamp` arithmetic are built from the checked-out commit.",
+            "NumPy is required and is numerically relevant; although no explicit version constraint is given in the evidence, you must keep the same NumPy version across buggy/fixed runs to ensure the underlying `timedelta64` casting/promotion behavior being guarded by the fix is exercised."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/scalar/timestamp/test_arithmetic.py -k \"addsub_m8ndarray_overflow_in_cast or addsub_m8ndarray_overflow\"",
+        "reproducing_test": "pandas/tests/scalar/timestamp/test_arithmetic.py::TestTimestampArithmetic::test_addsub_m8ndarray_overflow_in_cast (parametrized subtract=False/True) and test_addsub_m8ndarray_overflow (parametrized subtract=False/True)",
+        "success_criterion": "On the buggy revision `e681865cdb4b`, running the above test command triggers the new overflow tests and they FAIL because the operation does not raise `OutOfBoundsDatetime`/`OutOfBoundsTimedelta` and instead returns an incorrect wrapped `datetime64[ns]` result. On the fixed revision (the PR\u2019s merge commit or later that includes the routing through `add_overflowsafe`), the same tests PASS by raising the expected out-of-bounds exceptions with the specified messages.",
+        "numerical_probe": "None (the success criterion is exception raising, not inspecting numeric values). The overflow trigger values are: `Timestamp(\"2500-01-01\").as_unit(\"s\")` combined with `np.array([1], dtype=\"m8[ns]\")`, and `Timestamp(\"2000-01-01\").as_unit(\"ns\")` combined with `np.array([2**62], dtype=\"m8[s]\")`; plus addition-overflow case uses `Timestamp(\"2000-01-01\").as_unit(\"ns\")` with `np.array([9 * 10**18], dtype=\"m8[ns]\")`.",
+        "input_output_examples": [
+          {
+            "input": "Timestamp(\"2500-01-01\").as_unit(\"s\") + np.array([1], dtype=\"m8[ns]\")",
+            "buggy_output": "array([\"1915-06-14T00:25:26.290448385\"], dtype=\"datetime64[ns]\")",
+            "expected_output": "pytest catches OutOfBoundsDatetime with match \"Cannot cast 2500-01-01 00:00:00 to unit='ns' without overflow\""
+          },
+          {
+            "input": "Timestamp(\"2000-01-01\") + np.array([9 * 10**18], dtype=\"m8[ns]\")",
+            "buggy_output": "array([\"1700-08-23T16:25:26.290448384\"], dtype=\"datetime64[ns]\")",
+            "expected_output": "pytest catches OutOfBoundsDatetime with match \"Out of bounds nanosecond timestamp\""
+          }
+        ],
+        "risks": [
+          "This depends on the compiled pandas C/numba-less extension code that implements `_Timestamp.__add__/__sub__`. Therefore it must be built from source for the specific git revisions (not only installed wheels).",
+          "No explicit NumPy version constraint is provided in the evidence. Different NumPy versions could potentially change casting/promotion/wrapping behavior; keep NumPy pinned consistently across buggy vs fixed runs.",
+          "The evidence does not specify the exact fixed commit hash. You must checkout the fixed revision that includes PR#66581\u2019s changes (likely the merge commit of that PR or the commit mentioned in the PR as the fix).",
+          "If the defect is architecture-dependent (not indicated in the evidence), it may only reproduce on certain platforms/compilers or with sanitizers. Run on the same OS/architecture and avoid cross-compilation for best transition reliability.",
+          "The `tz-naive array branch` is the target; ensure you are exercising `Timestamp.tz is None` (the tests use `Timestamp(...)` without timezone)."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "PR#66552/PR#66581 test diff: pinned exception types and regex messages for overflow-in-cast and overflow cases, matching the tz-aware/scalar paths via `add_overflowsafe`.",
+          "why": "The added tests assert raising `OutOfBoundsDatetime`/`OutOfBoundsTimedelta` with specific `match=` message strings. The buggy behavior is silent wrapping (wrong_value) so it will not raise, causing the test\u2019s `pytest.raises(...)` to fail."
+        },
+        "fails_on_buggy": "The `pytest.raises` context does not trigger because the tz-naive branch returns a wrapped `datetime64[ns]` ndarray instead of raising `OutOfBoundsDatetime`/`OutOfBoundsTimedelta` with the expected message regex. Thus the assertion fails (either 'DID NOT RAISE' or mismatch if a different exception type is raised).",
+        "passes_on_fixed": "The tz-naive branch routes array arithmetic through `_addsub_timedelta64_array`/`add_overflowsafe`, catches the overflow and raises `OutOfBoundsDatetime`/`OutOfBoundsTimedelta` with messages matching the test regex for both add and subtract cases."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3631,
+        "output_tokens": 1345,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002407
+      },
+      "miner_usage": {
+        "input_tokens": 6699,
+        "output_tokens": 1522,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0032430000000000002,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

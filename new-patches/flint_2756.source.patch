@@ -1,0 +1,158 @@
+diff --git a/doc/source/acb_dft.rst b/doc/source/acb_dft.rst
+index d5a45ebdb5..3f42b12b5a 100644
+--- a/doc/source/acb_dft.rst
++++ b/doc/source/acb_dft.rst
+@@ -45,6 +45,11 @@ If `G=\mathbb Z/n\mathbb Z`, we compute the DFT according to the usual conventio
+ If several computations are to be done on the same group, the FFT scheme
+ should be reused.
+ 
++The precomputed schemes build their internal tables of roots of unity at the
++precision passed to their *init* function. Build a scheme at (at least) the
++precision at which you intend to evaluate transforms; *acb_dft* and the
++precomputed schemes then return results accurate to about *prec* bits.
++
+ .. type:: acb_dft_pre_struct
+ 
+ .. type:: acb_dft_pre_t
+@@ -96,7 +101,7 @@ We assume that `f` is given by a vector of length `\prod n_i` corresponding
+ to a lexicographic ordering of the values `y_1,\dots y_r`, and the computation
+ returns the same indexing for values of `\hat f`.
+ 
+-.. function:: void acb_dirichlet_dft_prod(acb_ptr w, acb_srcptr v, slong * cyc, slong num, slong prec)
++.. function:: void acb_dft_prod(acb_ptr w, acb_srcptr v, slong * cyc, slong num, slong prec)
+ 
+    Computes the DFT on the group product of *num* cyclic components of sizes *cyc*. Assume the entries
+    of *v* are indexed according to lexicographic ordering of the cyclic
+@@ -119,10 +124,10 @@ returns the same indexing for values of `\hat f`.
+ 
+    Clears *t*.
+ 
+-.. function:: void acb_dirichlet_dft_prod_precomp(acb_ptr w, acb_srcptr v, const acb_dft_prod_t prod, slong prec)
++.. function:: void acb_dft_prod_precomp(acb_ptr w, acb_srcptr v, const acb_dft_prod_t prod, slong prec)
+ 
+    Sets *w* to the DFT of *v*. Assume the entries are lexicographically
+-   ordered according to the product of cyclic groups initialized in *t*.
++   ordered according to the product of cyclic groups initialized in *prod*.
+ 
+ Convolution
+ -------------------------------------------------------------------------------
+@@ -254,10 +259,10 @@ Radix 2 decomposition
+    Computes the DFT of *v* into *w*, where *v* and *w* have size `2^e`,
+    using a radix 2 FFT.
+ 
+-.. function:: void acb_dft_inverse_rad2(acb_ptr w, acb_srcptr v, int e, slong prec)
++.. function:: void acb_dft_inverse_rad2_precomp_inplace(acb_ptr v, const acb_dft_rad2_t t, slong prec)
+ 
+-   Computes the inverse DFT of *v* into *w*, where *v* and *w* have size `2^e`,
+-   using a radix 2 FFT.
++   Computes the inverse DFT of *v* in place, of size *t->n*, using the
++   precomputed radix 2 scheme *t*.
+ 
+ .. type:: acb_dft_rad2_struct
+ 
+diff --git a/doc/source/history.rst b/doc/source/history.rst
+index 38854a269b..8ff4732f52 100644
+--- a/doc/source/history.rst
++++ b/doc/source/history.rst
+@@ -38,6 +38,16 @@ Bug fixes
+   [FJ, `#2652 <https://github.com/flintlib/flint/pull/2652>`_].
+ * Fix virtual memory usage fetchers for OpenBSD [AA reported by Oliver Krüger,
+   `#2653 <https://github.com/flintlib/flint/pull/2653>`_].
++* Fix ``acb_dft`` plan accuracy: the precomputed root-of-unity tables
++  (``_acb_vec_unit_roots`` and the Bluestein factor table) built their base
++  root at the call precision and raised it to powers, amplifying the base-root
++  error roughly linearly in the index, so plan output radii grew like ``O(n)``
++  (rad2/dft about 11 bits too wide at ``n = 2^16``; Bluestein far worse for
++  prime lengths). Build the base root at an internal guard precision and round
++  the stored table back to ``prec``. Also fix a pre-existing leak in
++  ``acb_dft_bluestein_precomp``, which cleared only ``n`` of its ``np``
++  allocated scratch entries
++  [EC, `#2756 <https://github.com/flintlib/flint/pull/2756>`_].
+ 
+ 
+ 2026-04-24 -- FLINT 3.5.0
+diff --git a/src/acb/vec_unit_roots.c b/src/acb/vec_unit_roots.c
+index c974057b3f..009aaae854 100644
+--- a/src/acb/vec_unit_roots.c
++++ b/src/acb/vec_unit_roots.c
+@@ -42,7 +42,11 @@ _acb_vec_unit_roots(acb_ptr res, slong n, slong len, slong prec)
+     wp = prec + 6 + 2 * FLINT_BIT_COUNT(len1);
+ 
+     acb_init(t);
+-    acb_unit_root(t, n, prec);
++    /* Base root at wp, not prec: _acb_vec_set_powers raises it to powers by
++       binary powering, amplifying the base-root error ~linearly in the
++       index, so a prec-accurate base would leave the largest stored roots
++       only ~prec - log2(len1) bits accurate. Rounded back to prec below. */
++    acb_unit_root(t, n, wp);
+     _acb_vec_set_powers(res, t, len1, wp);
+     acb_clear(t);
+     _acb_vec_set_round(res, res, len1, prec);
+diff --git a/src/acb_dft/bluestein.c b/src/acb_dft/bluestein.c
+index 2b3e8e3b55..46c9a47c0a 100644
+--- a/src/acb_dft/bluestein.c
++++ b/src/acb_dft/bluestein.c
+@@ -41,7 +41,7 @@ _acb_vec_bluestein_factors(acb_ptr z, slong n, slong prec)
+     else
+     {
+         nmod_t n2;
+-        slong k, k2, dk;
++        slong k, k2, dk, wp;
+         slong * v, * s;
+         acb_ptr t;
+         s = flint_malloc(n * sizeof(slong));
+@@ -64,13 +64,20 @@ _acb_vec_bluestein_factors(acb_ptr z, slong n, slong prec)
+         }
+         acb_modular_fill_addseq(v, n);
+ 
++        /* Build the base root and the addition-sequence products at wp, not
++           prec: the addseq raises the base root to powers via products of
++           earlier entries, amplifying the base-root error ~linearly in the
++           index. The factor table z is rounded back to prec after the
++           (exact) copy-out below. */
++        wp = prec + 6 + 2 * FLINT_BIT_COUNT(2 * n);
++
+         acb_one(t + 0);
+-        acb_unit_root(t + 1, 2 * n, prec);
++        acb_unit_root(t + 1, 2 * n, wp);
+         acb_conj(t + 1, t + 1);
+         acb_set_si(t + n, -1);
+         for (k = 2; k < n; k++)
+             if (v[k])
+-                acb_mul(t + k, t + v[k], t + k - v[k], prec);
++                acb_mul(t + k, t + v[k], t + k - v[k], wp);
+         for (k = 0; k < n; k++)
+         {
+             if (s[k] <= n)
+@@ -78,6 +85,7 @@ _acb_vec_bluestein_factors(acb_ptr z, slong n, slong prec)
+             else
+                 acb_conj(z + k, t + 2 * n - s[k]);
+         }
++        _acb_vec_set_round(z, z, n, prec);
+         _acb_vec_clear(t, n + 1);
+         flint_free(s);
+         flint_free(v);
+@@ -121,12 +129,13 @@ _acb_dft_bluestein_init(acb_dft_bluestein_t t, slong dv, slong n, slong prec)
+ void
+ acb_dft_bluestein_precomp(acb_ptr w, acb_srcptr v, const acb_dft_bluestein_t t, slong prec)
+ {
+-    slong n = t->n, np = t->rad2->n, dv = t->dv;
++    slong n = t->n, dv = t->dv, np;
+     acb_ptr fp;
+ 
+     if (n == 0)
+         return;
+ 
++    np = t->rad2->n;
+     fp = _acb_vec_init(np);
+     _acb_vec_kronecker_mul_step(fp, t->z, v, dv, n, prec);
+ 
+@@ -137,7 +146,7 @@ acb_dft_bluestein_precomp(acb_ptr w, acb_srcptr v, const acb_dft_bluestein_t t,
+ 
+     _acb_vec_kronecker_mul(w, t->z, fp, n, prec);
+ 
+-    _acb_vec_clear(fp, n);
++    _acb_vec_clear(fp, np);
+ }
+ 
+ void

@@ -1,0 +1,190 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index f7b7a8afcc5..d9435fa2ebb 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -969,6 +969,7 @@ dependencies = [
+  "bytemuck",
+  "gemm 0.19.0",
+  "half",
++ "libm",
+  "macerator",
+  "num-traits",
+  "once_cell",
+diff --git a/crates/burn-flex/Cargo.toml b/crates/burn-flex/Cargo.toml
+index 0ec135c830a..04b3d70614d 100644
+--- a/crates/burn-flex/Cargo.toml
++++ b/crates/burn-flex/Cargo.toml
+@@ -51,6 +51,11 @@ burn-std = { path = "../burn-std", version = "=0.21.0-pre.3", default-features =
+ 
+ bytemuck = { workspace = true }
+ half = { workspace = true }
++# libm for `erf` (f32/f64). num-traits does not expose erf, and Rust's
++# f64/f32 have no builtin erf method even with `std`. libm is already
++# in the dep graph transitively via num-traits, so listing it here
++# doesn't add a new dependency.
++libm = { workspace = true }
+ num-traits = { workspace = true }
+ 
+ # Matmul
+diff --git a/crates/burn-flex/src/ops/expand.rs b/crates/burn-flex/src/ops/expand.rs
+index ed530b50287..5caa3d85515 100644
+--- a/crates/burn-flex/src/ops/expand.rs
++++ b/crates/burn-flex/src/ops/expand.rs
+@@ -84,8 +84,19 @@ pub fn expand(tensor: FlexTensor, target_shape: Shape) -> FlexTensor {
+     let src_ndims = src_dims.len();
+     let target_ndims = target_shape.num_dims();
+ 
++    // Broadcasting only prepends new dims; it never drops existing ones.
++    // A target with fewer dims than the source would silently discard the
++    // trailing source strides and produce an invalid layout.
++    assert!(
++        target_ndims >= src_ndims,
++        "expand: target rank ({}) must be >= source rank ({}); \
++         broadcasting cannot drop dimensions",
++        target_ndims,
++        src_ndims
++    );
++
+     // Prepend 1s to source shape if needed (for broadcasting like [3] -> [2, 3])
+-    let dim_diff = target_ndims.saturating_sub(src_ndims);
++    let dim_diff = target_ndims - src_ndims;
+ 
+     let mut new_strides = Vec::with_capacity(target_ndims);
+ 
+diff --git a/crates/burn-flex/src/ops/reduce.rs b/crates/burn-flex/src/ops/reduce.rs
+index 8f87a306277..0f178d6274f 100644
+--- a/crates/burn-flex/src/ops/reduce.rs
++++ b/crates/burn-flex/src/ops/reduce.rs
+@@ -1682,8 +1682,11 @@ where
+     let reduce_row = |outer: usize| -> f32 {
+         let row_start = start + outer * dim_size;
+         let row = &data[row_start..row_start + dim_size];
++        // Single left-to-right scan: first NaN wins, otherwise track the
++        // extremum. Starting `best = row[0]` means the i=0 `is_better`
++        // branch is a no-op for strict comparisons.
+         let mut best = row[0];
+-        for &v in &row[1..] {
++        for &v in row {
+             if v.is_nan() {
+                 return f32::NAN;
+             }
+@@ -1691,10 +1694,6 @@ where
+                 best = v;
+             }
+         }
+-        // Check first element for NaN (skipped in loop)
+-        if best.is_nan() {
+-            return f32::NAN;
+-        }
+         best
+     };
+ 
+@@ -1734,21 +1733,21 @@ where
+     let find_row = |outer: usize| -> isize {
+         let row_start = start + outer * dim_size;
+         let row = &data[row_start..row_start + dim_size];
++        // Single left-to-right scan: first NaN wins, otherwise track the
++        // extremum. Starting `best = row[0]` means the i=0 `is_better`
++        // branch is a no-op (strict comparisons are false on equal
++        // operands), so we don't need a separate row[0] check.
+         let mut best = row[0];
+         let mut best_idx: isize = 0;
+-        for (i, &v) in row[1..].iter().enumerate() {
++        for (i, &v) in row.iter().enumerate() {
+             if v.is_nan() {
+-                return (i + 1) as isize;
++                return i as isize;
+             }
+             if is_better(v, best) {
+                 best = v;
+-                best_idx = (i + 1) as isize;
++                best_idx = i as isize;
+             }
+         }
+-        // Check first element for NaN (skipped in loop)
+-        if row[0].is_nan() {
+-            return 0;
+-        }
+         best_idx
+     };
+ 
+@@ -1793,18 +1792,15 @@ where
+         let row = &data[row_start..row_start + dim_size];
+         let mut best = row[0];
+         let mut best_idx: isize = 0;
+-        for (i, &v) in row[1..].iter().enumerate() {
++        for (i, &v) in row.iter().enumerate() {
+             if v.is_nan() {
+-                return (f32::NAN, (i + 1) as isize);
++                return (f32::NAN, i as isize);
+             }
+             if is_better(v, best) {
+                 best = v;
+-                best_idx = (i + 1) as isize;
++                best_idx = i as isize;
+             }
+         }
+-        if row[0].is_nan() {
+-            return (f32::NAN, 0);
+-        }
+         (best, best_idx)
+     };
+ 
+diff --git a/crates/burn-flex/src/ops/unary.rs b/crates/burn-flex/src/ops/unary.rs
+index 3a193a80c02..a5248824698 100644
+--- a/crates/burn-flex/src/ops/unary.rs
++++ b/crates/burn-flex/src/ops/unary.rs
+@@ -347,42 +347,21 @@ pub fn erf(tensor: FlexTensor) -> FlexTensor {
+ // ============================================================================
+ // Error function implementation
+ // ============================================================================
+-
+-/// Approximation of the error function for f32.
+-/// Uses the Horner form of the approximation from Abramowitz and Stegun.
++//
++// Delegates to libm for full f32 / f64 precision. The previous Abramowitz
++// and Stegun 7.1.26 formula was capped at ~1.5e-7 max absolute error,
++// adequate for f32 but well short of f64's ~2.2e-16 precision. libm's erf
++// is derived from fdlibm and lands within a few ulps across the full
++// range in both precisions.
++
++/// Error function for f32.
+ pub fn erf_f32(x: f32) -> f32 {
+-    let a1 = 0.254_829_6_f32;
+-    let a2 = -0.284_496_72_f32;
+-    let a3 = 1.421_413_8_f32;
+-    let a4 = -1.453_152_1_f32;
+-    let a5 = 1.061_405_4_f32;
+-    let p = 0.3275911_f32;
+-
+-    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+-    let x = x.abs();
+-
+-    let t = 1.0 / (1.0 + p * x);
+-    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x * x).exp();
+-
+-    sign * y
++    libm::erff(x)
+ }
+ 
+-/// Approximation of the error function for f64.
++/// Error function for f64.
+ pub fn erf_f64(x: f64) -> f64 {
+-    let a1 = 0.254829592_f64;
+-    let a2 = -0.284496736_f64;
+-    let a3 = 1.421413741_f64;
+-    let a4 = -1.453152027_f64;
+-    let a5 = 1.061405429_f64;
+-    let p = 0.3275911_f64;
+-
+-    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+-    let x = x.abs();
+-
+-    let t = 1.0 / (1.0 + p * x);
+-    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x * x).exp();
+-
+-    sign * y
++    libm::erf(x)
+ }
+ 
+ // Tests kept here probe flex-internal unary helpers that don't flow through

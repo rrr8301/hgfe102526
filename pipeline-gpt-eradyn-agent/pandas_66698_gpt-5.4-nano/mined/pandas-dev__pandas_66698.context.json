@@ -1,0 +1,434 @@
+{
+  "repo": "pandas-dev/pandas",
+  "pr_number": 66698,
+  "reference": "https://github.com/pandas-dev/pandas/pull/66698",
+  "buggy_commit": "1a559bfdfae0983de9c883a6b450e5fcec5968d9",
+  "fixed_commit": "3dd2d86058d756ba2ed9549a47bc40231127b587",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "NumPy",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "README.md Dependencies lists NumPy as a dependency."
+      },
+      {
+        "name": "python-dateutil",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md Dependencies lists python-dateutil."
+      },
+      {
+        "name": "tzdata",
+        "constraint": "Only required on Windows/Emscripten",
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md Dependencies lists tzdata (Only required on Windows/Emscripten)."
+      },
+      {
+        "name": "Cython",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md Installation from sources says: \u201cTo install pandas from source you need Cython in addition to the normal dependencies above.\u201d"
+      }
+    ],
+    "installation_commands": [
+      "pip install cython",
+      "pip install .",
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true",
+      "pip install pandas"
+    ],
+    "build_commands": [],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: NumPy \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: python-dateutil \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "explicit: tzdata Only required on Windows/Emscripten",
+      "unbounded: Cython \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "NumPy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "README.md Dependencies lists NumPy as a dependency."
+      },
+      {
+        "package": "python-dateutil",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md Dependencies lists python-dateutil."
+      },
+      {
+        "package": "tzdata",
+        "documented_constraint": "Only required on Windows/Emscripten",
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "explicit",
+        "source": "README.md Dependencies lists tzdata (Only required on Windows/Emscripten)."
+      },
+      {
+        "package": "Cython",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md Installation from sources says: \u201cTo install pandas from source you need Cython in addition to the normal dependencies above.\u201d"
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": null,
+    "observed_behavior": "tz_localize silently wrapped an out-of-range UTC int64 instant or returned the NaT sentinel instead of reporting an out-of-bounds conversion; in the zoneinfo fallback path, both UTC bounds stayed NaT after a failed round-trip check, and the caller either treated the wall time as a DST gap or returned NaT under nonexistent='NaT'.",
+    "expected_behavior": "When the UTC instant is unrepresentable (out of the supported datetime bounds), tz_localize (and underlying tz_localize_to_utc paths) should raise OutOfBoundsDatetime rather than wrapping int64 or returning NaT; for nonexistent='NaT', it should still raise OutOfBoundsDatetime for this out-of-range case.",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "Input: pd.Timestamp(\"2262-04-11 21:47:16.854775807\")",
+      "Execution/path: tz_localize_to_utc where the derived UTC instant is out of range for the int64 representation",
+      "Zone: America/New_York (DST zone where the described failing DST/out-of-range combination occurs)",
+      "Condition: nonexistent='NaT' leads to silent NaT before the fix",
+      "Code regression condition (zoneinfo fallback): _get_utc_bounds derived candidate UTC instants with bare `val - delta` (un-checked subtraction), so a wrapped candidate fails the round-trip check and leaves both bounds as NaT"
+    ],
+    "input_output_examples": [
+      {
+        "input": "ts = pd.Timestamp(\"2262-04-11 21:47:16.854775807\")\\nts.tz_localize(\"America/New_York\")",
+        "buggy_output": "ValueError: ... is a nonexistent time due to daylight savings time",
+        "expected_output": "OutOfBoundsDatetime: Converting ... overflows past 2262-04-11 23:47:16.854775807",
+        "value_kind": "exception",
+        "source": "pr_body:PR#66698"
+      },
+      {
+        "input": "ts = pd.Timestamp(\"2262-04-11 21:47:16.854775807\")\\nts.tz_localize(\"America/New_York\", nonexistent=\"NaT\")",
+        "buggy_output": "NaT          <- silent",
+        "expected_output": "OutOfBoundsDatetime",
+        "value_kind": "exception",
+        "source": "pr_body:PR#66698"
+      }
+    ],
+    "oracle_clues": [
+      "PR#66698 describes the regression: zoneinfo fallback in `_get_utc_bounds` derived candidate UTC instants with bare `val - delta`, unlike the cached path which uses `checked_sub`; wrapped candidate fails the fallback's round-trip check so both bounds stay NaT.",
+      "Before/after oracle for the default path includes: before `ValueError: ... is a nonexistent time due to daylight savings time`; after `OutOfBoundsDatetime: Converting ... overflows past 2262-04-11 23:47:16.854775807`.",
+      "Before/after oracle for nonexistent='NaT' includes: before `NaT` (silent); after `OutOfBoundsDatetime`.",
+      "Relevant implementation evidence: tzconversion.pyx shows `_get_utc_bounds` changed from `v_left = val - delta0` / `v_right = val - delta1` to using `checked_sub` in that branch (with comments about GH#65733 wrapped int64 failing round-trip and leaving bounds NaT)."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": "int64_t (i8 / M8[ns] shown in tests)",
+    "precision": null,
+    "magnitude": "UTC/local timestamp values near/outside pandas Timestamp representable range: past Timestamp.max and around the NaT sentinel (including one below the minimum representable value)",
+    "tolerance": null,
+    "category_specific_evidence": [
+      "GH#65733: a candidate that wrapped int64 fails the round-trip check and leaves both UTC bounds as NaT; caller treats it as a nonexistent time instead of raising OutOfBoundsDatetime. (tzconversion.pyx: _get_utc_bounds uses checked_sub and notes round-trip below leaves both bounds NaT).",
+      "PR#66698 repro: ts = pd.Timestamp(\"2262-04-11 21:47:16.854775807\") ; ts.tz_localize(\"America/New_York\") before: ValueError ... nonexistent time; after: OutOfBoundsDatetime: \"Converting ... overflows past 2262-04-11 23:47:16.854775807\".",
+      "PR#66698 repro: ts.tz_localize(\"America/New_York\", nonexistent=\"NaT\") before: NaT (silent); after: OutOfBoundsDatetime.",
+      "commit: GH#65733 fixed: zoneinfo fallback subtracted candidate offsets without bounds check; wrapped candidate fails round-trip check so both bounds stayed NaT; reported as \"a nonexistent time due to daylight savings time\" or silently returned NaT under nonexistent=\"NaT\".",
+      "commit: also describes fixed-offset/machine-local loops shifting with a bare subtraction; two or more values near Timestamp.min/max came back in year -2262 (wrap) instead of raising.",
+      "test_diff (tzconversion bounds/sentinel logic): _shift_to_utc uses _shift_to_utc(v, delta, creso) and if result[i] == NPY_NAT raises out-of-bounds via raise_out_of_bounds(v, BS_UNDERFLOW, creso).",
+      "test_diff: GH#66550 shift landing exactly on the NaT sentinel is one below the minimum representable value, so it underflows; tz_localize should raise OutOfBoundsDatetime with match \"underflows past\" for dti built from np.array([-(2**63) + 9*3600*10**9], dtype=\"i8\").view(\"M8[ns]\").",
+      "test_diff: GH#65733 overflow past last cached transition wraps instead of reporting out-of-bounds UTC instant; test expects OutOfBoundsDatetime(\"overflows past\") when tz_localize is called with kwargs in [{}, {\"nonexistent\":\"NaT\"}, {\"nonexistent\":\"shift_forward\"}] on dti = DatetimeIndex([Timestamp(Timestamp.max._value - 2*3600*10**9)])."
+    ],
+    "reproduction_risks": [
+      "Repro outcomes depend on which tz_localize path is used (zoneinfo fallback vs fixed-offset/use_tzlocal/use_fixed loops), since the described bug manifests as int64 wrapping/NaT results in those specific branches.",
+      "Need to choose timestamps near pandas Timestamp representable boundaries (Timestamp.max/min and the NaT sentinel); the evidence specifies concrete boundary-adjacent values (e.g., 2262-04-11 21:47:16.854775807 and Timestamp.max._value - 2*3600*10**9; and one-below-min via the i8 pattern).",
+      "The observed behavior changes with the nonexistent= parameter (e.g., nonexistent=\"NaT\" caused silent NaT before the fix, but should raise OutOfBoundsDatetime after)."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "pip install cython",
+        "pip install .",
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true",
+        "pip install pandas"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "NumPy",
+      "source": "README.md Dependencies lists NumPy as a dependency.",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "python-dateutil",
+      "source": "README.md Dependencies lists python-dateutil.",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "tzdata",
+      "source": "README.md Dependencies lists tzdata (Only required on Windows/Emscripten).",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "Cython",
+      "source": "README.md Installation from sources says: \u201cTo install pandas from source you need Cython in addition to the normal dependencies above.\u201d",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "tz_localize can overflow the UTC instant and silently wrap int64 or return NaT, instead of reporting an out-of-bounds conversion error. In the zoneinfo fallback path, the candidate UTC instants fail a round-trip check so both bounds stay NaT; the caller then reports an ordinary wall time as a DST gap before the fix, and returns NaT silently under nonexistent='NaT'.",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx:621-654"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "When the UTC instant is unrepresentable (out of the supported datetime bounds), tz_localize (and the underlying tz_localize_to_utc paths) should raise OutOfBoundsDatetime rather than wrapping int64 or returning the NaT sentinel. For nonexistent='NaT', it should still raise OutOfBoundsDatetime rather than silently returning NaT for this out-of-range case.",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx:621-654"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx:621-654"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 5,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx:621-654"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 3,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx:621-654"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 2,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx:621-654"
+    },
+    {
+      "field": "numerical_characteristics.dtype",
+      "value": "int64_t (i8 / M8[ns] shown in tests)",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx:621-654"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "UTC/local timestamp values near/outside pandas Timestamp representable range: past Timestamp.max and around the NaT sentinel (including one below the minimum representable value)",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx:621-654"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 8,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx:621-654"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx:621-654"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "tz_localize silently wrapped an out-of-range UTC int64 instant or returned the NaT sentinel instead of reporting an out-of-bounds conversion; in the zoneinfo fallback path, both UTC bounds stayed NaT after a failed round-trip check, and the caller either treated the wall time as a DST gap or returned NaT under nonexistent='NaT'.",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "When the UTC instant is unrepresentable (out of the supported datetime bounds), tz_localize (and underlying tz_localize_to_utc paths) should raise OutOfBoundsDatetime rather than wrapping int64 or returning NaT; for nonexistent='NaT', it should still raise OutOfBoundsDatetime for this out-of-range case.",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 5,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 4,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 2,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/tzconversion.pyx"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "readme:README.md",
+        "diff:pandas/_libs/tslibs/tzconversion.pyx:621-654",
+        "pr_body:PR#66698",
+        "commit:commits",
+        "issue:issue#161",
+        "readme:README.md",
+        "readme:README.md"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "diff:pandas/_libs/tslibs/tzconversion.pyx:621-654",
+        "pr_body:PR#66698",
+        "commit:commits",
+        "issue:issue#161",
+        "pr_body:PR#66698",
+        "diff:pandas/_libs/tslibs/tzconversion.pyx:357-365",
+        "diff:pandas/_libs/tslibs/tzconversion.pyx:330-353",
+        "diff:pandas/_libs/tslibs/timestamps.pyx:3662-3676"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "diff:pandas/_libs/tslibs/tzconversion.pyx:621-654",
+        "test_diff:pandas/tests/indexes/datetimes/methods/test_tz_localize.py:53-127",
+        "pr_body:PR#66698",
+        "commit:commits",
+        "issue:issue#161",
+        "test_diff:pandas/tests/indexes/datetimes/methods/test_tz_localize.py:13-24",
+        "test_diff:pandas/tests/indexes/datetimes/methods/test_tz_localize.py:53-127",
+        "diff:pandas/_libs/tslibs/tzconversion.pyx:357-365"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          },
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          }
+        ],
+        "present": [
+          "environment.dependencies"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 0.8,
+        "required_total": 5,
+        "required_present": 4,
+        "required_missing": [
+          {
+            "path": "numerical_failure.affected_api",
+            "why": "the probe has nothing to call without the API under test"
+          }
+        ],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "budget": {
+      "max_calls": 1,
+      "max_rung": "widened",
+      "spent": 1,
+      "log": [
+        {
+          "rung": "targeted",
+          "note": "failure: The first pass left these REQUIRED fields empty. Search the ",
+          "input_tokens": 4602,
+          "output_tokens": 704,
+          "cost_usd": 0.0018
+        }
+      ]
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 11607,
+    "output_tokens": 2577,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.005542999999999999,
+    "llm_calls": 4
+  },
+  "errors": {},
+  "expansions": [
+    {
+      "rung": "targeted",
+      "question": "failure",
+      "error": "",
+      "n_passages": 8,
+      "fields_added": [
+        "affected_api",
+        "confidence",
+        "expected_behavior",
+        "input_output_examples",
+        "manifestation",
+        "observed_behavior",
+        "oracle_clues",
+        "trigger_conditions"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+diff --git a/doc/source/whatsnew/v3.0.0.rst b/doc/source/whatsnew/v3.0.0.rst
+index 8c8a16af6bd34..ae4be412c056f 100644
+--- a/doc/source/whatsnew/v3.0.0.rst
++++ b/doc/source/whatsnew/v3.0.0.rst
+@@ -1079,6 +1079,7 @@ I/O
+ - Bug in :meth:`read_csv` raising ``TypeError`` when ``index_col`` is specified and ``na_values`` is a dict containing the key ``None``. (:issue:`57547`)
+ - Bug in :meth:`read_csv` raising ``TypeError`` when ``nrows`` and ``iterator`` are specified without specifying a ``chunksize``. (:issue:`59079`)
+ - Bug in :meth:`read_csv` where the order of the ``na_values`` makes an inconsistency when ``na_values`` is a list non-string values. (:issue:`59303`)
++- Bug in :meth:`read_csv` with ``engine="c"`` reading big integers as strings. Now reads them as python integers. (:issue:`51295`)
+ - Bug in :meth:`read_csv` with ``engine="pyarrow"`` and ``dtype="Int64"`` losing precision (:issue:`56136`)
+ - Bug in :meth:`read_excel` raising ``ValueError`` when passing array of boolean values when ``dtype="boolean"``. (:issue:`58159`)
+ - Bug in :meth:`read_html` where ``rowspan`` in header row causes incorrect conversion to ``DataFrame``. (:issue:`60210`)
+diff --git a/pandas/_libs/parsers.pyx b/pandas/_libs/parsers.pyx
+index 91eddc3261164..ca87fce555f75 100644
+--- a/pandas/_libs/parsers.pyx
++++ b/pandas/_libs/parsers.pyx
+@@ -29,6 +29,7 @@ from cpython.exc cimport (
+     PyErr_Fetch,
+     PyErr_Occurred,
+ )
++from cpython.long cimport PyLong_FromString
+ from cpython.object cimport PyObject
+ from cpython.ref cimport (
+     Py_INCREF,
+@@ -1081,9 +1082,13 @@ cdef class TextReader:
+                         np.dtype("object"), i, start, end, 0,
+                         0, na_hashset, na_fset)
+                 except OverflowError:
+-                    col_res, na_count = self._convert_with_dtype(
+-                        np.dtype("object"), i, start, end, na_filter,
+-                        0, na_hashset, na_fset)
++                    try:
++                        col_res, na_count = _try_pylong(self.parser, i, start,
++                                                        end, na_filter, na_hashset)
++                    except ValueError:
++                        col_res, na_count = self._convert_with_dtype(
++                            np.dtype("object"), i, start, end, 0,
++                            0, na_hashset, na_fset)
+ 
+                 if col_res is not None:
+                     break
+@@ -1873,6 +1878,36 @@ cdef int _try_int64_nogil(parser_t *parser, int64_t col,
+ 
+     return 0
+ 
++cdef _try_pylong(parser_t *parser, Py_ssize_t col,
++                 int64_t line_start, int64_t line_end,
++                 bint na_filter, kh_str_starts_t *na_hashset):
++    cdef:
++        int na_count = 0
++        Py_ssize_t lines
++        coliter_t it
++        const char *word = NULL
++        ndarray[object] result
++        object NA = na_values[np.object_]
++
++    lines = line_end - line_start
++    result = np.empty(lines, dtype=object)
++    coliter_setup(&it, parser, col, line_start)
++
++    for i in range(lines):
++        COLITER_NEXT(it, word)
++        if na_filter and kh_get_str_starts_item(na_hashset, word):
++            # in the hash table
++            na_count += 1
++            result[i] = NA
++            continue
++
++        py_int = PyLong_FromString(word, NULL, 10)
++        if py_int is None:
++            raise ValueError("Invalid integer ", word)
++        result[i] = py_int
++
++    return result, na_count
++
+ 
+ # -> tuple[ndarray[bool], int]
+ cdef _try_bool_flex(parser_t *parser, int64_t col,

@@ -1,0 +1,67 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 343b27f13af30..ed0dbae00b33b 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -799,6 +799,7 @@ I/O
+ - :meth:`HDFStore.select` now raises an informative ``NotImplementedError`` when a ``where`` clause contains an arithmetic expression such as ``"(A % 3) == 0"``, instead of an opaque PyTables ``TypeError``; arithmetic in ``where`` filters is not supported (:issue:`41100`)
+ - :meth:`HDFStore.select`, :meth:`HDFStore.remove` and :func:`read_hdf` now warn when a nested ``where`` of the form ``"(A & B) | (C & D)"`` over indexed columns may match the wrong rows because of an upstream PyTables bug, suggesting writing with ``index=False`` or splitting the ``OR`` branches into separate operations (:issue:`50598`)
+ - :meth:`HDFStore.select`, :meth:`HDFStore.select_as_coordinates`, and :meth:`HDFStore.select_as_multiple` now raise an informative ``NotImplementedError`` instead of a cryptic ``KeyError`` when a column selection such as ``where="columns=['A']"`` is used with any coordinate-based read (``iterator=True``, ``chunksize``, or the ``select_as_*`` methods); pass the ``columns`` argument instead (:issue:`12953`)
++- Bug in :meth:`HDFStore.select` where a ``where`` query comparing an integer column against a value that is not a whole number (e.g. ``"col == 1.5"``) silently compared against the nearest whole number instead, so ``"col == 1.5"`` matched rows holding ``2``, ``"col > 1.5"`` skipped them, and ``"col != 1.5"`` dropped them (:issue:`68032`)
+ - Bug in :meth:`HDFStore.select` where a ``where`` query on a categorical data column for a value that is not one of the categories incorrectly matched rows with missing (``NaN``) values (:issue:`22977`)
+ - Fixed ``MemoryError`` in :meth:`HDFStore.select` when iterating large tables with ``chunksize`` and no ``where`` filter (:issue:`15937`)
+ - Fixed bug in :func:`read_hdf` raising on files written by older pandas versions whose ``freq`` index attribute could not be decoded; the ``freq`` is now dropped with a warning instead of corrupting the index (:issue:`35917`)
+diff --git a/pandas/core/computation/pytables.py b/pandas/core/computation/pytables.py
+index 3119d92bd1625..47e134f24ccc3 100644
+--- a/pandas/core/computation/pytables.py
++++ b/pandas/core/computation/pytables.py
+@@ -221,6 +221,19 @@ def metadata(self):
+     def generate(self, v) -> str:
+         """create and return the op string for this TermValue"""
+         val = v.tostring(self.encoding)
++        if v.truncated:
++            # The requested value fell strictly between `val` and the next
++            # storable one, so no row can equal it. Compare against `val` with
++            # an adjusted operator rather than against the value we truncated to.
++            lhs = self.lhs.value
++            if self.op == "==":
++                # matches nothing
++                return f"(({lhs} > {val}) & ({lhs} <= {val}))"
++            if self.op == "!=":
++                # matches everything
++                return f"(({lhs} <= {val}) | ({lhs} > {val}))"
++            op = "<=" if self.op in ("<", "<=") else ">"
++            return f"({lhs} {op} {val})"
+         return f"({self.lhs.value} {self.op} {val})"
+ 
+     def convert_value(self, conv_val) -> TermValue:
+@@ -279,7 +292,13 @@ def stringify(value):
+                 # convert v to float to raise float's ValueError
+                 float(conv_val)
+             else:
+-                conv_val = int(v_dec.to_integral_exact(rounding="ROUND_HALF_EVEN"))
++                # Round toward -inf rather than to nearest, and flag the loss, so
++                # that generate() can adjust the operator instead of silently
++                # querying for a neighboring integer.
++                floored = v_dec.to_integral_exact(rounding="ROUND_FLOOR")
++                truncated = floored != v_dec
++                conv_val = int(floored)
++                return TermValue(conv_val, conv_val, kind, truncated=truncated)
+             return TermValue(conv_val, conv_val, kind)
+         elif kind == "float":
+             conv_val = float(conv_val)
+@@ -661,11 +680,14 @@ def evaluate(self):
+ class TermValue:
+     """hold a term value that we use to construct a condition/filter"""
+ 
+-    def __init__(self, value, converted, kind: str) -> None:
++    def __init__(self, value, converted, kind: str, truncated: bool = False) -> None:
+         assert isinstance(kind, str), kind
+         self.value = value
+         self.converted = converted
+         self.kind = kind
++        # whether `converted` lost information relative to the value the user
++        # asked for; see BinOp.generate
++        self.truncated = truncated
+ 
+     def tostring(self, encoding) -> str:
+         """quote the string if not encoded else encode and return"""

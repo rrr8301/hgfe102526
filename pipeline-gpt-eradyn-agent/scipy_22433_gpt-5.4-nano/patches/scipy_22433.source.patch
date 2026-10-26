@@ -1,0 +1,163 @@
+diff --git a/scipy/interpolate/_fitpack2.py b/scipy/interpolate/_fitpack2.py
+index 36355be99933..da22f9041596 100644
+--- a/scipy/interpolate/_fitpack2.py
++++ b/scipy/interpolate/_fitpack2.py
+@@ -1157,7 +1157,8 @@ def partial_derivative(self, dx, dy):
+ the maximal number of iterations maxit (set to 20 by the program)
+ allowed for finding a smoothing spline with fp=s has been reached:
+ s too small.
+-Weighted sum of squared residuals does not satisfy abs(fp-s)/s < tol.""",
++Weighted sum of squared residuals does not satisfy abs(fp-s)/s < tol.
++Try increasing maxit by passing it as a keyword argument.""",
+                     4: """
+ No more knots can be added because the number of b-spline coefficients
+ (nx-kx-1)*(ny-ky-1) already exceeds the number of data points m:
+@@ -1574,6 +1575,9 @@ class RectBivariateSpline(BivariateSpline):
+         Positive smoothing factor defined for estimation condition:
+         ``sum((z[i]-f(x[i], y[i]))**2, axis=0) <= s`` where f is a spline
+         function. Default is ``s=0``, which is for interpolation.
++    maxit : int, optional
++        The maximal number of iterations maxit allowed for finding a
++        smoothing spline with fp=s. Default is ``maxit=20``.
+ 
+     See Also
+     --------
+@@ -1606,7 +1610,7 @@ class RectBivariateSpline(BivariateSpline):
+ 
+     """
+ 
+-    def __init__(self, x, y, z, bbox=[None] * 4, kx=3, ky=3, s=0):
++    def __init__(self, x, y, z, bbox=[None] * 4, kx=3, ky=3, s=0, maxit=20):
+         x, y, bbox = ravel(x), ravel(y), ravel(bbox)
+         z = np.asarray(z)
+         if not np.all(diff(x) > 0.0):
+@@ -1628,7 +1632,7 @@ def __init__(self, x, y, z, bbox=[None] * 4, kx=3, ky=3, s=0):
+         xb, xe, yb, ye = bbox
+         with FITPACK_LOCK:
+             nx, tx, ny, ty, c, fp, ier = dfitpack.regrid_smth(x, y, z, xb, xe, yb,
+-                                                            ye, kx, ky, s)
++                                                            ye, kx, ky, s, maxit)
+ 
+         if ier not in [0, -1, -2]:
+             msg = _surfit_messages.get(ier, f'ier={ier}')
+diff --git a/scipy/interpolate/fitpack/fpregr.f b/scipy/interpolate/fitpack/fpregr.f
+index e43726d287b9..f18025ef61fa 100644
+--- a/scipy/interpolate/fitpack/fpregr.f
++++ b/scipy/interpolate/fitpack/fpregr.f
+@@ -21,6 +21,8 @@ recursive subroutine fpregr(iopt,x,mx,y,my,z,mz,xb,xe,yb,ye,
+ c  ..function references..
+       real*8 abs,fprati
+       integer max0,min0
++      logical onlyxknots
++      onlyxknots = .false.
+ c  ..subroutine references..
+ c    fpgrre,fpknot
+ c  ..
+@@ -88,7 +90,7 @@ recursive subroutine fpregr(iopt,x,mx,y,my,z,mz,xb,xe,yb,ye,
+       if(ny.gt.nyest .or. nx.gt.nxest) go to 420
+ c  find the position of the interior knots in case of interpolation.
+ c  the knots in the x-direction.
+-      mk1 = mx-kx1
++  10  mk1 = mx-kx1
+       if(mk1.eq.0) go to 60
+       k3 = kx/2
+       i = kx1+1
+@@ -105,6 +107,10 @@ recursive subroutine fpregr(iopt,x,mx,y,my,z,mz,xb,xe,yb,ye,
+         i = i+1
+         j = j+1
+   50  continue
++      if(onlyxknots) then
++        onlyxknots = .false.
++        goto 120
++      end if
+ c  the knots in the y-direction.
+   60  mk1 = my-ky1
+       if(mk1.eq.0) go to 120
+@@ -267,6 +273,10 @@ recursive subroutine fpregr(iopt,x,mx,y,my,z,mz,xb,xe,yb,ye,
+           call fpknot(x,mx,tx,nx,fpintx,nrdatx,nrintx,nxest,1)
+ c  test whether we cannot further increase the number of knots in the
+ c  x-direction.
++          if(nx.eq.nmaxx) then
++            onlyxknots = .true.
++            go to 10
++          end if
+           if(nx.eq.nxe) go to 250
+  220    continue
+         go to 250
+@@ -280,6 +290,7 @@ recursive subroutine fpregr(iopt,x,mx,y,my,z,mz,xb,xe,yb,ye,
+           call fpknot(y,my,ty,ny,fpinty,nrdaty,nrinty,nyest,1)
+ c  test whether we cannot further increase the number of knots in the
+ c  y-direction.
++          if(ny.eq.nmaxy) go to 60
+           if(ny.eq.nye) go to 250
+  240    continue
+ c  restart the computations with the new set of knots.
+@@ -365,4 +376,3 @@ recursive subroutine fpregr(iopt,x,mx,y,my,z,mz,xb,xe,yb,ye,
+       fp = 0.
+  440  return
+       end
+-
+diff --git a/scipy/interpolate/fitpack/regrid.f b/scipy/interpolate/fitpack/regrid.f
+index 0410020c2bbc..ec6da65feb20 100644
+--- a/scipy/interpolate/fitpack/regrid.f
++++ b/scipy/interpolate/fitpack/regrid.f
+@@ -1,5 +1,5 @@
+       recursive subroutine regrid(iopt,mx,x,my,y,z,xb,xe,yb,ye,kx,ky,s,
+-     * nxest,nyest,nx,tx,ny,ty,c,fp,wrk,lwrk,iwrk,kwrk,ier)
++     * nxest,nyest,maxit,nx,tx,ny,ty,c,fp,wrk,lwrk,iwrk,kwrk,ier)
+       implicit none
+ c given the set of values z(i,j) on the rectangular grid (x(i),y(j)),
+ c i=1,...,mx;j=1,...,my, subroutine regrid determines a smooth bivar-
+@@ -267,7 +267,7 @@ recursive subroutine regrid(iopt,mx,x,my,y,z,xb,xe,yb,ye,kx,ky,s,
+ c  ..
+ c  ..scalar arguments..
+       real*8 xb,xe,yb,ye,s,fp
+-      integer iopt,mx,my,kx,ky,nxest,nyest,nx,ny,lwrk,kwrk,ier
++      integer iopt,mx,my,kx,ky,nxest,nyest,maxit,nx,ny,lwrk,kwrk,ier
+ c  ..array arguments..
+       real*8 x(mx),y(my),z(mx*my),tx(nxest),ty(nyest),
+      * c((nxest-kx-1)*(nyest-ky-1)),wrk(lwrk)
+@@ -275,14 +275,13 @@ recursive subroutine regrid(iopt,mx,x,my,y,z,xb,xe,yb,ye,kx,ky,s,
+ c  ..local scalars..
+       real*8 tol
+       integer i,j,jwrk,kndx,kndy,knrx,knry,kwest,kx1,kx2,ky1,ky2,
+-     * lfpx,lfpy,lwest,lww,maxit,nc,nminx,nminy,mz
++     * lfpx,lfpy,lwest,lww,nc,nminx,nminy,mz
+ c  ..function references..
+       integer max0
+ c  ..subroutine references..
+ c    fpregr,fpchec
+ c  ..
+ c  we set up the parameters tol and maxit.
+-      maxit = 20
+       tol = 0.1e-02
+ c  before starting computations a data check is made. if the input data
+ c  are invalid, control is immediately repassed to the calling program.
+@@ -351,4 +350,3 @@ recursive subroutine regrid(iopt,mx,x,my,y,z,xb,xe,yb,ye,kx,ky,s,
+      * iwrk(knry),iwrk(kndx),iwrk(kndy),wrk(lww),jwrk,ier)
+   70  return
+       end
+-
+diff --git a/scipy/interpolate/src/dfitpack.pyf b/scipy/interpolate/src/dfitpack.pyf
+index 80ba286b6124..829e1cdbbe7c 100644
+--- a/scipy/interpolate/src/dfitpack.pyf
++++ b/scipy/interpolate/src/dfitpack.pyf
+@@ -630,8 +630,8 @@ static F_INT calc_regrid_lwrk(F_INT mx, F_INT my, F_INT kx, F_INT ky,
+      end subroutine spherfit_lsq
+ 
+      subroutine regrid_smth(iopt,mx,x,my,y,z,xb,xe,yb,ye,kx,ky,s,&
+-        nxest,nyest,nx,tx,ny,ty,c,fp,wrk,lwrk,iwrk,kwrk,ier)
+-       !  nx,tx,ny,ty,c,fp,ier = regrid_smth(x,y,z,[xb,xe,yb,ye,kx,ky,s])
++        nxest,nyest,maxit,nx,tx,ny,ty,c,fp,wrk,lwrk,iwrk,kwrk,ier)
++       !  nx,tx,ny,ty,c,fp,ier = regrid_smth(x,y,z,[xb,xe,yb,ye,kx,ky,s,maxit])
+ 
+        fortranname regrid
+        threadsafe
+@@ -653,6 +653,7 @@ static F_INT calc_regrid_lwrk(F_INT mx, F_INT my, F_INT kx, F_INT ky,
+             :: nxest = mx+kx+1
+        integer intent(hide),depend(ky,my),check(nyest>=2*(ky+1)) &
+             :: nyest = my+ky+1
++       integer optional :: maxit = 20
+        integer intent(out) :: nx
+        real*8 dimension(nxest),intent(out),depend(nxest) :: tx
+        integer intent(out) :: ny

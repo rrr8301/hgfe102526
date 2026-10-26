@@ -1,0 +1,519 @@
+diff --git a/scipy/special/_special_ufuncs_docs.cpp b/scipy/special/_special_ufuncs_docs.cpp
+index 8ea265ebea62..51f85edb1dbd 100644
+--- a/scipy/special/_special_ufuncs_docs.cpp
++++ b/scipy/special/_special_ufuncs_docs.cpp
+@@ -1572,10 +1572,35 @@ const char *gamma_doc = R"(
+     which, combined with the fact that :math:`\Gamma(1) = 1`, implies
+     the above identity for :math:`z = n`.
+ 
++    The gamma function has poles at non-negative integers and the sign
++    of infinity as z approaches each pole depends upon the direction in
++    which the pole is approached. For this reason, the consistent thing
++    is for gamma(z) to return NaN at negative integers, and to return
++    -inf when x = -0.0 and +inf when x = 0.0, using the signbit of zero
++    to signify the direction in which the origin is being approached. This
++    is for instance what is recommended for the gamma function in annex F
++    entry 9.5.4 of the Iso C 99 standard [isoc99]_.
++
++    Prior to SciPy version 1.15, ``scipy.special.gamma(z)`` returned ``+inf``
++    at each pole. This was fixed in version 1.15, but with the following
++    consequence. Expressions where gamma appears in the denominator
++    such as
++
++    ``gamma(u) * gamma(v) / (gamma(w) * gamma(x))``
++
++    no longer evaluate to 0 if the numerator is well defined but there is a
++    pole in the denominator. Instead such expressions evaluate to NaN. We
++    recommend instead using the function `rgamma` for the reciprocal gamma
++    function in such cases. The above expression could for instance be written
++    as
++
++    ``gamma(u) * gamma(v) * (rgamma(w) * rgamma(x))``
++
+     References
+     ----------
+     .. [dlmf] NIST Digital Library of Mathematical Functions
+               https://dlmf.nist.gov/5.2#E1
++    .. [isoc99] https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1256.pdf
+ 
+     Examples
+     --------
+diff --git a/scipy/special/xsf/cephes/beta.h b/scipy/special/xsf/cephes/beta.h
+index 603c28b83de9..437262793e8f 100644
+--- a/scipy/special/xsf/cephes/beta.h
++++ b/scipy/special/xsf/cephes/beta.h
+@@ -53,6 +53,7 @@
+ #include "../config.h"
+ #include "const.h"
+ #include "gamma.h"
++#include "rgamma.h"
+ 
+ namespace xsf {
+ namespace cephes {
+@@ -155,17 +156,18 @@ namespace cephes {
+             return (sign * std::exp(y));
+         }
+ 
+-        y = Gamma(y);
++        y = rgamma(y);
+         a = Gamma(a);
+         b = Gamma(b);
+-        if (y == 0.0)
++        if (std::isinf(y)) {
+             goto overflow;
++	}
+ 
+-        if (std::abs(std::abs(a) - std::abs(y)) > std::abs(std::abs(b) - std::abs(y))) {
+-            y = b / y;
++        if (std::abs(std::abs(a*y) - 1.0) > std::abs(std::abs(b*y) - 1.0)) {
++            y = b * y;
+             y *= a;
+         } else {
+-            y = a / y;
++            y = a * y;
+             y *= b;
+         }
+ 
+@@ -228,20 +230,20 @@ namespace cephes {
+             return (y);
+         }
+ 
+-        y = Gamma(y);
++        y = rgamma(y);
+         a = Gamma(a);
+         b = Gamma(b);
+-        if (y == 0.0) {
++        if (std::isinf(y)) {
+         over:
+             set_error("lbeta", SF_ERROR_OVERFLOW, NULL);
+             return (sign * std::numeric_limits<double>::infinity());
+         }
+ 
+-        if (std::abs(std::abs(a) - std::abs(y)) > std::abs(std::abs(b) - std::abs(y))) {
+-            y = b / y;
++        if (std::abs(std::abs(a*y) - 1.0) > std::abs(std::abs(b*y) - 1.0)) {
++            y = b * y;
+             y *= a;
+         } else {
+-            y = a / y;
++            y = a * y;
+             y *= b;
+         }
+ 
+diff --git a/scipy/special/xsf/cephes/expn.h b/scipy/special/xsf/cephes/expn.h
+index 9ae3a5da619e..8b0b07eab7a9 100644
+--- a/scipy/special/xsf/cephes/expn.h
++++ b/scipy/special/xsf/cephes/expn.h
+@@ -65,7 +65,7 @@
+ #include "../config.h"
+ #include "../error.h"
+ #include "const.h"
+-#include "gamma.h"
++#include "rgamma.h"
+ #include "polevl.h"
+ 
+ namespace xsf {
+@@ -252,7 +252,7 @@ namespace cephes {
+         k = xk;
+         t = n;
+         r = n - 1;
+-        ans = (std::pow(z, r) * psi / Gamma(t)) - ans;
++        ans = (std::pow(z, r) * psi * rgamma(t)) - ans;
+         return ans;
+     }
+ 
+diff --git a/scipy/special/xsf/cephes/gamma.h b/scipy/special/xsf/cephes/gamma.h
+index 6fd8a2d27b18..1ede1571a67e 100644
+--- a/scipy/special/xsf/cephes/gamma.h
++++ b/scipy/special/xsf/cephes/gamma.h
+@@ -149,17 +149,30 @@ namespace cephes {
+         int sgngam = 1;
+ 
+         if (!std::isfinite(x)) {
+-            return x;
++	    if (x > 0) {
++		// gamma(+inf) = +inf
++		return x;
++	    }
++	    // gamma(NaN) and gamma(-inf) both should equal NaN.
++            return std::numeric_limits<double>::quiet_NaN();
+         }
++
++	if (x == 0) {
++	    /* For pole at zero, value depends on sign of zero.
++	     * +inf when approaching from right, -inf when approaching
++	     * from left. */
++	    return std::copysign(std::numeric_limits<double>::infinity(), x);
++	}
++
+         q = std::abs(x);
+ 
+         if (q > 33.0) {
+             if (x < 0.0) {
+                 p = std::floor(q);
+                 if (p == q) {
+-                gamnan:
+-                    set_error("Gamma", SF_ERROR_OVERFLOW, NULL);
+-                    return (std::numeric_limits<double>::infinity());
++		    // x is a negative integer. This is a pole.
++                    set_error("Gamma", SF_ERROR_SINGULAR, NULL);
++                    return (std::numeric_limits<double>::quiet_NaN());
+                 }
+                 i = p;
+                 if ((i & 1) == 0) {
+@@ -215,7 +228,9 @@ namespace cephes {
+ 
+     small:
+         if (x == 0.0) {
+-            goto gamnan;
++	    /* For this to have happened, x must have started as a negative integer. */
++	    set_error("Gamma", SF_ERROR_SINGULAR, NULL);
++	    return (std::numeric_limits<double>::quiet_NaN());
+         } else
+             return (z / ((1.0 + 0.5772156649015329 * x) * x));
+     }
+@@ -360,16 +375,23 @@ namespace cephes {
+         }
+         if (x > 0) {
+             return 1.0;
+-        } else {
+-            fx = std::floor(x);
+-            if (x - fx == 0.0) {
+-                return 0.0;
+-            } else if (static_cast<int>(fx) % 2) {
+-                return -1.0;
+-            } else {
+-                return 1.0;
+-            }
+-        }
++	}
++	if (x == 0) {
++	    return std::copysign(1.0, x);
++	}
++	if (std::isinf(x)) {
++	    // x > 0 case handled, so x must be negative infinity.
++	    return std::numeric_limits<double>::quiet_NaN();
++	}
++	fx = std::floor(x);
++	if (x - fx == 0.0) {
++	    return std::numeric_limits<double>::quiet_NaN();
++	}
++	// sign of gamma for x in (-n, -n+1) for positive integer n is (-1)^n.
++	if (static_cast<int>(fx) % 2) {
++	    return -1.0;
++	}
++	return 1.0;
+     }
+ 
+ } // namespace cephes
+diff --git a/scipy/special/xsf/cephes/hyp2f1.h b/scipy/special/xsf/cephes/hyp2f1.h
+index ce9a979562b3..f9ec54bb2032 100644
+--- a/scipy/special/xsf/cephes/hyp2f1.h
++++ b/scipy/special/xsf/cephes/hyp2f1.h
+@@ -75,6 +75,7 @@
+ 
+ #include "const.h"
+ #include "gamma.h"
++#include "rgamma.h"
+ #include "psi.h"
+ 
+ namespace xsf {
+@@ -252,9 +253,9 @@ namespace cephes {
+                     /* sum for t = 0 */
+                     y = xsf::cephes::psi(1.0) + xsf::cephes::psi(1.0 + e) - xsf::cephes::psi(a + d1) -
+                         xsf::cephes::psi(b + d1) - ax;
+-                    y /= xsf::cephes::Gamma(e + 1.0);
++                    y *= xsf::cephes::rgamma(e + 1.0);
+ 
+-                    p = (a + d1) * (b + d1) * s / xsf::cephes::Gamma(e + 2.0); /* Poch for t=1 */
++                    p = (a + d1) * (b + d1) * s * xsf::cephes::rgamma(e + 2.0); /* Poch for t=1 */
+                     t = 1.0;
+                     do {
+                         r = xsf::cephes::psi(1.0 + t) + xsf::cephes::psi(1.0 + t + e) -
+@@ -292,10 +293,10 @@ namespace cephes {
+                     }
+                 nosum:
+                     p = xsf::cephes::Gamma(c);
+-                    y1 *= xsf::cephes::Gamma(e) * p /
+-                          (xsf::cephes::Gamma(a + d1) * xsf::cephes::Gamma(b + d1));
++                    y1 *= xsf::cephes::Gamma(e) * p *
++                          (xsf::cephes::rgamma(a + d1) * xsf::cephes::rgamma(b + d1));
+ 
+-                    y *= p / (xsf::cephes::Gamma(a + d2) * xsf::cephes::Gamma(b + d2));
++                    y *= p * (xsf::cephes::rgamma(a + d2) * xsf::cephes::rgamma(b + d2));
+                     if ((aid & 1) != 0)
+                         y = -y;
+ 
+@@ -493,8 +494,8 @@ namespace cephes {
+             p *= std::pow(-x, -a);
+             q *= std::pow(-x, -b);
+             t1 = Gamma(c);
+-            s = t1 * Gamma(b - a) / (Gamma(b) * Gamma(c - a));
+-            y = t1 * Gamma(a - b) / (Gamma(a) * Gamma(c - b));
++            s = t1 * Gamma(b - a) * (rgamma(b) * rgamma(c - a));
++            y = t1 * Gamma(a - b) * (rgamma(a) * rgamma(c - b));
+             return s * p + y * q;
+         } else if (x < -1.0) {
+             if (std::abs(a) < std::abs(b)) {
+@@ -532,7 +533,7 @@ namespace cephes {
+                 }
+                 if (d <= 0.0)
+                     goto hypdiv;
+-                y = Gamma(c) * Gamma(d) / (Gamma(p) * Gamma(r));
++                y = Gamma(c) * Gamma(d) * (rgamma(p) * rgamma(r));
+                 goto hypdon;
+             }
+             if (d <= -1.0)
+diff --git a/scipy/special/xsf/cephes/hyperg.h b/scipy/special/xsf/cephes/hyperg.h
+index be0ac6c02057..18ebcff69ba4 100644
+--- a/scipy/special/xsf/cephes/hyperg.h
++++ b/scipy/special/xsf/cephes/hyperg.h
+@@ -67,6 +67,7 @@
+ 
+ #include "const.h"
+ #include "gamma.h"
++#include "rgamma.h"
+ 
+ namespace xsf {
+ namespace cephes {
+@@ -203,14 +204,14 @@ namespace cephes {
+ 
+             h1 = hyp2f0(a, a - b + 1, -1.0 / x, 1, &err1);
+ 
+-            temp = std::exp(u) / xsf::cephes::Gamma(b - a);
++            temp = std::exp(u) * xsf::cephes::rgamma(b - a);
+             h1 *= temp;
+             err1 *= temp;
+ 
+             h2 = hyp2f0(b - a, 1.0 - a, 1.0 / x, 2, &err2);
+ 
+             if (a < 0)
+-                temp = std::exp(t) / xsf::cephes::Gamma(a);
++                temp = std::exp(t) * xsf::cephes::rgamma(a);
+             else
+                 temp = std::exp(t - xsf::cephes::lgam(a));
+ 
+diff --git a/scipy/special/xsf/cephes/incbet.h b/scipy/special/xsf/cephes/incbet.h
+index ca28f334fea9..aa56dfd58d5d 100644
+--- a/scipy/special/xsf/cephes/incbet.h
++++ b/scipy/special/xsf/cephes/incbet.h
+@@ -74,6 +74,21 @@ namespace cephes {
+ 
+     namespace detail {
+ 
++	/* Compute (u * v) * w, disabling optimizations for gcc on 32 bit systems.
++	 * Used below in incbet_pseries to prevent aggressive optimizations from
++	 * degrading accuracy.
++	 */
++#if defined(__GNUC__) && defined(__i386__)
++#pragma GCC push_options
++#pragma GCC optimize("00")
++#endif
++	XSF_HOST_DEVICE inline double triple_product(double u, double v, double w) {
++	    return (u * v) * w;
++	}
++#if defined(__GNUC__) && defined(__i386__)
++#pragma GCC pop_options
++#endif
++
+         constexpr double incbet_big = 4.503599627370496e15;
+         constexpr double incbet_biginv = 2.22044604925031308085e-16;
+ 
+@@ -104,7 +119,7 @@ namespace cephes {
+             u = a * std::log(x);
+             if ((a + b) < MAXGAM && std::abs(u) < MAXLOG) {
+                 t = 1.0 / beta(a, b);
+-                s = s * t * std::pow(x, a);
++                s = triple_product(s, t, std::pow(x, a)); // (s * t) * std::pow(x, a)
+             } else {
+                 t = -lbeta(a, b) + u + std::log(s);
+                 if (t < MINLOG) {
+diff --git a/scipy/special/xsf/cephes/jv.h b/scipy/special/xsf/cephes/jv.h
+index 6d39263af5a2..db5272f27fb4 100644
+--- a/scipy/special/xsf/cephes/jv.h
++++ b/scipy/special/xsf/cephes/jv.h
+@@ -55,7 +55,7 @@
+ 
+ #include "airy.h"
+ #include "cbrt.h"
+-#include "gamma.h"
++#include "rgamma.h"
+ #include "j0.h"
+ #include "j1.h"
+ #include "polevl.h"
+@@ -241,7 +241,7 @@ namespace cephes {
+             t = std::frexp(0.5 * x, &ex);
+             ex = ex * n;
+             if ((ex > -1023) && (ex < 1023) && (n > 0.0) && (n < (MAXGAM - 1.0))) {
+-                t = std::pow(0.5 * x, n) / xsf::cephes::Gamma(n + 1.0);
++                t = std::pow(0.5 * x, n) * xsf::cephes::rgamma(n + 1.0);
+                 y *= t;
+             } else {
+                 t = n * std::log(0.5 * x) - lgam_sgn(n + 1.0, &sgngam);
+@@ -592,13 +592,13 @@ namespace cephes {
+ 
+         if (x == 0 && n < 0 && !nint) {
+             set_error("Jv", SF_ERROR_OVERFLOW, NULL);
+-            return std::numeric_limits<double>::infinity() / Gamma(n + 1);
++            return std::numeric_limits<double>::infinity() * rgamma(n + 1);
+         }
+ 
+         y = std::abs(x);
+ 
+         if (y * y < std::abs(n + 1) * detail::MACHEP) {
+-            return std::pow(0.5 * x, n) / Gamma(n + 1);
++            return std::pow(0.5 * x, n) * rgamma(n + 1);
+         }
+ 
+         k = 3.6 * std::sqrt(y);
+diff --git a/scipy/special/xsf/cephes/rgamma.h b/scipy/special/xsf/cephes/rgamma.h
+index 99ff304759d0..97f29b33ab50 100644
+--- a/scipy/special/xsf/cephes/rgamma.h
++++ b/scipy/special/xsf/cephes/rgamma.h
+@@ -73,35 +73,21 @@ namespace cephes {
+ 
+     XSF_HOST_DEVICE double rgamma(double x) {
+         double w, y, z;
+-        int sign;
+ 
+-        if (x > 34.84425627277176174) {
+-            return std::exp(-lgam(x));
+-        }
+-        if (x < -34.034) {
+-            w = -x;
+-            z = sinpi(w);
+-            if (z == 0.0) {
+-                return 0.0;
+-            }
+-            if (z < 0.0) {
+-                sign = 1;
+-                z = -z;
+-            } else {
+-                sign = -1;
+-            }
++	if (x == 0) {
++	    // This case is separate from below to get correct sign for zero.
++	    return x;
++	}
++
++	if (x < 0 && x == std::floor(x)) {
++	    // Gamma poles.
++	    return 0.0;
++	}
++
++	if (std::abs(x) > 4.0) {
++	    return 1.0 / Gamma(x);
++	}
+ 
+-            y = std::log(w * z) - std::log(M_PI) + lgam(w);
+-            if (y < -detail::MAXLOG) {
+-                set_error("rgamma", SF_ERROR_UNDERFLOW, NULL);
+-                return (sign * 0.0);
+-            }
+-            if (y > detail::MAXLOG) {
+-                set_error("rgamma", SF_ERROR_OVERFLOW, NULL);
+-                return (sign * std::numeric_limits<double>::infinity());
+-            }
+-            return (sign * std::exp(y));
+-        }
+         z = 1.0;
+         w = x;
+ 
+diff --git a/scipy/special/xsf/cephes/struve.h b/scipy/special/xsf/cephes/struve.h
+index ed84fb22c081..3ed5bae25d51 100644
+--- a/scipy/special/xsf/cephes/struve.h
++++ b/scipy/special/xsf/cephes/struve.h
+@@ -88,6 +88,7 @@
+ 
+ #include "dd_real.h"
+ #include "gamma.h"
++#include "rgamma.h"
+ #include "scipy_iv.h"
+ 
+ namespace xsf {
+@@ -306,7 +307,7 @@ namespace cephes {
+                 if (v < -1) {
+                     return xsf::cephes::gammasgn(v + 1.5) * std::numeric_limits<double>::infinity();
+                 } else if (v == -1) {
+-                    return 2 / std::sqrt(M_PI) / xsf::cephes::Gamma(0.5);
++                    return 2 / std::sqrt(M_PI) * xsf::cephes::rgamma(0.5);
+                 } else {
+                     return 0;
+                 }
+diff --git a/scipy/special/xsf/hyp2f1.h b/scipy/special/xsf/hyp2f1.h
+index b8085eedf7d5..a575b4d1b9ef 100644
+--- a/scipy/special/xsf/hyp2f1.h
++++ b/scipy/special/xsf/hyp2f1.h
+@@ -207,7 +207,7 @@ namespace detail {
+          * chosen empirically based on the relevant benchmarks in
+          * scipy/special/_precompute/hyp2f1_data.py */
+         if (std::abs(u) <= 100 && std::abs(v) <= 100 && std::abs(w) <= 100 && std::abs(x) <= 100) {
+-            result = cephes::Gamma(u) * cephes::Gamma(v) / (cephes::Gamma(w) * cephes::Gamma(x));
++            result = cephes::Gamma(u) * cephes::Gamma(v) * (cephes::rgamma(w) * cephes::rgamma(x));
+             if (std::isfinite(result) && result != 0.0) {
+                 return result;
+             }
+@@ -269,7 +269,7 @@ namespace detail {
+         XSF_HOST_DEVICE Hyp2f1Transform1LimitSeriesGenerator(double a, double b, double m, std::complex<double> z)
+             : d1_(xsf::digamma(a)), d2_(xsf::digamma(b)), d3_(xsf::digamma(1 + m)),
+               d4_(xsf::digamma(1.0)), a_(a), b_(b), m_(m), z_(z), log_1_z_(std::log(1.0 - z)),
+-              factor_(1.0 / cephes::Gamma(m + 1)), k_(0) {}
++              factor_(cephes::rgamma(m + 1)), k_(0) {}
+ 
+         XSF_HOST_DEVICE std::complex<double> operator()() {
+             std::complex<double> term_ = (d1_ + d2_ - d3_ - d4_ + log_1_z_) * factor_;
+@@ -315,8 +315,8 @@ namespace detail {
+                                                                  std::complex<double> z)
+             : d1_(xsf::digamma(1.0)), d2_(xsf::digamma(1 + m)), d3_(xsf::digamma(a)),
+               d4_(xsf::digamma(c - a)), a_(a), b_(b), c_(c), m_(m), z_(z), log_neg_z_(std::log(-z)),
+-              factor_(xsf::cephes::poch(b, m) * xsf::cephes::poch(1 - c + b, m) /
+-                      xsf::cephes::Gamma(m + 1)),
++              factor_(xsf::cephes::poch(b, m) * xsf::cephes::poch(1 - c + b, m) *
++                      xsf::cephes::rgamma(m + 1)),
+               k_(0) {}
+ 
+         XSF_HOST_DEVICE std::complex<double> operator()() {
+@@ -345,8 +345,8 @@ namespace detail {
+                                                                            double n, std::complex<double> z)
+             : d1_(xsf::digamma(1.0)), d2_(xsf::digamma(1 + m)), d3_(xsf::digamma(a)),
+               d4_(xsf::digamma(n)), a_(a), b_(b), c_(c), m_(m), n_(n), z_(z), log_neg_z_(std::log(-z)),
+-              factor_(xsf::cephes::poch(b, m) * xsf::cephes::poch(1 - c + b, m) /
+-                      xsf::cephes::Gamma(m + 1)),
++              factor_(xsf::cephes::poch(b, m) * xsf::cephes::poch(1 - c + b, m) *
++                      xsf::cephes::rgamma(m + 1)),
+               k_(0) {}
+ 
+         XSF_HOST_DEVICE std::complex<double> operator()() {
+@@ -416,7 +416,7 @@ namespace detail {
+       public:
+         XSF_HOST_DEVICE Hyp2f1Transform2LimitFinitePartGenerator(double b, double c, double m,
+                                                                      std::complex<double> z)
+-            : b_(b), c_(c), m_(m), z_(z), term_(cephes::Gamma(m) / cephes::Gamma(c - b)), k_(0) {}
++            : b_(b), c_(c), m_(m), z_(z), term_(cephes::Gamma(m) * cephes::rgamma(c - b)), k_(0) {}
+ 
+         XSF_HOST_DEVICE std::complex<double> operator()() {
+             std::complex<double> output = term_;
+@@ -486,8 +486,8 @@ namespace detail {
+             auto series_generator1 = HypergeometricSeriesGenerator(a + m, b + m, 1 + m, 1.0 - z);
+             result *= series_eval_fixed_length(series_generator1, std::complex<double>{0.0, 0.0},
+                                                static_cast<std::uint64_t>(-m));
+-            double prefactor = std::pow(-1.0, m + 1) * xsf::cephes::Gamma(c) /
+-                               (xsf::cephes::Gamma(a + m) * xsf::cephes::Gamma(b + m));
++            double prefactor = std::pow(-1.0, m + 1) * xsf::cephes::Gamma(c) *
++                               (xsf::cephes::rgamma(a + m) * xsf::cephes::rgamma(b + m));
+             auto series_generator2 = Hyp2f1Transform1LimitSeriesGenerator(a, b, -m, z);
+             result += prefactor * series_eval(series_generator2, std::complex<double>{0.0, 0.0}, hyp2f1_EPS,
+                                               hyp2f1_MAXITER, "hyp2f1");
+@@ -500,10 +500,10 @@ namespace detail {
+         /* 1 / z transform in limiting case where a - b approaches a non-negative integer m. Negative integer case
+          * can be handled by swapping a and b. */
+         auto series_generator1 = Hyp2f1Transform2LimitFinitePartGenerator(b, c, m, z);
+-        std::complex<double> result = cephes::Gamma(c) / cephes::Gamma(a) * std::pow(-z, -b);
++        std::complex<double> result = cephes::Gamma(c) * cephes::rgamma(a) * std::pow(-z, -b);
+         result *=
+             series_eval_fixed_length(series_generator1, std::complex<double>{0.0, 0.0}, static_cast<std::uint64_t>(m));
+-        std::complex<double> prefactor = cephes::Gamma(c) / (cephes::Gamma(a) * cephes::Gamma(c - b) * std::pow(-z, a));
++        std::complex<double> prefactor = cephes::Gamma(c) * (cephes::rgamma(a) * cephes::rgamma(c - b) * std::pow(-z, -a));
+         double n = c - a;
+         if (abs(n - std::round(n)) < hyp2f1_EPS) {
+             auto series_generator2 = Hyp2f1Transform2LimitSeriesCminusAIntGenerator(a, b, c, m, n, z);

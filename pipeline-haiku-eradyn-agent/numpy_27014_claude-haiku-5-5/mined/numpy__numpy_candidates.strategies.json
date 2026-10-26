@@ -1,0 +1,105 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/numpy_27014_claude-haiku-5-5/mined/numpy__numpy_27014.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 14087,
+    "output_tokens": 6916,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "numpy/numpy",
+      "pr_number": 27014,
+      "reference": "https://github.com/numpy/numpy/pull/27014",
+      "buggy_commit": "619b07c346d9f4a5bbd39da5ac28b91800b661da",
+      "fixed_commit": "fc82b556493e224447be3f3f8a0200757f23e2d3",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 4870,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce numpy issue #26726 / PR #27014: np.gcd on an object-dtype array containing infinity hangs in the pure-Python _gcd in numpy/_core/_internal.py. Build the buggy commit 619b07c346d9 from source, apply the PR's test_inf_and_nan test, and run only that test under a hard timeout. On the buggy revision the test hangs (killed by timeout) or fails before reaching its assertions; on the fixed revision it passes because _gcd raises ValueError for infinite inputs and TypeError for Python float infinity.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "pytest (unpinned; latest stable chosen, no documented constraint)",
+            "meson-python",
+            "meson",
+            "ninja",
+            "cython",
+            "pybind11",
+            "setuptools (build backend requirements, per requirements/build_requirements.txt at that commit)"
+          ],
+          "system_packages": [
+            "C and C++ compiler toolchain (gcc or clang)",
+            "git",
+            "BLAS/LAPACK not required for this test; numpy builds its bundled fallbacks"
+          ],
+          "build_commands": [
+            "git clone https://github.com/numpy/numpy && cd numpy && git checkout 619b07c346d9 && git submodule update --init",
+            "python -m pip install -r requirements/build_requirements.txt pytest",
+            "python -m pip install -e . --no-build-isolation",
+            "git apply /path/to/pr27014_test.patch  (or manually add test_inf_and_nan to class TestGcdLcm in numpy/_core/tests/test_umath.py)"
+          ],
+          "pinned_because": []
+        },
+        "test_command": "timeout 120 python -m pytest numpy/_core/tests/test_umath.py -k test_inf_and_nan -x -q -p no:cacheprovider",
+        "reproducing_test": "numpy/_core/tests/test_umath.py::TestGcdLcm::test_inf_and_nan (the PR's added method; it calls np.gcd on np.array([np.inf], dtype=object) with 1, with a Python int 1 on the right, with np.nan, and with float(np.inf) as a Python scalar)",
+        "success_criterion": "Buggy revision 619b07c346d9 with the test added: the test does not complete normally. The first assert_raises(ValueError, np.gcd, inf, 1) call hangs inside the pure-Python _gcd loop, so timeout kills pytest (exit 124) and the run counts as a failure; if the hang does not occur, the assertion fails with AssertionError because no ValueError is raised. Fixed revision (PR #27014 head): all four assert_raises calls succeed (three ValueError, one TypeError), pytest reports 1 passed, and exit code is 0. The transition is failure/hang on buggy to pass on fixed.",
+        "numerical_probe": "",
+        "input_output_examples": [
+          {
+            "input": "import numpy as np; inf = np.array([np.inf], dtype=np.object_); np.gcd(inf, 33)",
+            "buggy_output": "hang (infinite loop, the call never returns)",
+            "expected_output": "ValueError raised with message beginning 'Can only find greatest common demoninator of a'"
+          }
+        ],
+        "risks": [
+          "On the buggy revision the test hangs rather than failing. Always run it under a timeout (the command uses timeout 120); without one the run never terminates. pytest-timeout is an alternative if timeout(1) is unavailable.",
+          "The test file path is numpy/_core/tests, which exists only after the core/_core rename. Older commits use numpy/core/tests and the test command will not select the test there.",
+          "The environment's test_commands entry (python -c numpy.test()) does not select this test and should not be used; it runs the whole suite and would not isolate the transition.",
+          "The failure is pure-Python object-dtype logic. It does not depend on architecture, SIMD, threading, BLAS, or sanitizers, so it should transition on any normal Linux x86_64 or aarch64 build. A C-only fix would need rebuild checks, but the fix is in _internal.py.",
+          "pytest and hypothesis have no documented constraint and no era ceiling. This plan chooses the latest stable pytest and does not use hypothesis, since the test is a plain deterministic unit test. Newer pytest versions could change assert_raises-related output but not the pass/fail transition.",
+          "NaN handling is not fully specified: the test expects ValueError for np.gcd(np.nan, inf) with inf as an object array, but the expected output for a bare NaN is not stated in the evidence. The test assertion is the oracle.",
+          "The issue's reproducer uses 33 as the second argument while the hang description mentions zero. The test uses 1, which the evidence supports as a trigger, so the planned test covers the assertion as written rather than the exact issue pair.",
+          "Expected exception types come from assertions written against the fixed code. If the buggy code raises a different exception before hanging, the test may fail with a different message; the transition still holds as a failure on buggy.",
+          "Signed zero and subnormal inputs are not covered by any passage and are not planned for."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "PR #27014 test diff: test_inf_and_nan in numpy/_core/tests/test_umath.py",
+          "why": "The test asserts exact exception types (ValueError for infinite object inputs, TypeError for Python float infinity) rather than numerical values, so the oracle is exact."
+        },
+        "fails_on_buggy": "On 619b07c346d9 the first assert_raises(ValueError, np.gcd, inf, 1) call enters the pure-Python _gcd loop with an infinite operand and never returns; the test hangs and timeout kills it, so it fails. If it does return, no ValueError is raised and assert_raises reports AssertionError.",
+        "passes_on_fixed": "On the fixed revision _gcd checks math.isfinite on object inputs and raises ValueError for infinite or NaN operands, and raises TypeError for a Python float infinity passed directly; all four assert_raises calls succeed and the test passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4028,
+        "output_tokens": 3508,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 10059,
+        "output_tokens": 3408,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

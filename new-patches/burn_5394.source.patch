@@ -1,0 +1,105 @@
+diff --git a/crates/burn-flex/src/ops/conv.rs b/crates/burn-flex/src/ops/conv.rs
+index b4dc09d9b1..778f68c45b 100644
+--- a/crates/burn-flex/src/ops/conv.rs
++++ b/crates/burn-flex/src/ops/conv.rs
+@@ -935,6 +935,7 @@ fn conv_plane_accumulate<
+     pad_w: usize,
+     dilation_h: usize,
+     dilation_w: usize,
++    has_non_finite_weights: bool,
+     oh_ranges: &[(usize, usize)],
+     ow_ranges: &[(usize, usize)],
+ ) {
+@@ -949,6 +950,50 @@ fn conv_plane_accumulate<
+             pad_h, pad_w, dilation_h, dilation_w, oh_ranges, ow_ranges,
+         );
+     }
++
++    // The vectorized paths skip padded positions. That is equivalent to
++    // multiplying materialized zeros only while every weight is finite; IEEE
++    // arithmetic requires `0 * inf` and `0 * NaN` to produce NaN. Preserve
++    // that result after the fast accumulation without changing its hot loops.
++    if has_non_finite_weights && (pad_h != 0 || pad_w != 0) {
++        propagate_non_finite_padding(out_plane, w_plane, kernel_w, out_w, oh_ranges, ow_ranges);
++    }
++}
++
++/// Mark outputs where a skipped padding term would multiply a non-finite weight.
++fn propagate_non_finite_padding<T: num_traits::Float + Copy>(
++    out_plane: &mut [T],
++    w_plane: &[T],
++    kernel_w: usize,
++    out_w: usize,
++    oh_ranges: &[(usize, usize)],
++    ow_ranges: &[(usize, usize)],
++) {
++    if out_plane.is_empty() || out_w == 0 {
++        return;
++    }
++
++    debug_assert_eq!(out_plane.len() % out_w, 0);
++    let out_h = out_plane.len() / out_w;
++    let nan = T::nan();
++
++    for (kh, &(oh_start, oh_end)) in oh_ranges.iter().enumerate() {
++        for (kw, &(ow_start, ow_end)) in ow_ranges.iter().enumerate() {
++            if w_plane[kh * kernel_w + kw].is_finite() {
++                continue;
++            }
++
++            for oh in 0..out_h {
++                let out_row = &mut out_plane[oh * out_w..(oh + 1) * out_w];
++                if oh < oh_start || oh >= oh_end {
++                    out_row.fill(nan);
++                } else {
++                    out_row[..ow_start].fill(nan);
++                    out_row[ow_end..].fill(nan);
++                }
++            }
++        }
++    }
+ }
+ 
+ /// `oh`-outermost variant. Pins one output row in L1 across every kernel
+@@ -1175,6 +1220,8 @@ where
+ 
+     let x_data: &[T] = x.storage();
+     let w_data: &[T] = weight.storage();
++    let has_non_finite_weights =
++        (pad_h != 0 || pad_w != 0) && w_data.iter().any(|value| !value.is_finite());
+ 
+     let in_spatial = in_h * in_w;
+     let out_spatial = out_h * out_w;
+@@ -1211,6 +1258,7 @@ where
+             pad_w,
+             dilation_h,
+             dilation_w,
++            has_non_finite_weights,
+             &oh_ranges,
+             &ow_ranges,
+         );
+@@ -1398,6 +1446,8 @@ where
+ 
+     let x_data: &[T] = x.storage();
+     let w_data: &[T] = weight.storage();
++    let has_non_finite_weights =
++        (pad_h != 0 || pad_w != 0) && w_data.iter().any(|value| !value.is_finite());
+ 
+     let in_spatial = in_h * in_w;
+     let out_spatial = out_h * out_w;
+@@ -1437,6 +1487,7 @@ where
+                 pad_w,
+                 dilation_h,
+                 dilation_w,
++                has_non_finite_weights,
+                 &oh_ranges,
+                 &ow_ranges,
+             );
+@@ -2674,6 +2725,7 @@ mod tests {
+             /* pad_w */ 0,
+             /* dilation_h */ 1,
+             /* dilation_w */ 1,
++            /* has_non_finite_weights */ false,
+             &oh_ranges,
+             &ow_ranges,
+         );

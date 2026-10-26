@@ -1,0 +1,152 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index ba68d142e1eda..b589574666ed0 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -48,10 +48,19 @@ Notable bug fixes
+ 
+ These are bug fixes that might have notable behavior changes.
+ 
+-.. _whatsnew_310.notable_bug_fixes.notable_bug_fix1:
+-
+-notable_bug_fix1
+-^^^^^^^^^^^^^^^^
++.. _whatsnew_310.notable_bug_fixes.timedelta_total_seconds_nanoseconds:
++
++``Timedelta.total_seconds`` now includes the nanosecond component
++^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++
++Previously :meth:`Timedelta.total_seconds` mirrored the stdlib
++:meth:`datetime.timedelta.total_seconds` formula and silently dropped the
++sub-microsecond nanosecond residual — e.g. ``Timedelta(nanoseconds=999).total_seconds()``
++returned ``0.0`` instead of ``9.99e-7``. The result now includes the
++nanosecond component. The vectorized :meth:`TimedeltaIndex.total_seconds` and
++:meth:`Series.dt.total_seconds` already included the nanosecond component;
++they now match the scalar result exactly, including at large magnitudes
++where floating-point rounding previously differed (:issue:`46819`).
+ 
+ .. _whatsnew_310.notable_bug_fixes.notable_bug_fix2:
+ 
+diff --git a/pandas/_libs/tslibs/nattype.pyx b/pandas/_libs/tslibs/nattype.pyx
+index 480a9c4310d81..ab8ec6330c6c9 100644
+--- a/pandas/_libs/tslibs/nattype.pyx
++++ b/pandas/_libs/tslibs/nattype.pyx
+@@ -560,7 +560,8 @@ class NaTType(_NaT):
+         Total seconds in the duration.
+ 
+         This method calculates the total duration in seconds by combining
+-        the days, seconds, and microseconds of the `Timedelta` object.
++        the days, seconds, microseconds, and nanoseconds of the `Timedelta`
++        object.
+ 
+         See Also
+         --------
+diff --git a/pandas/_libs/tslibs/timedeltas.pyx b/pandas/_libs/tslibs/timedeltas.pyx
+index 779d1cfa8e8ab..1c9b0e3e1b2ed 100644
+--- a/pandas/_libs/tslibs/timedeltas.pyx
++++ b/pandas/_libs/tslibs/timedeltas.pyx
+@@ -17,6 +17,7 @@ from cpython.object cimport (
+     PyObject,
+     PyObject_RichCompare,
+ )
++from libc.math cimport nextafter
+ 
+ from pandas._libs.tslibs.offsets cimport to_offset
+ 
+@@ -52,6 +53,7 @@ from pandas._libs.tslibs.dtypes cimport (
+     get_supported_reso,
+     is_supported_unit,
+     npy_unit_to_abbrev,
++    periods_per_second,
+ )
+ from pandas._libs.tslibs.nattype cimport (
+     NPY_NAT,
+@@ -1390,7 +1392,8 @@ cdef class _Timedelta(timedelta):
+         Total seconds in the duration.
+ 
+         This method calculates the total duration in seconds by combining
+-        the days, seconds, and microseconds of the `Timedelta` object.
++        the days, seconds, microseconds, and nanoseconds of the `Timedelta`
++        object.
+ 
+         See Also
+         --------
+@@ -1408,13 +1411,30 @@ cdef class _Timedelta(timedelta):
+         60.0
+         """
+         # We need to override bc we overrode days/seconds/microseconds
+-        # TODO: add nanos/1e9?
+-        self._ensure_components()
+-        return (
+-            self._d * 86400
+-            + self._h * 3600 + self._m * 60 + self._s
+-            + (self._ms * 1000 + self._us) / 1_000_000
+-        )
++        cdef:
++            int64_t pps = periods_per_second(self._creso)
++            # Python floor semantics: residual is non-negative, so a nonzero
++            # residual puts the true value above int_seconds at any sign.
++            # Reconstructing int_seconds from self._d * 86400 + ... instead
++            # would overflow int64 in the intermediate products near the
++            # boundaries of the s-reso range.
++            int64_t int_seconds = self._value // pps
++            int64_t residual = self._value % pps
++            double result
++        if residual == 0:
++            return <double>int_seconds
++        result = int_seconds + residual / <double>pps
++        # residual puts the true value strictly inside (int_seconds, int_seconds + 1),
++        # so guard against float rounding collapsing onto the boundary; otherwise
++        # bisect-style lookups treat us as exactly on a transition. Beyond 2**52
++        # seconds float64s are spaced >= 1 second apart, so every representable
++        # value sits on a boundary and nudging would only add error.
++        if -4_503_599_627_370_496 < int_seconds < 4_503_599_627_370_496:  # 2**52
++            if result == int_seconds + 1:
++                result = nextafter(result, <double>int_seconds)
++            elif result == int_seconds:
++                result = nextafter(result, <double>(int_seconds + 1))
++        return result
+ 
+     @property
+     def unit(self) -> str:
+diff --git a/pandas/core/arrays/timedeltas.py b/pandas/core/arrays/timedeltas.py
+index 540daf4ab1919..b87aec7a6b2f5 100644
+--- a/pandas/core/arrays/timedeltas.py
++++ b/pandas/core/arrays/timedeltas.py
+@@ -756,7 +756,36 @@ def total_seconds(self) -> npt.NDArray[np.float64]:
+         Index([0.0, 86400.0, 172800.0, 259200.0, 345600.0], dtype='float64')
+         """
+         pps = periods_per_second(self._creso)
+-        return self._maybe_mask_results(self.asi8 / pps, fill_value=None)
++        asi8 = self.asi8
++        # Divide the integer-second part and the sub-second residual
++        # separately, mirroring the same divmod split in the scalar
++        # `_Timedelta.total_seconds`, so the result matches it bit-for-bit
++        # (on IEEE-strict platforms; 32-bit x87 excess precision can differ
++        # in the last ulp). A single asi8 / pps division rounds at the tick
++        # magnitude and loses precision for values above 2**53.
++        floor_s, residual = np.divmod(asi8, pps)
++        result = floor_s + residual / pps
++        if (asi8 > 2**53).any() or (asi8 < -(2**53)).any():
++            # Only above 2**53 ticks can the float result round onto an
++            # integer-second boundary; the threshold is unit-independent
++            # because a collapse needs ulp(floor_s) > 2 / pps, i.e.
++            # |asi8| ~ floor_s * pps > 2**53. A sub-second residual puts the
++            # true value strictly inside (floor, floor + 1), so nudge off
++            # either boundary, otherwise bisect-style lookups (e.g. dateutil
++            # DST, GH#31043) misclassify the timestamp as on a transition.
++            # This mirrors the scalar guard in `_Timedelta.total_seconds`,
++            # including its bound: beyond 2**52 seconds float64s are spaced
++            # >= 1 second apart, so every representable value sits on a
++            # boundary and nudging would only add error.
++            fixable = (residual != 0) & (np.abs(floor_s) < 2**52)
++            floor_f = floor_s.astype(np.float64)
++            on_floor = fixable & (result == floor_f)
++            on_ceil = fixable & (result == floor_f + 1.0)
++            if on_floor.any():
++                result = np.where(on_floor, np.nextafter(result, result + 1.0), result)
++            if on_ceil.any():
++                result = np.where(on_ceil, np.nextafter(result, result - 1.0), result)
++        return self._maybe_mask_results(result, fill_value=None)
+ 
+     def to_pytimedelta(self) -> npt.NDArray[np.object_]:
+         """

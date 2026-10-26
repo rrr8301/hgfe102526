@@ -1,0 +1,120 @@
+{
+  "input": "pipeline_no_historic/scipy_20297/mined/scipy__scipy_20297.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 20552,
+    "output_tokens": 7013,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 20297,
+      "reference": "https://github.com/scipy/scipy/pull/20297",
+      "buggy_commit": "237b6915e37ed433c18e87952cb3b8c4880ad774",
+      "fixed_commit": "bb92c8014e21052e7dde67a76b28214dd1dcb94a",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6177,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce scipy/scipy#20297 by building the buggy checkout 237b6915e37e and running the added test_zero_eigenvalue, which checks Moore-Penrose conditions for pinvh on the 3x3 matrix [[1,-1,0],[-1,2,-1],[0,-1,1]]. The defect is that pinvh's default eigh driver (SYEVR, driver='evr') returns a spurious eigenvalue of about 2.66e-15 for the true zero eigenvalue, which is above the default cutoff, so the reciprocal is kept and the pseudoinverse is wrong. The fix switches pinvh to driver='ev' (SYEV). Success means the test fails on the buggy revision and passes on the fixed one. The numpy and scipy versions are unbounded by the evidence, so the plan uses the checkout's own build requirements and a modern numpy rather than the issue-era 1.18.1/1.4.1.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "pytest",
+            "hypothesis",
+            "pooch",
+            "meson-python",
+            "ninja",
+            "cython",
+            "pybind11",
+            "pythran"
+          ],
+          "system_packages": [
+            "gfortran",
+            "a C/C++ compiler toolchain",
+            "git",
+            "BLAS/LAPACK development libraries if the build is not using the bundled OpenBLAS"
+          ],
+          "build_commands": [
+            "git clone https://github.com/scipy/scipy.git && cd scipy && git checkout 237b6915e37e && git submodule update --init --recursive",
+            "pip install -r requirements/build.txt numpy pytest hypothesis",
+            "python -m pip install -e . --no-build-isolation",
+            "python -c 'import scipy; print(scipy.__version__)'"
+          ],
+          "pinned_because": [
+            "numpy: no documented constraint and no era table entry; numpy is left unpinned and taken from the checkout's requirements/build.txt, because the issue-era numpy 1.18.1 is not needed to observe the behaviour and cannot be assumed to build this revision",
+            "scipy: the scipy version is the buggy checkout itself (237b6915e37e), not a released 1.4.1; the 1.4.1 version in issue#12515 is only the reporter's environment and is not pinned",
+            "LAPACK driver behaviour is the only numerically decisive dependency; the SYEVR vs SYEV choice is made by the checkout's source, so no pin is needed beyond building that revision"
+          ]
+        },
+        "test_command": "python -m pytest scipy/linalg/tests/test_basic.py -k test_zero_eigenvalue -v",
+        "reproducing_test": "scipy/linalg/tests/test_basic.py::test_zero_eigenvalue (class not stated in the diff; it sits next to test_native_list_argument, so -k selection is used instead of a full node id)",
+        "success_criterion": "On buggy 237b6915e37e the test FAILS: pinvh keeps the ~2.66e-15 eigenvalue as nonzero, so p is dominated by a huge reciprocal in the null direction and assert_allclose(p @ a @ p, p, atol=1e-15) raises AssertionError. On the fixed revision (pinvh uses driver='ev') the same test PASSES because SYEV returns a near-zero eigenvalue below the cutoff, which is discarded, and both Moore-Penrose assertions hold. The transition is the whole criterion.",
+        "numerical_probe": "import numpy as np, scipy.linalg as sl; a=np.array([[1,-1,0],[-1,2,-1],[0,-1,1]],dtype=float); print(sl.eigh(a,eigvals_only=True,driver='evr')); print(sl.eigh(a,eigvals_only=True,driver='ev')); p=sl.pinvh(a); print(np.abs(p@a@p-p).max())",
+        "input_output_examples": [
+          {
+            "input": "x = np.array([[1,-1, 0], [-1, 2, -1], [0, -1, 1]]); y1 = pinvh(x)",
+            "buggy_output": "np.allclose(np.matmul(np.matmul(y1, x), y1), y1) returns False",
+            "expected_output": "True (same check holds for y2 = pinv(x), which returns True)"
+          },
+          {
+            "input": "sp.linalg.eigh(a, driver='evr') on the 3x3 matrix from the issue",
+            "buggy_output": "eigenvalues array([2.66453526e-15, 1.00000000e+00, 3.00000000e+00])",
+            "expected_output": "smallest eigenvalue should be 0 (analytic eigenvalues 3, 1, 0)"
+          },
+          {
+            "input": "sp.linalg.eigh(a, driver='ev') on the same matrix",
+            "buggy_output": "eigenvalues array([9.99658224e-17, 1.00000000e+00, 3.00000000e+00])",
+            "expected_output": "smallest eigenvalue should be 0 (analytic eigenvalues 3, 1, 0)"
+          }
+        ],
+        "risks": [
+          "Platform dependence: the spurious SYEVR eigenvalue is a property of the LAPACK build. Reference LAPACK, OpenBLAS, MKL, and Apple Accelerate can give different roundoff, so the buggy revision may pass on some backends and the transition may not occur. Record the BLAS/LAPACK actually linked (scipy.show_config()) and treat a non-transition as a finding about the backend, not a success.",
+          "The test may not discriminate on a given build: if the local SYEVR returns exactly 0 or a value under the cutoff, the buggy revision passes and no transition is observed.",
+          "Dtype is not stated in the evidence; the test uses a float literal matrix of integers (default float64). Dtype dependence is not grounded and was not varied.",
+          "The test uses assert_allclose with atol=1e-15 but also the default rtol (1e-7), so the absolute tolerance only matters for entries near zero; the outcome depends on the rtol default of the installed numpy version.",
+          "Building the checkout requires compilers and Fortran; a mismatched numpy build requirement can fail the build before any test runs.",
+          "Sanitizers and non-x86 architectures were not evidenced and are not assumed; the behaviour has only been reported on the issue reporter's platform, which is not stated.",
+          "The PR date is not provided, so the exact commit window is taken from the hash 237b6915e37e alone."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "assert_allclose with atol=1e-15 and numpy default rtol=1e-7 on p@a@p vs p and a@p@a vs a",
+          "reference_source": "analytic Moore-Penrose identities for the 3x3 matrix with eigenvalues 3, 1, 0",
+          "why": "Eigenvalue 0 is exact analytically, and the Moore-Penrose conditions are the defining property of the pseudoinverse, so a correct pinvh must satisfy them independent of any LAPACK value."
+        },
+        "fails_on_buggy": "assert_allclose(p @ a @ p, p, atol=1e-15) sees a pseudoinverse containing a reciprocal of the spurious 2.66e-15 eigenvalue (magnitude around 1e14 in that direction), so p @ a @ p differs grossly from p and AssertionError is raised.",
+        "passes_on_fixed": "With driver='ev' the near-zero eigenvalue (about 1e-16) falls below the cutoff and is zeroed, so p is the correct pseudoinverse and both Moore-Penrose assertions hold within the stated tolerances."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4858,
+        "output_tokens": 3940,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 15694,
+        "output_tokens": 3073,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

@@ -1,0 +1,460 @@
+diff --git a/crates/burn-import/onnx-tests/tests/constant/mod.rs b/crates/burn-import/onnx-tests/tests/constant/mod.rs
+index aee5bab2df7..d2b7e812105 100644
+--- a/crates/burn-import/onnx-tests/tests/constant/mod.rs
++++ b/crates/burn-import/onnx-tests/tests/constant/mod.rs
+@@ -18,7 +18,7 @@ include_models!(
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use burn::tensor::{Int, Shape, Tensor};
++    use burn::tensor::{Int, Shape, Tensor, TensorData};
+ 
+     use crate::backend::TestBackend;
+ 
+@@ -108,17 +108,22 @@ mod tests {
+     #[test]
+     fn constant_tensor_i32_test() {
+         // Test that multidimensional i32 tensor constants are properly loaded with correct dtype
++        // Note: The ONNX model has I32 constants, but NdArray<f32> defaults to i64 for Int tensors.
++        // We use from_data_dtype with explicit I32 dtype to create tensors that match the model's dtype.
++        // Using from_data() would convert to the backend's IntElem (i64), causing dtype mismatch.
++        use burn::tensor::DType;
++
+         let device = Default::default();
+         let model: constant_tensor_i32::Model<TestBackend> = constant_tensor_i32::Model::default();
+ 
+-        // Create input tensor [2, 3] with values [[1, 2, 3], [4, 5, 6]]
+-        let input = Tensor::<TestBackend, 2, Int>::from_ints([[1i32, 2, 3], [4, 5, 6]], &device);
++        // Create input tensor [2, 3] with values [[1, 2, 3], [4, 5, 6]] using i32 dtype
++        // Must use from_data_dtype to preserve I32 dtype (from_data converts to backend's IntElem)
++        let input_data = TensorData::from([[1i32, 2, 3], [4, 5, 6]]);
++        let input = Tensor::<TestBackend, 2, Int>::from_data_dtype(input_data, &device, DType::I32);
+ 
+         // Expected: input + constant where constant is [[10, 20, 30], [40, 50, 60]]
+         // Result: [[11, 22, 33], [44, 55, 66]]
+-        let expected =
+-            Tensor::<TestBackend, 2, Int>::from_ints([[11i32, 22, 33], [44, 55, 66]], &device)
+-                .to_data();
++        let expected = TensorData::from([[11i32, 22, 33], [44, 55, 66]]);
+ 
+         let output = model.forward(input);
+         output.to_data().assert_eq(&expected, true);
+diff --git a/crates/burn-import/onnx-tests/tests/constant_of_shape/mod.rs b/crates/burn-import/onnx-tests/tests/constant_of_shape/mod.rs
+index 9835c813601..8f8b4eb0f42 100644
+--- a/crates/burn-import/onnx-tests/tests/constant_of_shape/mod.rs
++++ b/crates/burn-import/onnx-tests/tests/constant_of_shape/mod.rs
+@@ -36,11 +36,20 @@ mod tests {
+     #[test]
+     fn constant_of_shape_full_like() {
+         // This tests shape is being passed from the input tensor
++        use burn::tensor::{DType, TensorData};
+         let device = Default::default();
+         let model = constant_of_shape_full_like::Model::<TestBackend>::new(&device);
+         let shape = [2, 3, 2];
+         let f_expected = Tensor::<TestBackend, 3>::full(shape, 3.0, &device);
+-        let i_expected = Tensor::<TestBackend, 3, Int>::full(shape, 5, &device);
++        // ONNX model uses I32 for integer constant, use from_data_dtype to match
++        // Create rank-1 tensor first, then reshape to 3D and expand
++        let i_expected = Tensor::<TestBackend, 1, Int>::from_data_dtype(
++            TensorData::from([5i32]),
++            &device,
++            DType::I32,
++        )
++        .reshape([1, 1, 1])
++        .expand(shape);
+         let b_expected = Tensor::<TestBackend, 3, Int>::ones(shape, &device).bool();
+ 
+         let input = Tensor::ones(shape, &device);
+diff --git a/crates/burn-import/onnx-tests/tests/matmulinteger/mod.rs b/crates/burn-import/onnx-tests/tests/matmulinteger/mod.rs
+index 216d88065be..123775c954e 100644
+--- a/crates/burn-import/onnx-tests/tests/matmulinteger/mod.rs
++++ b/crates/burn-import/onnx-tests/tests/matmulinteger/mod.rs
+@@ -10,7 +10,34 @@ include_models!(matmulinteger, matmulinteger_ranks);
+ mod tests {
+     use super::*;
+     use crate::backend::TestBackend;
+-    use burn::tensor::{Int, Tensor};
++    use burn::tensor::{DType, Int, Tensor, TensorData};
++
++    // Helper to create i32 tensor from nested arrays
++    // The ONNX MatMulInteger model uses I32 constants, so we need i32 tensors.
++    // We use from_data_dtype to preserve I32 dtype (from_data converts to backend's IntElem which is i64).
++    fn tensor_2d_i32<const R: usize, const C: usize>(
++        data: [[i32; C]; R],
++        device: &<TestBackend as burn::tensor::backend::Backend>::Device,
++    ) -> Tensor<TestBackend, 2, Int> {
++        let tensor_data = TensorData::from(data);
++        Tensor::from_data_dtype(tensor_data, device, DType::I32)
++    }
++
++    fn tensor_3d_i32<const B: usize, const R: usize, const C: usize>(
++        data: [[[i32; C]; R]; B],
++        device: &<TestBackend as burn::tensor::backend::Backend>::Device,
++    ) -> Tensor<TestBackend, 3, Int> {
++        let tensor_data = TensorData::from(data);
++        Tensor::from_data_dtype(tensor_data, device, DType::I32)
++    }
++
++    fn tensor_1d_i32<const N: usize>(
++        data: [i32; N],
++        device: &<TestBackend as burn::tensor::backend::Backend>::Device,
++    ) -> Tensor<TestBackend, 1, Int> {
++        let tensor_data = TensorData::from(data);
++        Tensor::from_data_dtype(tensor_data, device, DType::I32)
++    }
+ 
+     // Simple no-zero-point case: check integer matmul → int32 result
+     #[test]
+@@ -19,42 +46,35 @@ mod tests {
+         let model: matmulinteger::Model<TestBackend> = matmulinteger::Model::default();
+ 
+         // Build inputs matching Python test in matmulinteger.py
++        // Note: The ONNX model uses I32 dtype, so we use i32 tensors to match
+         // A and B for first MatMulInteger (zero-points: a0=0, b0=0)
+-        let a = Tensor::<TestBackend, 2, Int>::from_ints([[1, 2, 3, 4], [10, 20, 30, 40]], &device);
+-        let b = Tensor::<TestBackend, 2, Int>::from_ints(
+-            [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]],
+-            &device,
+-        );
++        let a = tensor_2d_i32([[1, 2, 3, 4], [10, 20, 30, 40]], &device);
++        let b = tensor_2d_i32([[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]], &device);
+ 
+         // C and D for second MatMulInteger (zero-points: a2=2, b3=3)
+         // Python uses same values as A and B for C and D
+-        let c = Tensor::<TestBackend, 2, Int>::from_ints([[1, 2, 3, 4], [10, 20, 30, 40]], &device);
+-        let d = Tensor::<TestBackend, 2, Int>::from_ints(
+-            [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]],
+-            &device,
+-        );
++        let c = tensor_2d_i32([[1, 2, 3, 4], [10, 20, 30, 40]], &device);
++        let d = tensor_2d_i32([[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]], &device);
+ 
+         // E and F for third MatMulInteger (zero-points: a0=0, b0=0)
+-        let e = Tensor::<TestBackend, 2, Int>::from_ints([[1, -1, 2, -2], [3, -3, 4, -4]], &device);
+-        let f = Tensor::<TestBackend, 2, Int>::from_ints([[1, 2], [3, 4], [5, 6], [7, 8]], &device);
++        let e = tensor_2d_i32([[1, -1, 2, -2], [3, -3, 4, -4]], &device);
++        let f = tensor_2d_i32([[1, 2], [3, 4], [5, 6], [7, 8]], &device);
+ 
+         // Forward now takes 6 args and returns 3 outputs (YA, YB, YC)
+         let (ya, yb, yc) = model.forward(a, b, c, d, e, f);
+ 
+-        // NdArray backend: Int => i64, so build i64 expected
+-        use burn::tensor::TensorData;
+-
++        // NdArray backend with i32: Int => i32
+         // YA: Computes (A - 0) @ (B - 0) since a0=0 and b0=0
+-        let expected_ya = TensorData::from([[70i64, 80, 90], [700, 800, 900]]);
++        let expected_ya = TensorData::from([[70i32, 80, 90], [700, 800, 900]]);
+         ya.to_data().assert_eq(&expected_ya, true);
+ 
+         // YB: Computes (C - a2) @ (D - b3) where a2=2 and b3=3 (from ONNX constant nodes)
+-        let expected_yb = TensorData::from([[20i64, 22, 24], [380, 472, 564]]);
++        let expected_yb = TensorData::from([[20i32, 22, 24], [380, 472, 564]]);
+         yb.to_data().assert_eq(&expected_yb, true);
+ 
+         // YC: Computes (E - 0) @ (F - 0) with mixed signed/unsigned types
+         // Since a0=0 and b0=0, the result is just E @ F
+-        let expected_yc = TensorData::from([[-6i64, -6], [-14, -14]]);
++        let expected_yc = TensorData::from([[-6i32, -6], [-14, -14]]);
+         yc.to_data().assert_eq(&expected_yc, true);
+     }
+ 
+@@ -64,15 +84,12 @@ mod tests {
+         let device = Default::default();
+         let model: matmulinteger_ranks::Model<TestBackend> = matmulinteger_ranks::Model::default();
+ 
+-        // Create inputs matching Python test shapes
++        // Create inputs matching Python test shapes using i32 (ONNX model uses I32)
+         // mat2d: [3, 4]
+-        let mat2d = Tensor::<TestBackend, 2, Int>::from_ints(
+-            [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]],
+-            &device,
+-        );
++        let mat2d = tensor_2d_i32([[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]], &device);
+ 
+         // mat3d: [2, 3, 4]
+-        let mat3d = Tensor::<TestBackend, 3, Int>::from_ints(
++        let mat3d = tensor_3d_i32(
+             [
+                 [[0, 1, 2, 3], [4, 5, 6, 0], [1, 2, 3, 4]],
+                 [[5, 6, 0, 1], [2, 3, 4, 5], [6, 0, 1, 2]],
+@@ -81,19 +98,19 @@ mod tests {
+         );
+ 
+         // vec4: [4]
+-        let vec4 = Tensor::<TestBackend, 1, Int>::from_ints([1, 2, 3, 4], &device);
++        let vec4 = tensor_1d_i32([1, 2, 3, 4], &device);
+ 
+         // vec3: [3]
+-        let vec3 = Tensor::<TestBackend, 1, Int>::from_ints([1, 2, 3], &device);
++        let vec3 = tensor_1d_i32([1, 2, 3], &device);
+ 
+         // sq4: [4, 4]
+-        let sq4 = Tensor::<TestBackend, 2, Int>::from_ints(
++        let sq4 = tensor_2d_i32(
+             [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]],
+             &device,
+         );
+ 
+         // mat3d_b: [2, 3, 4]
+-        let mat3d_b = Tensor::<TestBackend, 3, Int>::from_ints(
++        let mat3d_b = tensor_3d_i32(
+             [
+                 [[0, 1, 2, 3], [4, 0, 1, 2], [3, 4, 0, 1]],
+                 [[2, 3, 4, 0], [1, 2, 3, 4], [0, 1, 2, 3]],
+@@ -108,27 +125,25 @@ mod tests {
+             model.forward(mat2d, mat3d, vec4, vec3, sq4, mat3d_b);
+ 
+         // Assert expected outputs
+-        use burn::tensor::TensorData;
+-
+         // y_2d_1d: mat2d @ vec4 = [3, 4] @ [4] → [3]
+-        let expected_2d_1d = TensorData::from([20i64, 60, 100]);
++        let expected_2d_1d = TensorData::from([20i32, 60, 100]);
+         y_2d_1d.to_data().assert_eq(&expected_2d_1d, true);
+ 
+         // y_1d_2d: vec4 @ sq4 = [4] @ [4, 4] → [4]
+-        let expected_1d_2d = TensorData::from([80i64, 90, 100, 110]);
++        let expected_1d_2d = TensorData::from([80i32, 90, 100, 110]);
+         y_1d_2d.to_data().assert_eq(&expected_1d_2d, true);
+ 
+         // y_3d_1d: mat3d @ vec4 = [2, 3, 4] @ [4] → [2, 3]
+-        let expected_3d_1d = TensorData::from([[20i64, 32, 30], [21, 40, 17]]);
++        let expected_3d_1d = TensorData::from([[20i32, 32, 30], [21, 40, 17]]);
+         y_3d_1d.to_data().assert_eq(&expected_3d_1d, true);
+ 
+         // y_1d_3d: vec3 @ mat3d_b = [3] @ [2, 3, 4] → [2, 4]
+-        let expected_1d_3d = TensorData::from([[17i64, 13, 4, 10], [4, 10, 16, 17]]);
++        let expected_1d_3d = TensorData::from([[17i32, 13, 4, 10], [4, 10, 16, 17]]);
+         y_1d_3d.to_data().assert_eq(&expected_1d_3d, true);
+ 
+         // y_2d_2d: mat2d @ sq4 = [3, 4] @ [4, 4] → [3, 4]
+         let expected_2d_2d = TensorData::from([
+-            [56i64, 62, 68, 74],
++            [56i32, 62, 68, 74],
+             [152, 174, 196, 218],
+             [248, 286, 324, 362],
+         ]);
+diff --git a/crates/burn-store/src/applier.rs b/crates/burn-store/src/applier.rs
+index ae318054c3c..dafae53c85b 100644
+--- a/crates/burn-store/src/applier.rs
++++ b/crates/burn-store/src/applier.rs
+@@ -391,4 +391,218 @@ mod tests {
+         assert_eq!(result.applied.len(), 2);
+         assert_eq!(result.errors.len(), 0);
+     }
++
++    /// Test that the applier preserves dtype when loading tensor data.
++    /// This is a regression test for the bug where F16 tensors were being
++    /// loaded as F32 because `Tensor::from_data` was used instead of
++    /// `Tensor::from_data_dtype`.
++    #[test]
++    fn dtype_preservation_f64() {
++        // Use NdArray<f64> backend to properly test F64 dtype preservation
++        type TestBackendF64 = burn_ndarray::NdArray<f64>;
++        let device = Default::default();
++
++        // Create TensorData with F64 dtype explicitly
++        let f64_data = TensorData::new(vec![1.0f64, 2.0, 3.0, 4.0], [2, 2]);
++        assert_eq!(f64_data.dtype, DType::F64, "Test setup: data should be F64");
++
++        // Create a snapshot with F64 data
++        let snapshot = crate::TensorSnapshot::from_data(
++            f64_data.clone(),
++            vec!["weight".to_string()],
++            vec![],
++            ParamId::new(),
++        );
++        assert_eq!(
++            snapshot.dtype,
++            DType::F64,
++            "Snapshot should preserve F64 dtype"
++        );
++
++        // Create applier with the F64 snapshot
++        let mut applier = Applier::<TestBackendF64>::new(vec![snapshot], None, None, false);
++
++        // Create target parameter
++        let target = Param::initialized(
++            ParamId::new(),
++            Tensor::<TestBackendF64, 2>::zeros([2, 2], &device),
++        );
++
++        // Apply the snapshot
++        applier.enter_module("weight", "");
++        let loaded = applier.map_float(target);
++        applier.exit_module("weight", "");
++
++        // Verify dtype is preserved - this would fail before the fix
++        // because the data would be converted to the backend's default FloatElem
++        assert_eq!(
++            loaded.val().dtype(),
++            DType::F64,
++            "Loaded tensor should have F64 dtype"
++        );
++
++        // Verify data values are correct
++        let loaded_data = loaded.val().to_data().to_vec::<f64>().unwrap();
++        assert_eq!(loaded_data, vec![1.0, 2.0, 3.0, 4.0]);
++
++        // Verify applier result
++        let result = applier.into_result();
++        assert_eq!(result.applied.len(), 1);
++        assert_eq!(result.errors.len(), 0);
++    }
++
++    /// Test that F32 dtype is preserved when loading (verifies we didn't break F32 handling)
++    #[test]
++    fn dtype_preservation_f32() {
++        let device = Default::default();
++
++        // Create TensorData with F32 dtype
++        let f32_data = TensorData::new(vec![1.0f32, 2.0, 3.0, 4.0], [2, 2]);
++        assert_eq!(f32_data.dtype, DType::F32);
++
++        // Create a snapshot with F32 data
++        let snapshot = crate::TensorSnapshot::from_data(
++            f32_data.clone(),
++            vec!["weight".to_string()],
++            vec![],
++            ParamId::new(),
++        );
++        assert_eq!(snapshot.dtype, DType::F32);
++
++        // Create applier with the F32 snapshot
++        let mut applier = Applier::<TestBackend>::new(vec![snapshot], None, None, false);
++
++        // Create target parameter
++        let target = Param::initialized(
++            ParamId::new(),
++            Tensor::<TestBackend, 2>::zeros([2, 2], &device),
++        );
++
++        // Apply the snapshot
++        applier.enter_module("weight", "");
++        let loaded = applier.map_float(target);
++        applier.exit_module("weight", "");
++
++        // Verify dtype is F32
++        assert_eq!(loaded.val().dtype(), DType::F32);
++
++        // Verify data values
++        let loaded_data = loaded.val().to_data().to_vec::<f32>().unwrap();
++        assert_eq!(loaded_data, vec![1.0, 2.0, 3.0, 4.0]);
++    }
++
++    /// Test that F16 dtype is correctly preserved in TensorSnapshot.
++    ///
++    /// Note: Full F16 tensor loading requires a backend that supports F16
++    /// (e.g., CUDA, WebGPU). The NdArray backend does not support F16.
++    /// This test verifies that the snapshot correctly preserves F16 dtype,
++    /// which is the key part of the dtype preservation fix.
++    #[test]
++    fn dtype_preservation_f16_snapshot() {
++        use half::f16;
++
++        // Create TensorData with F16 dtype using the half crate
++        let f16_values: Vec<f16> = vec![
++            f16::from_f32(1.0),
++            f16::from_f32(2.0),
++            f16::from_f32(3.0),
++            f16::from_f32(4.0),
++        ];
++        let f16_data = TensorData::new(f16_values.clone(), [2, 2]);
++        assert_eq!(
++            f16_data.dtype,
++            DType::F16,
++            "TensorData should have F16 dtype"
++        );
++
++        // Create a snapshot with F16 data
++        let snapshot = crate::TensorSnapshot::from_data(
++            f16_data.clone(),
++            vec!["weight".to_string()],
++            vec![],
++            ParamId::new(),
++        );
++
++        // Verify snapshot preserves F16 dtype
++        assert_eq!(
++            snapshot.dtype,
++            DType::F16,
++            "TensorSnapshot should preserve F16 dtype"
++        );
++
++        // Verify the data can be retrieved with correct dtype
++        let retrieved_data = snapshot.to_data().expect("Should be able to retrieve data");
++        assert_eq!(
++            retrieved_data.dtype,
++            DType::F16,
++            "Retrieved data should have F16 dtype"
++        );
++
++        // Verify the actual values are preserved
++        let retrieved_values: Vec<f16> = retrieved_data
++            .to_vec()
++            .expect("Should be able to convert to f16 vec");
++        assert_eq!(
++            retrieved_values, f16_values,
++            "F16 values should be preserved"
++        );
++
++        // Note: To fully test F16 tensor creation, you would need a backend
++        // that supports F16 (like CUDA or WebGPU). The applier fix ensures
++        // that `Tensor::from_data_dtype(data, device, snapshot.dtype)` is
++        // called with DType::F16, which will correctly create an F16 tensor
++        // on backends that support it.
++    }
++
++    /// Test that BF16 dtype is correctly preserved in TensorSnapshot.
++    #[test]
++    fn dtype_preservation_bf16_snapshot() {
++        use half::bf16;
++
++        // Create TensorData with BF16 dtype
++        let bf16_values: Vec<bf16> = vec![
++            bf16::from_f32(1.0),
++            bf16::from_f32(2.0),
++            bf16::from_f32(3.0),
++            bf16::from_f32(4.0),
++        ];
++        let bf16_data = TensorData::new(bf16_values.clone(), [2, 2]);
++        assert_eq!(
++            bf16_data.dtype,
++            DType::BF16,
++            "TensorData should have BF16 dtype"
++        );
++
++        // Create a snapshot with BF16 data
++        let snapshot = crate::TensorSnapshot::from_data(
++            bf16_data.clone(),
++            vec!["weight".to_string()],
++            vec![],
++            ParamId::new(),
++        );
++
++        // Verify snapshot preserves BF16 dtype
++        assert_eq!(
++            snapshot.dtype,
++            DType::BF16,
++            "TensorSnapshot should preserve BF16 dtype"
++        );
++
++        // Verify the data can be retrieved with correct dtype
++        let retrieved_data = snapshot.to_data().expect("Should be able to retrieve data");
++        assert_eq!(
++            retrieved_data.dtype,
++            DType::BF16,
++            "Retrieved data should have BF16 dtype"
++        );
++
++        // Verify the actual values are preserved
++        let retrieved_values: Vec<bf16> = retrieved_data
++            .to_vec()
++            .expect("Should be able to convert to bf16 vec");
++        assert_eq!(
++            retrieved_values, bf16_values,
++            "BF16 values should be preserved"
++        );
++    }
+ }

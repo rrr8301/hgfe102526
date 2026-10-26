@@ -1,0 +1,357 @@
+{
+  "repo": "pandas-dev/pandas",
+  "pr_number": 67974,
+  "reference": "https://github.com/pandas-dev/pandas/pull/67974",
+  "buggy_commit": "14ae93f64c2017ccab6febd9329773cb7de47b9a",
+  "fixed_commit": "00398c9ee6b775d2b11621b57c69072e9aa2431e",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "NumPy",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "README.md: \"## Dependencies - [NumPy] ...\" and it references minimum supported versions via pandas install docs."
+      },
+      {
+        "name": "python-dateutil",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md: \"## Dependencies - [python-dateutil] ...\""
+      },
+      {
+        "name": "tzdata",
+        "constraint": "Only required on Windows/Emscripten",
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md: \"## Dependencies - [tzdata] ... (Only required on Windows/Emscripten)\""
+      },
+      {
+        "name": "Cython",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md: \"To install pandas from source you need [Cython] in addition to the normal dependencies above.\""
+      }
+    ],
+    "installation_commands": [
+      "pip install cython",
+      "pip install .",
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "build_commands": [],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: NumPy \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: python-dateutil \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "explicit: tzdata Only required on Windows/Emscripten",
+      "unbounded: Cython \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "NumPy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "README.md: \"## Dependencies - [NumPy] ...\" and it references minimum supported versions via pandas install docs."
+      },
+      {
+        "package": "python-dateutil",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md: \"## Dependencies - [python-dateutil] ...\""
+      },
+      {
+        "package": "tzdata",
+        "documented_constraint": "Only required on Windows/Emscripten",
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "explicit",
+        "source": "README.md: \"## Dependencies - [tzdata] ... (Only required on Windows/Emscripten)\""
+      },
+      {
+        "package": "Cython",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md: \"To install pandas from source you need [Cython] in addition to the normal dependencies above.\""
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "pandas.core.frame.DataFrame._append_internal",
+    "observed_behavior": "For loc setitem that expands the DataFrame, the appended row is pre-cast and then adopted unconditionally. This can (a) raise an error that the pre-GH-65431 behavior did not raise, or (b) silently keep/produce the wrong values because the column dtype never changes and _post_expansion_casting does not fire (no Pandas4Warning emitted). In the cited repro, a SparseArray NaN becomes 0 and a large integer assignment causes OverflowError.",
+    "expected_behavior": "Only adopt the pre-cast result when it is a pure optimization: guard the call; require the casted result to land back on the column\u2019s own dtype (unwrapping NumpyEADtype before comparing); and require every value to still compare equal. Otherwise, decline the optimization so the correct widening/behavior happens (including allowing the previous behavior when the dtype cannot hold the new value).",
+    "manifestation": "exception",
+    "trigger_conditions": [
+      "DataFrame._append_internal pre-cast loop runs for loc setitem-with-expansion (appending a new key) and the pre-cast result is adopted unconditionally in the buggy behavior",
+      "Appending/expanding a string column (e.g., created via pd.DataFrame({\"a\": [\"x\",\"y\",\"z\"]})) with a value that cannot be represented by that dtype (e.g., 2**70) so that _cast_pointwise_result raises (OverflowError/ArrowInvalid/etc.)",
+      "When the cast succeeded but coerced and the column dtype did not change (so _post_expansion_casting is a no-op), leading to silently wrong values (no Pandas4Warning)"
+    ],
+    "input_output_examples": [
+      {
+        "input": "df = pd.DataFrame({\"a\": [\"x\", \"y\", \"z\"]}); df.loc[3] = [2**70]",
+        "buggy_output": "Raises OverflowError",
+        "expected_output": null,
+        "value_kind": "exception",
+        "source": "pr_body: PR#67974 reproducer"
+      },
+      {
+        "input": "df = pd.DataFrame({\"a\": pd.arrays.SparseArray([0, 1, 2], fill_value=0)}); df.loc[3] = [np.nan]; df[\"a\"].isna().tolist()",
+        "buggy_output": "[False, False, False, False] (the NaN became 0)",
+        "expected_output": "[False, False, False, True]",
+        "value_kind": "array",
+        "source": "pr_body: PR#67974 reproducer"
+      }
+    ],
+    "oracle_clues": [
+      "Expected outputs are given only for the isna().tolist() case: the passage states the buggy result is [False, False, False, False] and the comment says the NaN became 0; under correct behavior, the appended value is NaN so the last element of isna() should be True (i.e., expected [False, False, False, True]).",
+      "OverflowError is explicitly described as the buggy outcome for assigning 2**70 into a DataFrame with a string column."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": null,
+    "precision": "float32's precision not preserved: 0.1 fits float32's dtype but not its precision, so the column widens",
+    "magnitude": null,
+    "tolerance": null,
+    "category_specific_evidence": [
+      "test_append_internal_pre_cast_declines_narrowing: df has a='float32' values [1, 2]; ser appended for index 'a' is 0.1; expected result widens to float with values [1.0, 2.0, 0.1] (comment: \u201c0.1 fits float32's dtype but not its precision, so the column widens\u201d).",
+      "frame.py: adoption of pre-cast is guarded by conditions: adopt only where \u201csame dtype (else it saves nothing) and every value preserved, see test_append_internal_pre_cast_declines_narrowing.\u201d",
+      "frame.py: guard requires casted_dtype == orig_dtype and _values_unchanged(row_vals, casted) before adopting the pre-cast; otherwise it falls back (adopt=False).",
+      "test_loc_setitem_with_expansion_lossy_pre_cast: when pre-cast \u201clands on another dtype, the column widens to object\u201d and an incompatible dtype warning is produced; expected DataFrame uses object dtype for appended value. Examples: (pd.StringDtype(na_value=np.nan), 2**70), (\u201cInt64\u201d, pd.NaT), (\u201cint64[pyarrow]\u201d, pd.Period(\"2021-01-01\", freq=\"D\")), (\u201cint64[pyarrow]\u201d, pd.Interval(5, 6)).",
+      "test_loc_setitem_with_expansion_sparse_na: Sparse pre-cast NaN gives Sparse[float64, nan] not the column's Sparse[int64, 0]; adopting it used to turn appended NaN into 0, but expected result keeps NaN as np.nan in the SparseArray [0.0, 1.0, 2.0, np.nan].",
+      "pr_body/commit evidence: GH#65431 bug description: pre-cast loop runs infer_and_maybe_downcast and \u201cadopts the result unconditionally.\u201d A cast that \u201csucceeded but coerced left the column dtype unchanged, so _post_expansion_casting never fired and the wrong value was kept silently.\u201d",
+      "pr_body/commit: fix requires \u201cresult to land back on the column's dtype, and require every value to still compare equal.\u201d"
+    ],
+    "reproduction_risks": [
+      "If the reproduction does not ensure the pre-cast result is adopted only when dtype matches (casted_dtype == orig_dtype), the incorrect behavior may not reproduce.",
+      "If the reproduction does not use a case where the casted dtype has insufficient precision (e.g., float32 for value 0.1) or where values are not preserved (values no longer compare equal), it may not trigger the divergence.",
+      "If the reproduction does not create positional column alignment requirements (loop matches frames positionally; code now requires columns to be equal), the failure mode may be bypassed.",
+      "If the reproduction does not involve expansion (setitem/append with dtype-incompatible appended value), the incorrect value retention/coercion may not occur."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "pip install cython",
+        "pip install .",
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "NumPy",
+      "source": "README.md: \"## Dependencies - [NumPy] ...\" and it references minimum supported versions via pandas install docs.",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "python-dateutil",
+      "source": "README.md: \"## Dependencies - [python-dateutil] ...\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "tzdata",
+      "source": "README.md: \"## Dependencies - [tzdata] ... (Only required on Windows/Emscripten)\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "Cython",
+      "source": "README.md: \"To install pandas from source you need [Cython] in addition to the normal dependencies above.\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "pandas.core.frame.DataFrame._append_internal",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "For loc setitem that expands the DataFrame, the appended row is pre-cast and then adopted unconditionally. This can (a) raise an error that the pre-GH-65431 behavior did not raise, or (b) silently keep/produce the wrong values because the column dtype never changes and _post_expansion_casting does not fire (no Pandas4Warning emitted). In the cited repro, a SparseArray NaN becomes 0 and a large integer assignment causes OverflowError.",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "Only adopt the pre-cast result when it is a pure optimization: guard the call; require the casted result to land back on the column\u2019s own dtype (unwrapping NumpyEADtype before comparing); and require every value to still compare equal. Otherwise, decline the optimization so the correct widening/behavior happens (including allowing the previous behavior when the dtype cannot hold the new value).",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "exception",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 2,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 2,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.precision",
+      "value": "float32's precision not preserved: 0.1 fits float32's dtype but not its precision, so the column widens",
+      "source": "test_diff",
+      "evidence_location": "test_diff:pandas/tests/reshape/concat/test_append.py:345-391"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 7,
+      "source": "test_diff",
+      "evidence_location": "test_diff:pandas/tests/reshape/concat/test_append.py:345-391"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 4,
+      "source": "test_diff",
+      "evidence_location": "test_diff:pandas/tests/reshape/concat/test_append.py:345-391"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "readme:README.md",
+        "pr_body:PR#67974",
+        "commit:commits",
+        "diff:pandas/core/frame.py:74-80",
+        "readme:README.md",
+        "readme:README.md",
+        "readme:README.md"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "pr_body:PR#67974",
+        "diff:pandas/core/frame.py:15459-15493",
+        "pr_body:PR#67974",
+        "pr_body:PR#67974",
+        "pr_body:PR#67974",
+        "diff:pandas/core/frame.py:74-80",
+        "pr_body:PR#67974"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "test_diff:pandas/tests/reshape/concat/test_append.py:345-391",
+        "pr_body:PR#67974",
+        "diff:pandas/core/frame.py:15459-15493",
+        "commit:commits",
+        "test_diff:pandas/tests/indexing/test_loc.py:2589-2634",
+        "test_diff:pandas/tests/indexing/test_loc.py:2589-2634",
+        "pr_body:PR#67974",
+        "diff:pandas/core/frame.py:15434-15448"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          },
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          }
+        ],
+        "present": [
+          "environment.dependencies"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 1.0,
+        "required_total": 5,
+        "required_present": 5,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 6345,
+    "output_tokens": 1633,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.0033100000000000004,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": []
+}

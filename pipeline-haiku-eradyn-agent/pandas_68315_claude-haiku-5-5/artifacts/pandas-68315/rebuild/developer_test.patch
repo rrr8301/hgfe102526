@@ -1,0 +1,92 @@
+diff --git a/pandas/tests/dtypes/cast/test_downcast.py b/pandas/tests/dtypes/cast/test_downcast.py
+index 0d57bf1c5b077..ada796392afc2 100644
+--- a/pandas/tests/dtypes/cast/test_downcast.py
++++ b/pandas/tests/dtypes/cast/test_downcast.py
+@@ -113,6 +113,18 @@ def test_downcast_object_within_integer_range():
+     tm.assert_numpy_array_equal(result, np.array([1, 2], dtype="int64"))
+ 
+ 
++def test_downcast_float16_no_overflow_warning():
++    # GH#68315 the int64 bounds cast down to float16 and overflowed to inf,
++    #  raising a spurious RuntimeWarning even though the result is correct
++    arr = np.array([1.0, 2.0], dtype="float16")
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("error", RuntimeWarning)
++        result = maybe_downcast_numeric(arr, np.dtype("int64"))
++
++    tm.assert_numpy_array_equal(result, np.array([1, 2], dtype="int64"))
++
++
+ def test_downcast_do_round_out_of_range():
+     # GH#66394 rounding can push a value out of range, so the bounds check
+     #  has to happen after rounding
+diff --git a/pandas/tests/series/indexing/test_setitem.py b/pandas/tests/series/indexing/test_setitem.py
+index 46290741386ad..4e8f5429fcea1 100644
+--- a/pandas/tests/series/indexing/test_setitem.py
++++ b/pandas/tests/series/indexing/test_setitem.py
+@@ -2013,6 +2013,18 @@ def test_setitem_enlarge_within_int64_range():
+     tm.assert_series_equal(ser, expected)
+ 
+ 
++def test_setitem_enlarge_float16_no_overflow_warning():
++    # GH#68315 floats_fit_integer_dtype's float16 overflow warning (see
++    #  test_downcast.py) fires here too, on setitem-with-expansion
++    ser = pd.Series([1, 2], dtype="int64")
++
++    with tm.assert_produces_warning(None):
++        ser.loc[2] = np.float16(3.0)
++
++    expected = pd.Series([1, 2, 3], dtype="int64")
++    tm.assert_series_equal(ser, expected)
++
++
+ @pytest.mark.parametrize(
+     "dtype, expected_dtype",
+     [
+diff --git a/pandas/tests/series/methods/test_convert_dtypes.py b/pandas/tests/series/methods/test_convert_dtypes.py
+index 7df2b11976564..b3f08f0664d87 100644
+--- a/pandas/tests/series/methods/test_convert_dtypes.py
++++ b/pandas/tests/series/methods/test_convert_dtypes.py
+@@ -364,6 +364,41 @@ def test_convert_dtypes_uint64_with_na(self, value, dtype):
+         expected = pd.Series([value, pd.NA], dtype=dtype)
+         tm.assert_series_equal(result, expected)
+ 
++    @pytest.mark.parametrize("data", [[1e30], [np.inf], [-np.inf]])
++    def test_convert_dtypes_float_out_of_int64_range(self, data):
++        # GH#68315 astype(int) saturates instead of raising, so an unguarded
++        # (arr.astype(int) == arr).all() falsely reports these as integral
++        ser = pd.Series(data, dtype="float64")
++        with tm.assert_produces_warning(None):
++            result = ser.convert_dtypes()
++        tm.assert_series_equal(result, ser.astype("Float64"))
++
++    def test_convert_dtypes_float_one_past_max(self):
++        # GH#68315 float(INT_MAX + 1) == INT_MAX after the saturating cast, so
++        # the naive equality check let it through as an off-by-one Int64 value.
++        # The cast is to the platform's C int, so take the bounds from that.
++        iinfo = np.iinfo(np.dtype(int))
++        ser = pd.Series([float(int(iinfo.max) + 1)])
++        result = ser.convert_dtypes()
++        tm.assert_series_equal(result, ser.astype("Float64"))
++
++        # the most negative float that fits is unaffected
++        ser = pd.Series([float(iinfo.min)])
++        result = ser.convert_dtypes()
++        tm.assert_series_equal(result, ser.astype("Int64"))
++
++    @pytest.mark.parametrize(
++        "data, expected_dtype",
++        [([1.0, 2.0], "Int64"), ([1.5], "Float64"), ([np.inf], "Float64")],
++    )
++    def test_convert_dtypes_float16_no_overflow_warning(self, data, expected_dtype):
++        # GH#68315 floats_fit_integer_dtype's float16 overflow warning (see
++        # test_downcast.py) fires here too, at convert_dtypes' own guard
++        ser = pd.Series(data, dtype="float16")
++        with tm.assert_produces_warning(None):
++            result = ser.convert_dtypes()
++        tm.assert_series_equal(result, ser.astype(expected_dtype))
++
+     def test_convert_dtypes_int_out_of_range_pyarrow(self):
+         # GH#66517 pyarrow has no integer type for these either
+         pytest.importorskip("pyarrow")

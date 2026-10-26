@@ -1,0 +1,73 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 08f5692c515f7..b33be6717d107 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -438,6 +438,7 @@ Bug fixes
+ - Fixed bug in :class:`Series` where empty frozensets were formatted incorrectly (:issue:`66192`)
+ - Fixed bug in :func:`testing.assert_frame_equal`, :func:`testing.assert_index_equal`, :func:`testing.assert_series_equal` and :func:`testing.assert_extension_array_equal` where ``rtol`` and ``atol`` were applied after casting to ``float64``, so integers above ``2**53`` could compare equal while differing by more than the tolerance, or unequal while within it (:issue:`66400`)
+ - Fixed bug in :func:`testing.assert_series_equal` showing a misleading class mismatch message when Series values were backed by different :class:`numpy.ndarray` subclasses (:issue:`65770`)
++- Fixed bug in :func:`testing.assert_series_equal`, :func:`testing.assert_index_equal`, and :func:`testing.assert_frame_equal` ignoring ``rtol`` and ``atol`` when comparing large integer and floating dtypes with ``check_dtype=False`` (:issue:`66699`)
+ - Fixed bug in :func:`to_timedelta` and :class:`Timedelta` not accepting Day offsets (:issue:`64240`)
+ 
+ Categorical
+diff --git a/pandas/_libs/testing.pyx b/pandas/_libs/testing.pyx
+index aadf3d54459b6..1f5f800ae9bcb 100644
+--- a/pandas/_libs/testing.pyx
++++ b/pandas/_libs/testing.pyx
+@@ -14,6 +14,7 @@ from pandas._libs.missing cimport (
+ from pandas._libs.util cimport (
+     is_array,
+     is_complex_object,
++    is_float_object,
+     is_integer_object,
+     is_real_number_object,
+ )
+@@ -138,7 +139,18 @@ cpdef assert_almost_equal(a, b,
+                 assert_attr_equal("dtype", a, b, obj=obj)
+ 
+             if array_equivalent(a, b, strict_nan=True):
+-                return True
++                if a.dtype.kind in "iu" and b.dtype.kind == "f":
++                    int_arr = a
++                elif a.dtype.kind == "f" and b.dtype.kind in "iu":
++                    int_arr = b
++                else:
++                    return True
++
++                if not int_arr.size or (
++                    int_arr.max() <= 2**53
++                    and (int_arr.dtype.kind == "u" or int_arr.min() >= -(2**53))
++                ):
++                    return True
+ 
+         else:
+             na, nb = len(a), len(b)
+@@ -192,6 +204,28 @@ cpdef assert_almost_equal(a, b,
+     elif checknull(b):
+         raise AssertionError(f"{a} != {b}")
+ 
++    # GH#66699 avoid casting a large integer to float64 before applying
++    #  tolerances when the float operand is itself an integer value.
++    if rtol >= 0 and atol >= 0 and (
++        (
++            is_integer_object(a)
++            and is_float_object(b)
++            and b.is_integer()
++        )
++        or (
++            is_float_object(a)
++            and a.is_integer()
++            and is_integer_object(b)
++        )
++    ):
++        ia = int(a)
++        ib = int(b)
++
++        if abs(ia - ib) > max(rtol * max(abs(ia), abs(ib)), atol):
++            assert False, (f"expected {ib}.00000 but got {ia}.00000, "
++                           f"with rtol={rtol}, atol={atol}")
++        return True
++
+     if a == b:
+         # object comparison
+         return True

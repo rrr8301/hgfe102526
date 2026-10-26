@@ -1,0 +1,109 @@
+{
+  "input": "pipeline_no_historic/astropy_19592/mined/astropy__astropy_19592.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 23510,
+    "output_tokens": 7309,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "astropy/astropy",
+      "pr_number": 19592,
+      "reference": "https://github.com/astropy/astropy/pull/19592",
+      "buggy_commit": "8697e1025b1e5c8b8e58b076aa4686114a9f4856",
+      "fixed_commit": "90aef04ce4fe740038383a5205e298fc0b482628",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7436,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the int64 CompImageHDU defect by building astropy from the buggy commit 8697e1025b1e and running the PR's new test_decompress_integers in astropy/io/fits/hdu/compressed/tests/test_fitsio.py. That test writes int64 data with RICE_1 and PLIO_1 and expects either an AstropyUserWarning (no overflow) or a ValueError (overflow) matching 'compression doesn't support 64 integers'. The buggy revision neither warns nor raises, so the test fails there. The fixed revision should warn or raise as expected and pass.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.13.13",
+          "pip_packages": [
+            "numpy==2.4.3",
+            "pyerfa==2.0.1.5",
+            "pytest",
+            "fitsio",
+            "extension-helpers",
+            "cython",
+            "setuptools_scm"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "git checkout 8697e1025b1e",
+            "pip install -e . --no-build-isolation",
+            "pip install fitsio"
+          ],
+          "pinned_because": [
+            "numpy 2.4.3 is documented in the reporter environment and is numerically relevant: the overflow case adds np.iinfo(np.int32).max to int data, so integer promotion behaviour matters",
+            "pyerfa 2.0.1.5 is documented in the reporter environment but is not numerically relevant to this FITS path; pinned only to match the reporter environment",
+            "astropy is built from the buggy commit, not installed from PyPI, because the PyPI 7.2.0 wheel does not contain this change and the buggy behaviour must be present",
+            "fitsio is unbounded in the evidence; the test module skips without it, and the test itself calls fitsio.FITS, so the strategy installs the latest release that has a wheel for Python 3.13. This choice is ours, not documented",
+            "pandas and funpack are not installed: no documented constraint, and the reproducing test uses fitsio rather than funpack. scipy and matplotlib are documented but not needed by this test"
+          ]
+        },
+        "test_command": "pytest astropy/io/fits/hdu/compressed/tests/test_fitsio.py::test_decompress_integers -p no:cacheprovider -v",
+        "reproducing_test": "astropy/io/fits/hdu/compressed/tests/test_fitsio.py::test_decompress_integers, parametrized over nbytes in (2,4,8), overflow in (False, True) and COMPRESSION_TYPES. The relevant cases are RICE_1 and PLIO_1 with nbytes=8.",
+        "success_criterion": "Buggy revision: for RICE_1 and PLIO_1 with nbytes=8 and overflow=False, pytest.warns(AstropyUserWarning) fails with 'DID NOT WARN', and with overflow=True, pytest.raises(ValueError) fails with 'DID NOT RAISE', so the test FAILS. Fixed revision: the warning is emitted and the overflow raises ValueError, the subsequent round-trip checks pass, and the test PASSES. Success is this transition only.",
+        "numerical_probe": "",
+        "input_output_examples": [
+          {
+            "input": "data = np.random.poisson(1000, size=(52, 57)).astype('i8'); CompImageHDU(data=data, compression_type='RICE_1').writeto(path)",
+            "buggy_output": "no AstropyUserWarning raised; file written with 64-bit BYTEPIX-related state not corrected",
+            "expected_output": "AstropyUserWarning matching 'RICE_1 compression doesn't support 64 integers', then the data is written as int32 (nbytes=4)"
+          },
+          {
+            "input": "same data with data += np.iinfo(np.int32).max, compression_type='PLIO_1'",
+            "buggy_output": "no ValueError raised",
+            "expected_output": "ValueError matching 'PLIO_1 compression doesn't support 64 integers'"
+          }
+        ],
+        "risks": [
+          "The buggy-side failure depends on the test reaching the pytest.warns / pytest.raises blocks. If fitsio is not installed, the whole module is skipped and the test never runs, so the transition cannot be observed. Verify fitsio imports before trusting a pass.",
+          "fitsio wheel availability for Python 3.13 and its bundled cfitsio are not stated in the evidence. If no wheel exists, fitsio must be built from source, which may need a C compiler and cfitsio headers.",
+          "The evidence does not say whether HCOMPRESS is in COMPRESSION_TYPES. If it is, its 64-bit behaviour is an upstream cfitsio issue and may fail differently. The reproducing test does not depend on it, but the non-RICE/PLIO branches are unspecified.",
+          "The buggy behaviour for other 64-bit methods is only hinted at ('some methods actually support 64-bit data'), so the nullcontext branches may pass on both revisions. That is expected and does not affect the transition.",
+          "The bug is a FITS-writer-side behaviour and should not depend on CPU architecture or sanitisers. This is inferred from the evidence, not stated in it. If the failure does not reproduce on Linux x86_64 with a standard CPython 3.13 build, suspect the fitsio/cfitsio build rather than the platform.",
+          "The overflow case relies on int64 addition: data += int32 max is computed in int64 and does not wrap for Poisson(1000) values, so the overflow branch is only meaningful if the fixed code checks the range rather than the buggy code casting silently.",
+          "The test_reserved_keywords_stripped change in test_compressed.py is a test-side adjustment to int32 data and is not part of the reproducer. Running it is not needed to show the transition."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "the PR's test_decompress_integers assertions: pytest.warns(AstropyUserWarning) or pytest.raises(ValueError) with the 'compression doesn't support 64 integers' match, and integer dtype/itemsize equality",
+          "why": "The defect is an integer dtype and a warning/error decision, not a floating-point value. The assertions compare exact integers and exception types, so no tolerance applies."
+        },
+        "fails_on_buggy": "On the buggy revision no AstropyUserWarning or ValueError is raised for RICE_1 or PLIO_1 with int64 data, so pytest.warns or pytest.raises reports DID NOT WARN or DID NOT RAISE and the parametrized case fails.",
+        "passes_on_fixed": "On the fixed revision the warning is raised for the no-overflow case and ValueError for the overflow case, and the round-trip assertions on the int32 output pass, so the test passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6383,
+        "output_tokens": 3873,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 17127,
+        "output_tokens": 3436,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

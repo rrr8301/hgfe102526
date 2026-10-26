@@ -1,0 +1,67 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 8a7f3033b39c3..7f8588effeb26 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -162,6 +162,7 @@ Datetimelike
+ - Bug in :func:`to_datetime` and :func:`to_timedelta` on ARM platforms where round ``float`` values outside the int64 domain (e.g. ``float(2**63)``) could silently produce incorrect results instead of raising (:issue:`64619`)
+ - Bug in :func:`to_datetime` and :func:`to_timedelta` where ``uint64`` values greater than ``int64`` max silently overflowed instead of raising :class:`OutOfBoundsDatetime` or :class:`OutOfBoundsTimedelta` (:issue:`60677`)
+ - Bug in :meth:`DatetimeArray.isin` and :meth:`TimedeltaArray.isin` where mismatched resolutions could silently truncate finer-resolution values, leading to false matches (:issue:`64545`)
++- Bug in adding non-nano :class:`DatetimeIndex` with non-vectorized offsets (e.g. :class:`CustomBusinessDay`, :class:`CustomBusinessMonthEnd`) having a sub-unit ``offset`` parameter incorrectly truncating the result or raising ``AttributeError`` (:issue:`56586`)
+ 
+ Timedelta
+ ^^^^^^^^^
+diff --git a/pandas/_libs/tslibs/offsets.pyx b/pandas/_libs/tslibs/offsets.pyx
+index afa8f6c80139f..fd913fe5bf9bf 100644
+--- a/pandas/_libs/tslibs/offsets.pyx
++++ b/pandas/_libs/tslibs/offsets.pyx
+@@ -172,7 +172,8 @@ def apply_wraps(func):
+ 
+         result = func(self, other)
+ 
+-        result2 = Timestamp(result).as_unit(other.unit)
++        result = Timestamp(result)
++        result2 = result.as_unit(other.unit)
+         if result == result2:
+             # i.e. the conversion is non-lossy, not the case for e.g.
+             #  test_milliseconds_combination
+diff --git a/pandas/core/arrays/datetimes.py b/pandas/core/arrays/datetimes.py
+index 295f51f99036e..4fdfdab82ddc7 100644
+--- a/pandas/core/arrays/datetimes.py
++++ b/pandas/core/arrays/datetimes.py
+@@ -30,6 +30,7 @@
+     OutOfBoundsDatetime,
+     OutOfBoundsTimedelta,
+     Resolution,
++    Timedelta,
+     Timestamp,
+     astype_overflowsafe,
+     fields,
+@@ -98,10 +99,7 @@
+         npt,
+     )
+ 
+-    from pandas import (
+-        DataFrame,
+-        Timedelta,
+-    )
++    from pandas import DataFrame
+     from pandas.core.arrays import PeriodArray
+ 
+     _TimestampNoneT1 = TypeVar("_TimestampNoneT1", Timestamp, None)
+@@ -861,7 +859,15 @@ def _add_offset(self, offset: BaseOffset) -> Self:
+                     stacklevel=find_stack_level(),
+                 )
+             res_values = self.astype("O") + offset
+-            result = type(self)._from_sequence(res_values, dtype=self.dtype)
++            # GH#56586 use the finer resolution between self and offset.offset
++            # to avoid truncating sub-unit precision
++            res_unit = self.unit
++            if hasattr(offset, "offset") and offset.offset:
++                offset_unit = Timedelta(offset.offset).unit
++                if abbrev_to_npy_unit(offset_unit) > abbrev_to_npy_unit(res_unit):
++                    res_unit = offset_unit
++            dtype = tz_to_dtype(self.tz, unit=res_unit)
++            result = type(self)._from_sequence(res_values, dtype=dtype)
+ 
+         else:
+             result = type(self)._simple_new(res_values, dtype=res_values.dtype)

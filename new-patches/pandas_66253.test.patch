@@ -1,0 +1,185 @@
+diff --git a/pandas/tests/indexes/ranges/test_constructors.py b/pandas/tests/indexes/ranges/test_constructors.py
+index 5e6f16075ae63..5cdfab59a58d6 100644
+--- a/pandas/tests/indexes/ranges/test_constructors.py
++++ b/pandas/tests/indexes/ranges/test_constructors.py
+@@ -9,6 +9,7 @@
+     Series,
+ )
+ import pandas._testing as tm
++from pandas.core.indexes.base import maybe_sequence_to_range
+ 
+ 
+ class TestRangeIndexConstructors:
+@@ -162,3 +163,43 @@ def test_constructor_corner(self):
+             match="Incorrect `dtype` passed: expected signed integer, received float64",
+         ):
+             RangeIndex(1, 5, dtype="float64")
++
++
++@pytest.mark.parametrize(
++    "seq",
++    [
++        # uint64 above INT64_MAX would silently wrap to a negative range
++        np.array([2**63, 2**63 + 1, 2**63 + 2], dtype=np.uint64),
++        # a two-element key whose step overflows int64
++        np.array([np.iinfo(np.int64).min, np.iinfo(np.int64).max], dtype=np.int64),
++        # a step that overflows int64 from one extreme end
++        np.array([0, np.iinfo(np.int64).max], dtype=np.int64),
++        # not a range, but its elements satisfy is_sequence_range's modular
++        # (uint64) check: the true value at index 2 is 2**63, which wraps to the
++        # bit pattern of INT64_MIN -- must still be rejected
++        np.array([0, 2**62, np.iinfo(np.int64).min], dtype=np.int64),
++    ],
++)
++def test_maybe_sequence_to_range_extreme_ints_not_converted(seq):
++    # GH#64148 don't build an incorrect range for integer sequences whose
++    # conversion to a range would overflow/wrap int64
++    result = maybe_sequence_to_range(seq)
++    tm.assert_numpy_array_equal(result, seq)
++
++
++def test_maybe_sequence_to_range_still_converts_representable():
++    # GH#64148 sequences that fit in the int64 domain are still converted
++    assert maybe_sequence_to_range(np.array([10, 11, 12], dtype=np.int64)) == range(
++        10, 13
++    )
++    # a genuinely negative arithmetic progression is still converted
++    assert maybe_sequence_to_range([-5, -4, -3]) == range(-5, -2)
++    # uint64 values that fit in int64 are still converted
++    assert maybe_sequence_to_range(np.array([1, 2, 3], dtype=np.uint64)) == range(1, 4)
++    # a genuine range spanning more than INT64_MAX: the intermediate
++    # ``2 * step`` overflows int64, but the range is still representable and
++    # must be converted exactly (GH#64148 UBSAN signed-overflow regression)
++    span = np.array([-(2**62) - 1, -1, 2**62 - 1], dtype=np.int64)
++    result = maybe_sequence_to_range(span)
++    assert result == range(-(2**62) - 1, 2**63 - 1, 2**62)
++    assert list(result) == span.tolist()
+diff --git a/pandas/tests/indexes/ranges/test_indexing.py b/pandas/tests/indexes/ranges/test_indexing.py
+index f83d47ad47e57..214bb6a1cac0f 100644
+--- a/pandas/tests/indexes/ranges/test_indexing.py
++++ b/pandas/tests/indexes/ranges/test_indexing.py
+@@ -46,6 +46,44 @@ def test_get_indexer_decreasing(self, stop):
+         expected = np.array([-1, 2, -1, -1, 1, -1, -1, 0, -1], dtype=np.intp)
+         tm.assert_numpy_array_equal(result, expected)
+ 
++    def test_get_indexer_int64_min_no_overflow(self):
++        # GH#64148 a target near INT64_MIN overflowed ``target - start`` and was
++        # reported as a spurious (out-of-bounds) match instead of -1
++        index = RangeIndex(10, 13)
++        target = np.array([np.iinfo(np.int64).min, 10, 11, 12, 13], dtype=np.int64)
++        result = index.get_indexer(target)
++        expected = np.array([-1, 0, 1, 2, -1], dtype=np.intp)
++        tm.assert_numpy_array_equal(result, expected)
++
++    def test_get_indexer_uint64_above_int64_max(self):
++        # GH#64148 uint64 targets above INT64_MAX must not spuriously match
++        index = RangeIndex(0, 3)
++        target = np.array([2**63, 0, 1, 5], dtype=np.uint64)
++        result = index.get_indexer(target)
++        expected = np.array([-1, 0, 1, -1], dtype=np.intp)
++        tm.assert_numpy_array_equal(result, expected)
++
++    def test_get_indexer_span_exceeds_int64_max(self):
++        # GH#64148 offsets beyond INT64_MAX overflowed the int64 subtraction,
++        # returning garbage indexers (e.g. -2) for genuine members
++        index = RangeIndex(-(2**62) - 1, 2**63 - 1, 2**62)
++        assert list(index) == [-(2**62) - 1, -1, 2**62 - 1]
++        target = np.array([2**62 - 1, -1, 5, -(2**62) - 1], dtype=np.int64)
++        result = index.get_indexer(target)
++        expected = np.array([2, 1, -1, 0], dtype=np.intp)
++        tm.assert_numpy_array_equal(result, expected)
++
++    def test_get_indexer_decreasing_span_exceeds_int64_max(self):
++        # GH#64148 the same overflow through the reversed-range path
++        index = RangeIndex(2**62 - 1, -(2**62) - 2, -(2**62))
++        assert list(index) == [2**62 - 1, -1, -(2**62) - 1]
++        target = np.array(
++            [np.iinfo(np.int64).min, -1, 2**62 - 1, -(2**62) - 1], dtype=np.int64
++        )
++        result = index.get_indexer(target)
++        expected = np.array([-1, 1, 0, 2], dtype=np.intp)
++        tm.assert_numpy_array_equal(result, expected)
++
+     def test_get_indexer_missing_value_casting_string_dtype(self):
+         # GH#55833
+         idx = Index(["a", "b", None])
+diff --git a/pandas/tests/reshape/merge/test_merge.py b/pandas/tests/reshape/merge/test_merge.py
+index cf573519d538f..d1199958cfbb1 100644
+--- a/pandas/tests/reshape/merge/test_merge.py
++++ b/pandas/tests/reshape/merge/test_merge.py
+@@ -3283,3 +3283,75 @@ def test_merge_right_sort_false_range_like_left(dtype, start, step):
+     expected = expected[["k", "v", "w"]]
+ 
+     tm.assert_frame_equal(result, expected)
++
++
++@pytest.mark.parametrize("how", ["left", "right"])
++@pytest.mark.parametrize(
++    "range_k, other_k",
++    [
++        # uint64 keys above INT64_MAX were silently dropped (all-NaN)
++        (
++            np.array([2**63, 2**63 + 1, 2**63 + 2], dtype=np.uint64),
++            np.array([2**63 + 2, 2**63, 2**63 + 5], dtype=np.uint64),
++        ),
++        # a probe value near INT64_MIN overflowed and matched spuriously
++        (
++            np.array([10, 11, 12], dtype=np.int64),
++            np.array([11, np.iinfo(np.int64).min, 10], dtype=np.int64),
++        ),
++        # a two-element key whose implied step overflows int64
++        (
++            np.array([np.iinfo(np.int64).min, np.iinfo(np.int64).max], dtype=np.int64),
++            np.array(
++                [np.iinfo(np.int64).max, 0, np.iinfo(np.int64).min], dtype=np.int64
++            ),
++        ),
++    ],
++)
++def test_merge_sort_false_range_like_extreme_int_keys(how, range_k, other_k):
++    # GH#64148 the range-like fast path promoted one side's key to a RangeIndex
++    # and looked the other side up in it; for extreme integer keys this
++    # overflowed/wrapped and silently dropped matches or returned out-of-bounds
++    # (garbage) ones. The promoted side is the one opposite ``how``.
++    if how == "left":
++        left_k, right_k = other_k, range_k
++    else:
++        left_k, right_k = range_k, other_k
++    left = DataFrame({"k": left_k, "v": np.arange(len(left_k), dtype=np.int64)})
++    right = DataFrame({"k": right_k, "w": np.arange(len(right_k), dtype=np.int64)})
++
++    result = left.merge(right, on="k", how=how, sort=False)
++
++    # reference lookup via reindex, which does not use the range-like fast path
++    if how == "left":
++        expected = left.copy()
++        expected["w"] = right.set_index("k")["w"].reindex(left["k"]).to_numpy()
++    else:
++        expected = right.copy()
++        expected.insert(1, "v", left.set_index("k")["v"].reindex(right["k"]).to_numpy())
++
++    tm.assert_frame_equal(result, expected)
++
++
++@pytest.mark.parametrize("how", ["left", "right"])
++def test_merge_sort_false_range_like_span_exceeds_int64_max(how):
++    # GH#64148 range-like keys spanning more than INT64_MAX: the promoted
++    # RangeIndex's offset computation overflowed int64 and fabricated matches.
++    # Expected values are hardcoded because a reindex-based reference would go
++    # through the same RangeIndex lookup.
++    range_k = np.array([-(2**62) - 1, -1, 2**62 - 1], dtype=np.int64)
++    other_k = np.array([2**62 - 1, 5, -1], dtype=np.int64)
++    if how == "left":
++        left_k, right_k = other_k, range_k
++    else:
++        left_k, right_k = range_k, other_k
++    left = DataFrame({"k": left_k, "v": np.arange(len(left_k), dtype=np.int64)})
++    right = DataFrame({"k": right_k, "w": np.arange(len(right_k), dtype=np.int64)})
++
++    result = left.merge(right, on="k", how=how, sort=False)
++
++    if how == "left":
++        expected = DataFrame({"k": other_k, "v": [0, 1, 2], "w": [2.0, np.nan, 1.0]})
++    else:
++        expected = DataFrame({"k": other_k, "v": [2.0, np.nan, 1.0], "w": [0, 1, 2]})
++    tm.assert_frame_equal(result, expected)

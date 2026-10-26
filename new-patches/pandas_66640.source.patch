@@ -1,0 +1,118 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index ef3bb0b2dbd8c..c419459b12f64 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -444,6 +444,7 @@ Timedelta
+ - Bug in multiplying a :class:`Series` of ``timedelta64`` by an integer or float, or dividing it by a float, where an overflowing result silently wrapped or saturated instead of raising :class:`OutOfBoundsTimedelta`; multiplying by ``inf`` now raises :class:`OutOfBoundsTimedelta` instead of returning ``NaT`` (:issue:`43178`)
+ - Bug in multiplying a :class:`Timedelta` by a NumPy integer or float scalar, where an overflowing product silently wrapped instead of raising and a ``np.float32`` multiplier lost precision, unlike the equivalent Python ``int`` or ``float`` (:issue:`66551`)
+ - Bug in multiplying or dividing a :class:`Timedelta` by a numeric scalar where a result landing exactly on the ``NaT`` sentinel raised a message-less ``AssertionError``, or under ``python -O`` returned a :class:`Timedelta` that was not ``NaT`` but read back as ``NaT`` once stored; these now raise :class:`OutOfBoundsTimedelta` (:issue:`66551`)
++- Bug in multiplying or dividing a :class:`Timedelta`, :class:`TimedeltaIndex` or ``timedelta64`` :class:`Series` by a whole-numbered ``float`` such as ``1.0``, where the operation was applied in ``float64`` and so was rounded once the result exceeded ``2**53``; ``Timedelta.min * 1.0`` returned ``NaT`` and ``Timedelta.max / 1.0`` raised ``OverflowError`` instead of returning the original value (:issue:`66551`)
+ - Bug in the :class:`Series` and :class:`DataFrame` constructors not honoring the unit of a ``timedelta64[unit]`` dtype when constructing from floats or a mix of integers and floats, e.g. ``pd.Series([1.5, 90.0], dtype="timedelta64[s]")`` interpreted the numbers as nanoseconds and silently truncated them to zero instead of interpreting them as seconds (:issue:`63499`)
+ 
+ Timezones
+diff --git a/pandas/_libs/tslibs/timedeltas.pyx b/pandas/_libs/tslibs/timedeltas.pyx
+index a1fcb2e3361ef..7e6027af7d494 100644
+--- a/pandas/_libs/tslibs/timedeltas.pyx
++++ b/pandas/_libs/tslibs/timedeltas.pyx
+@@ -2734,6 +2734,8 @@ class Timedelta(_Timedelta):
+                 other = int(other)
+             if isinstance(other, cnp.floating):
+                 other = float(other)
++            other = _exact_if_integral(other)
++
+             return _timedelta_from_value_and_reso(
+                 Timedelta,
+                 <int64_t>(other * self._value),
+@@ -2778,6 +2780,7 @@ class Timedelta(_Timedelta):
+                 other = int(other)
+             if isinstance(other, cnp.floating):
+                 other = float(other)
++            other = _exact_if_integral(other)
+ 
+             if is_integer_object(other):
+                 # GH#66551 float64 carries only a 53-bit mantissa, so dividing
+@@ -2847,6 +2850,7 @@ class Timedelta(_Timedelta):
+                 other = int(other)
+             if isinstance(other, cnp.floating):
+                 other = float(other)
++            other = _exact_if_integral(other)
+             return type(self)._from_value_and_reso(self._value// other, self._creso)
+ 
+         elif is_array(other):
+@@ -3046,6 +3050,23 @@ cdef bint _should_cast_to_timedelta(object obj):
+     )
+ 
+ 
++cdef object _exact_if_integral(object other):
++    """
++    Return the exact int equivalent of an integral float, otherwise `other`.
++
++    GH#66551 float64 carries only a 53-bit mantissa, so applying a float
++    operand in floating point rounds results that int64 represents exactly.
++    An integral float has an exact int equivalent, so the int path can be used
++    instead.  inf and nan are not integral and so stay in float64.
++
++    Zero is left alone: it needs no exactness fix, and routing it to the int
++    path would turn division by 0.0 into a ZeroDivisionError.
++    """
++    if is_float_object(other) and other != 0 and other.is_integer():
++        return int(other)
++    return other
++
++
+ cpdef int64_t get_unit_for_round(freq, NPY_DATETIMEUNIT creso) except? -1:
+     from pandas._libs.tslibs.offsets import to_offset
+ 
+diff --git a/pandas/core/arrays/timedeltas.py b/pandas/core/arrays/timedeltas.py
+index 049ac4b8d376d..9d024bf5b4b72 100644
+--- a/pandas/core/arrays/timedeltas.py
++++ b/pandas/core/arrays/timedeltas.py
+@@ -91,6 +91,23 @@
+     from pandas import DataFrame
+ 
+ 
++def _exact_if_integral(other):
++    """
++    Return the exact int equivalent of an integral float, otherwise `other`.
++
++    GH#66551 float64 carries only a 53-bit mantissa, so applying a float operand
++    in floating point rounds results that int64 represents exactly.  An integral
++    float has an exact int equivalent, so the int path can be used instead.
++    inf and nan are not integral and so stay in float64.
++
++    Zero is left alone: it needs no exactness fix, and routing it to the int
++    path would turn division by 0.0 from NaT into a raise.
++    """
++    if lib.is_float(other) and other != 0 and other.is_integer():
++        return int(other)
++    return other
++
++
+ def _field_accessor(name: str, alias: str, docstring: str):
+     def f(self) -> np.ndarray:
+         values = self.asi8
+@@ -503,13 +520,15 @@ def __mul__(self, other) -> Self:
+                     f"Cannot multiply '{self.dtype}' by bool, explicitly cast to "
+                     "integers instead"
+                 )
++            other = _exact_if_integral(other)
+             if lib.is_integer(other):
+                 # GH#43178: detect int64 overflow rather than silently wrapping
+                 #  in the i8 cast below (e.g. a multiplier outside int64 bounds).
+                 # TODO(numpy>=2.5): numpy detects this natively (numpy GH-31378)
+                 #  but raises OverflowError; once the numpy floor is >= 2.5, drop
+                 #  mul_overflowsafe and re-wrap numpy's error as
+-                #  OutOfBoundsTimedelta. The float path isn't covered and stays.
++                #  OutOfBoundsTimedelta. The non-integral float path isn't
++                #  covered and stays.
+                 other = int(other)
+                 if other > lib.i8max or other < -lib.i8max - 1:
+                     raise OutOfBoundsTimedelta("Overflow in int64 multiplication")
+@@ -645,6 +664,7 @@ def _scalar_divlike_op(self, other, op):
+                     f"Cannot divide {type(other).__name__} by {type(self).__name__}"
+                 )
+ 
++            other = _exact_if_integral(other)
+             if lib.is_float(other):
+                 # GH#43178: raise instead of silently saturating on overflow
+                 self._check_float_div_overflow(other)

@@ -1,0 +1,136 @@
+diff --git a/pandas/tests/dtypes/test_inference.py b/pandas/tests/dtypes/test_inference.py
+index 0c9770c572823..1efa60d1fbc4c 100644
+--- a/pandas/tests/dtypes/test_inference.py
++++ b/pandas/tests/dtypes/test_inference.py
+@@ -729,6 +729,26 @@ def test_convert_int_overflow(self, value):
+         result = lib.maybe_convert_objects(arr)
+         tm.assert_numpy_array_equal(arr, result)
+ 
++    @pytest.mark.parametrize(
++        "value, expected_value",
++        [
++            (-(1 << 65), -(1 << 65)),
++            (1 << 65, 1 << 65),
++            (str(1 << 65), 1 << 65),
++            (f"-{1 << 65}", -(1 << 65)),
++        ],
++    )
++    @pytest.mark.parametrize("coerce_numeric", [False, True])
++    def test_convert_numeric_overflow(self, value, expected_value, coerce_numeric):
++        arr = np.array([value], dtype=object)
++        expected = np.array([expected_value], dtype=float if coerce_numeric else object)
++        result, _ = lib.maybe_convert_numeric(
++            arr,
++            set(),
++            coerce_numeric=coerce_numeric,
++        )
++        tm.assert_numpy_array_equal(result, expected)
++
+     @pytest.mark.parametrize("val", [None, np.nan, float("nan")])
+     @pytest.mark.parametrize("dtype", ["M8[ns]", "m8[ns]"])
+     def test_maybe_convert_objects_nat_inference(self, val, dtype):
+diff --git a/pandas/tests/io/parser/common/test_ints.py b/pandas/tests/io/parser/common/test_ints.py
+index 87db540f6293a..9a98f99f80adc 100644
+--- a/pandas/tests/io/parser/common/test_ints.py
++++ b/pandas/tests/io/parser/common/test_ints.py
+@@ -144,11 +144,6 @@ def test_int64_overflow(all_parsers, conv, request):
+         if parser.engine == "pyarrow":
+             mark = pytest.mark.xfail(reason="parses to float64")
+             request.applymarker(mark)
+-        elif parser.engine == "python":
+-            mark = pytest.mark.xfail(
+-                reason="TODO: Python engine reads bigint as string"
+-            )
+-            request.applymarker(mark)
+ 
+         result = parser.read_csv(StringIO(data))
+         expected = DataFrame(
+@@ -206,9 +201,6 @@ def test_outside_int64_uint64_range(all_parsers, val, request):
+     # These numbers fall just outside the int64-uint64
+     # range, so they should be parsed as object.
+     parser = all_parsers
+-    if parser.engine == "python":
+-        mark = pytest.mark.xfail(reason="TODO: Python engine reads bigint as string")
+-        request.applymarker(mark)
+ 
+     result = parser.read_csv(StringIO(str(val)), header=None)
+ 
+diff --git a/pandas/tests/tools/test_to_numeric.py b/pandas/tests/tools/test_to_numeric.py
+index 12e6be18244e1..fcbc91d4c632f 100644
+--- a/pandas/tests/tools/test_to_numeric.py
++++ b/pandas/tests/tools/test_to_numeric.py
+@@ -250,15 +250,9 @@ def test_really_large_scalar(large_val, signed, transform, errors):
+     val = -large_val if signed else large_val
+ 
+     val = transform(val)
+-    val_is_string = isinstance(val, str)
+ 
+-    if val_is_string and errors in (None, "raise"):
+-        msg = "Integer out of range. at position 0"
+-        with pytest.raises(ValueError, match=msg):
+-            to_numeric(val, **kwargs)
+-    else:
+-        expected = float(val) if (errors == "coerce" and val_is_string) else val
+-        tm.assert_almost_equal(to_numeric(val, **kwargs), expected)
++    expected = float(val) if errors == "coerce" else int(val)
++    tm.assert_almost_equal(to_numeric(val, **kwargs), expected)
+ 
+ 
+ def test_really_large_in_arr(large_val, signed, transform, multiple_elts, errors):
+@@ -270,21 +264,17 @@ def test_really_large_in_arr(large_val, signed, transform, multiple_elts, errors
+     extra_elt = "string"
+     arr = [val] + multiple_elts * [extra_elt]
+ 
+-    val_is_string = isinstance(val, str)
+     coercing = errors == "coerce"
+ 
+-    if errors in (None, "raise") and (val_is_string or multiple_elts):
+-        if val_is_string:
+-            msg = "Integer out of range. at position 0"
+-        else:
+-            msg = 'Unable to parse string "string" at position 1'
++    if errors in (None, "raise") and multiple_elts:
++        msg = 'Unable to parse string "string" at position 1'
+ 
+         with pytest.raises(ValueError, match=msg):
+             to_numeric(arr, **kwargs)
+     else:
+         result = to_numeric(arr, **kwargs)
+ 
+-        exp_val = float(val) if (coercing and val_is_string) else val
++        exp_val = float(val) if (coercing) else int(val)
+         expected = [exp_val]
+ 
+         if multiple_elts:
+@@ -295,7 +285,7 @@ def test_really_large_in_arr(large_val, signed, transform, multiple_elts, errors
+                 expected.append(extra_elt)
+                 exp_dtype = object
+         else:
+-            exp_dtype = float if isinstance(exp_val, (int, float)) else object
++            exp_dtype = float if isinstance(exp_val, float) else object
+ 
+         tm.assert_almost_equal(result, np.array(expected, dtype=exp_dtype))
+ 
+@@ -311,18 +301,11 @@ def test_really_large_in_arr_consistent(large_val, signed, multiple_elts, errors
+     if multiple_elts:
+         arr.insert(0, large_val)
+ 
+-    if errors in (None, "raise"):
+-        index = int(multiple_elts)
+-        msg = f"Integer out of range. at position {index}"
++    result = to_numeric(arr, **kwargs)
++    expected = [float(i) if errors == "coerce" else int(i) for i in arr]
++    exp_dtype = float if errors == "coerce" else object
+ 
+-        with pytest.raises(ValueError, match=msg):
+-            to_numeric(arr, **kwargs)
+-    else:
+-        result = to_numeric(arr, **kwargs)
+-        expected = [float(i) for i in arr]
+-        exp_dtype = float
+-
+-        tm.assert_almost_equal(result, np.array(expected, dtype=exp_dtype))
++    tm.assert_almost_equal(result, np.array(expected, dtype=exp_dtype))
+ 
+ 
+ @pytest.mark.parametrize(

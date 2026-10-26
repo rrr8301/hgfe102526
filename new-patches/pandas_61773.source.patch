@@ -1,0 +1,59 @@
+diff --git a/doc/source/whatsnew/v3.0.0.rst b/doc/source/whatsnew/v3.0.0.rst
+index 4154942f92907..10fb9503ffb3d 100644
+--- a/doc/source/whatsnew/v3.0.0.rst
++++ b/doc/source/whatsnew/v3.0.0.rst
+@@ -706,6 +706,8 @@ Datetimelike
+ - Bug in :meth:`to_datetime` reports incorrect index in case of any failure scenario. (:issue:`58298`)
+ - Bug in :meth:`to_datetime` with ``format="ISO8601"`` and ``utc=True`` where naive timestamps incorrectly inherited timezone offset from previous timestamps in a series. (:issue:`61389`)
+ - Bug in :meth:`to_datetime` wrongly converts when ``arg`` is a ``np.datetime64`` object with unit of ``ps``. (:issue:`60341`)
++- Bug in constructing arrays with :class:`ArrowDtype` with ``timestamp`` type incorrectly allowing ``Decimal("NaN")`` (:issue:`61773`)
++- Bug in constructing arrays with a timezone-aware :class:`ArrowDtype` from timezone-naive datetime objects incorrectly treating those as UTC times instead of wall times like :class:`DatetimeTZDtype` (:issue:`61775`)
+ - Bug in setting scalar values with mismatched resolution into arrays with non-nanosecond ``datetime64``, ``timedelta64`` or :class:`DatetimeTZDtype` incorrectly truncating those scalars (:issue:`56410`)
+ 
+ Timedelta
+diff --git a/pandas/core/arrays/arrow/array.py b/pandas/core/arrays/arrow/array.py
+index b4e60819b033f..3dc03d9cbf3a2 100644
+--- a/pandas/core/arrays/arrow/array.py
++++ b/pandas/core/arrays/arrow/array.py
+@@ -63,6 +63,7 @@
+ from pandas.core.arrays.masked import BaseMaskedArray
+ from pandas.core.arrays.string_ import StringDtype
+ import pandas.core.common as com
++from pandas.core.construction import extract_array
+ from pandas.core.indexers import (
+     check_array_indexer,
+     unpack_tuple_and_ellipses,
+@@ -500,6 +501,33 @@ def _box_pa_array(
+                 value = to_timedelta(value, unit=pa_type.unit).as_unit(pa_type.unit)
+                 value = value.to_numpy()
+ 
++            if pa_type is not None and pa.types.is_timestamp(pa_type):
++                # Use DatetimeArray to exclude Decimal(NaN) (GH#61774) and
++                #  ensure constructor treats tznaive the same as non-pyarrow
++                #  dtypes (GH#61775)
++                from pandas.core.arrays.datetimes import (
++                    DatetimeArray,
++                    tz_to_dtype,
++                )
++
++                pass_dtype = tz_to_dtype(tz=pa_type.tz, unit=pa_type.unit)
++                value = extract_array(value, extract_numpy=True)
++                if isinstance(value, DatetimeArray):
++                    dta = value
++                else:
++                    dta = DatetimeArray._from_sequence(
++                        value, copy=copy, dtype=pass_dtype
++                    )
++                dta_mask = dta.isna()
++                value_i8 = cast("npt.NDArray", dta.view("i8"))
++                if not value_i8.flags["WRITEABLE"]:
++                    # e.g. test_setitem_frame_2d_values
++                    value_i8 = value_i8.copy()
++                    dta = DatetimeArray._from_sequence(value_i8, dtype=dta.dtype)
++                value_i8[dta_mask] = 0  # GH#61776 avoid __sub__ overflow
++                pa_array = pa.array(dta._ndarray, type=pa_type, mask=dta_mask)
++                return pa_array
++
+             try:
+                 pa_array = pa.array(value, type=pa_type, from_pandas=True)
+             except (pa.ArrowInvalid, pa.ArrowTypeError):

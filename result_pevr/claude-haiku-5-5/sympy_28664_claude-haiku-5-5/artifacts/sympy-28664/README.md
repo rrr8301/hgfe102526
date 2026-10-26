@@ -1,0 +1,32 @@
+# sympy-28664
+
+A NumBugBench instance: one image, both revisions, the developer test, and the
+environment the reproduction was validated in.
+
+    docker run numbugbench/sympy-28664:latest validate   # checks FAIL on buggy, PASS on fixed
+    docker run numbugbench/sympy-28664:latest buggy      # the developer test on the buggy revision
+    docker run numbugbench/sympy-28664:latest fixed      # the same test on the fixed revision
+    docker run numbugbench/sympy-28664:latest metadata   # the manifest
+
+Bug: https://github.com/sympy/sympy/pull/28664
+Category: special_value
+Buggy: 68640e752e903d03e3767f3be2d870145e324f53
+Fixed: a1286acb5b08744d11f1fcffafef36c2ccac38d1
+
+Test: python -m pytest sympy/solvers/tests/test_solveset.py -k test_nonlinsolve_issue_28646 -q
+
+`validate` separates "the test ran and failed" from "the test could not run".
+An ImportError on the buggy revision reports `Test execution: ERROR` and
+`INVALID` — it is never counted as FAIL.
+
+## Evaluating a generated test (BRTG)
+
+    docker run -v ./candidate.py:/benchmark/candidate/test.py numbugbench/sympy-28664:latest evaluate-generated-test
+
+prints `{"buggy": …, "fixed": …, "classification": …}` using the same oracle.
+
+## Information leakage
+
+This image is the EVALUATOR artifact and contains the ground truth — the fixed
+revision, the test patch and the oracle metadata. Do not mount it as an agent's
+workspace. Give the agent the buggy revision and the permitted context only.

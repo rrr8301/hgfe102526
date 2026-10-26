@@ -1,0 +1,101 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_66321_gpt-5.4-nano/mined/pandas-dev__pandas_66321.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 10882,
+    "output_tokens": 2934,
+    "cost_usd": 0.005843,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66321,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66321",
+      "buggy_commit": "95f2d5a36f15951b97fca68abe328a3eccc098ba",
+      "fixed_commit": "c04543082b79f50c5419ce379fa6d09f8c3581f4",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 8307,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas GH#66321 by running the added regression tests that ensure `np_can_hold_element` and `DataFrame.iloc` setitem reject NA-free lossy nullable/pyarrow EA values. The buggy revision skips ndarray value-fit guards for NA-free extension-array inputs, allowing silent wrap/overflow; the fixed revision re-runs the ndarray guards (e.g., `np_can_hold_element(dtype, np.asarray(arr))`) and therefore raises `TypeError: Invalid value`.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "cython",
+            "pytest",
+            "pandas",
+            "python-dateutil"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip",
+            "pip install cython",
+            "pip install -e . --no-build-isolation -v"
+          ],
+          "pinned_because": [
+            "NumPy is numerically relevant (integer wrap / float overflow behaviors) but no documented constraint/ceiling is provided in the evidence; keep NumPy at a recent stable version when possible and use the same NumPy version for buggy vs fixed runs.",
+            "Cython is needed to build pandas from source per README evidence; install it before building."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/dtypes/cast/test_can_hold_element.py::test_can_hold_element_ea_no_na_lossy_values -q",
+        "reproducing_test": "pandas/tests/dtypes/cast/test_can_hold_element.py::test_can_hold_element_ea_no_na_lossy_values (parameterized over wrapper=[lambda, Series, Index] and backend=[numpy_nullable, pyarrow])",
+        "success_criterion": "On the buggy commit 95f2d5a36f15, `test_can_hold_element_ea_no_na_lossy_values` fails because `can_hold_element` incorrectly returns True for NA-free lossy values (e.g., negative into uint64 and overflow into float32). On the fixed commit (the PR\u2019s post-bugfix revision), the same test passes because `np_can_hold_element` re-runs ndarray value-fit guards on NA-free values and returns False for lossy inputs.",
+        "numerical_probe": "The test\u2019s assertions themselves are the oracle: for target `np.uint64`, `can_hold_element` must be False for an EA wrapping `[-1, 2, 3]` into an unsigned dtype; for target `np.float32`, `can_hold_element` must be False for an EA that overflows `float32` (e.g., `[1e300, 2.0]` into double[pyarrow] / Float64). No separate numeric inspection is required; the failure is logical (should/should-not hold).",
+        "input_output_examples": [
+          {
+            "input": "`can_hold_element(np.array([], dtype=np.uint64), wrapper(pd.array([-1, 2, 3], dtype=int_dtype)))` where `int_dtype` is `\"Int64\"` (numpy_nullable) or `\"int64[pyarrow]\"`.",
+            "buggy_output": "`True` (lossy wrap is incorrectly accepted).",
+            "expected_output": "`False` (lossy negative cannot be held losslessly in unsigned uint64)."
+          },
+          {
+            "input": "`can_hold_element(np.array([], dtype=np.float32), wrapper(pd.array([1e300, 2.0], dtype=float_dtype)))` where `float_dtype` is `\"Float64\"` (numpy_nullable) or `\"double[pyarrow]\"`.",
+            "buggy_output": "`True` (overflow to `inf` is incorrectly accepted).",
+            "expected_output": "`False` (overflow cannot be held losslessly in float32)."
+          }
+        ],
+        "risks": [
+          "PyArrow backend requires `pyarrow` to be installed; the test uses `pytest.importorskip('pyarrow')` for `ea_dtype` containing 'pyarrow'. If pyarrow is missing, only the numpy_nullable parametrizations will execute, which may still validate the bug but will not exercise the pyarrow branch.",
+          "The evidence provides no explicit NumPy version constraint; integer wrap/float overflow detection depends on NumPy semantics but the test is designed to be robust by checking `can_hold_element` results. Still, if you use an unusually old/new NumPy, behavior might differ; use the same NumPy version for buggy and fixed runs.",
+          "This strategy relies on the specific new tests shown in the diff; ensure you run them against the pandas checkout that includes the PR\u2019s test additions (or use the exact test file/commit that introduced them).",
+          "The evidence focuses on NA-free values; do not include missing values/NA in the reproduction values because the bug being targeted is explicitly the NA-free path that skipped value-fit guards."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": null,
+          "why": "The regression tests encode the expected behavior via boolean assertions and exception checks. The oracle is whether `can_hold_element` returns False for lossy NA-free values, and (in the broader test file) whether `df.iloc[:,0]=lossy` raises `TypeError` with message matching 'Invalid value'. No numeric tolerance comparison is required."
+        },
+        "fails_on_buggy": "In `test_can_hold_element_ea_no_na_lossy_values`, the assertion `assert not can_hold_element(uint_arr, wrapper(pd.array([-1, 2, 3], dtype=int_dtype)))` fails (returns True) for the lossy negative-into-uint64 case; similarly `assert not can_hold_element(f32_arr, wrapper(pd.array([1e300, 2.0], dtype=float_dtype)))` fails (returns True) for the lossy float overflow case. This occurs because the buggy `np_can_hold_element` path only checked for NAs and skipped the ndarray value-fit guards on NA-free values.",
+        "passes_on_fixed": "`can_hold_element` returns False for both lossy NA-free cases, so the `assert not ...` assertions pass across wrappers and the available backends (pyarrow branch only if pyarrow is installed). The fixed implementation re-runs ndarray value-fit guards for NA-free inputs, causing the lossy cases to be correctly rejected."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3775,
+        "output_tokens": 1264,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002335
+      },
+      "miner_usage": {
+        "input_tokens": 7107,
+        "output_tokens": 1670,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0035080000000000003,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

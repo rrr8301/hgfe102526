@@ -1,0 +1,46 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index b0d679d8e1d41..ba58f023f2738 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -888,6 +888,7 @@ Other
+ - Bug in :class:`DataFrame` constructor where passing the same :class:`Index` object as both ``index`` and ``columns`` shared a single object between the two axes, so mutating metadata such as ``names`` on one would also change the other (:issue:`42934`)
+ - Bug in :func:`eval` and :meth:`DataFrame.eval` where passing a :class:`Series` or :class:`DataFrame` as ``expr`` silently parsed its (possibly truncated) repr instead of raising, producing a confusing error (:issue:`16289`)
+ - Bug in :func:`testing.assert_series_equal`, :func:`testing.assert_frame_equal` and :func:`testing.assert_extension_array_equal` raising ``TypeError`` instead of reporting the difference when comparing unequal :class:`~pandas.api.extensions.ExtensionArray` objects whose scalars define ``__len__``, such as ``pint``'s ``Quantity`` (:issue:`45240`)
++- Bug in :func:`util.hash_array` and :func:`util.hash_pandas_object` with float and complex dtypes returning different hashes for ``0.0`` and ``-0.0``, and for ``NaN`` values whose sign or payload bits differ (:issue:`28363`)
+ - Bug in :meth:`DataFrame.eval` where a duplicate column name was resolved to a single column (yielding a :class:`Series`), inconsistent with :func:`pandas.eval` using ``resolvers=(df,)`` and with :meth:`DataFrame.__getitem__`, which include every column with that label (:issue:`65588`)
+ - Bug in :meth:`DataFrame.from_dict` where passing a dict of only scalar values raised a :class:`ValueError` telling users to pass an ``index``, even though :meth:`DataFrame.from_dict` has no ``index`` parameter; the message now points to ``orient='index'`` or the :class:`DataFrame` constructor (:issue:`25515`)
+ - Bug in :meth:`DataFrame.replace` and :meth:`Series.replace` with ``inplace=True`` and a list-like or dict ``to_replace`` where the result stopped being copy-on-write protected, so a view taken afterwards shared memory with it and writing to either one silently modified the other (:issue:`58966`)
+diff --git a/pandas/core/util/hashing.py b/pandas/core/util/hashing.py
+index 88b7edeb53d9b..83d9f449b325c 100644
+--- a/pandas/core/util/hashing.py
++++ b/pandas/core/util/hashing.py
+@@ -344,8 +344,10 @@ def _hash_ndarray(
+     """
+     dtype = vals.dtype
+ 
+-    # _hash_ndarray only takes 64-bit values, so handle 128-bit by parts
+-    if np.issubdtype(dtype, np.complex128):
++    # _hash_ndarray only takes 64-bit values, so handle complex dtypes by
++    # parts.  complex64 fits in 64 bits, but bit-hashing its two halves as a
++    # single value would bypass the float canonicalization below (GH#28363).
++    if dtype.type in (np.complex64, np.complex128):
+         hash_real = _hash_ndarray(vals.real, encoding, hash_key, categorize)
+         hash_imag = _hash_ndarray(vals.imag, encoding, hash_key, categorize)
+         return hash_real + 23 * hash_imag
+@@ -357,7 +359,15 @@ def _hash_ndarray(
+     elif issubclass(dtype.type, (np.datetime64, np.timedelta64)):
+         vals = vals.view("i8").astype("u8", copy=False)
+     elif issubclass(dtype.type, np.number) and dtype.itemsize <= 8:
+-        vals = vals.view(f"u{vals.dtype.itemsize}").astype("u8")
++        uint_dtype = f"u{dtype.itemsize}"
++        uints = vals.view(uint_dtype).astype("u8")
++        if issubclass(dtype.type, np.floating):
++            # GH#28363 a single float value can have more than one bit
++            # pattern: 0.0 vs -0.0, and NaN with any sign or payload.
++            # Canonicalize those so that equal values hash equal.
++            uints[np.isnan(vals)] = np.array(np.nan, dtype=dtype).view(uint_dtype)
++            uints[uints == np.array(-0.0, dtype=dtype).view(uint_dtype)] = 0
++        vals = uints
+     else:
+         # With repeated values, its MUCH faster to categorize object dtypes,
+         # then hash and rename categories. We allow skipping the categorization

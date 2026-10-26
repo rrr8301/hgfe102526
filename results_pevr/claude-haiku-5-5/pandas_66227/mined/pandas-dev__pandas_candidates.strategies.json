@@ -1,0 +1,111 @@
+{
+  "input": "pipeline_no_historic/pandas_66227/mined/pandas-dev__pandas_66227.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 16246,
+    "output_tokens": 5584,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66227,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66227",
+      "buggy_commit": "6850d49c8de29df8f048f7b90fcf897464fff0f4",
+      "fixed_commit": "263e401f367e5a9f537c9257675daa03a300fff3",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6062,
+      "withheld": [],
+      "strategy": {
+        "summary": "Build pandas from source at the buggy commit 6850d49c8de2 in an editable, no-build-isolation install, then run the developer's new tests in frame/test_reductions.py and series/test_reductions.py. On the buggy revision, DataFrame.sum on overflowing m8[ns] frames returns a saturated result with a RuntimeWarning instead of raising OutOfBoundsTimedelta, so the pytest.raises test fails with DID NOT RAISE. On the fixed revision the guard raises and the test passes. The all-NaT skipna=False tests guard against a false overflow raise and are secondary to the main transition.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12 (chosen; no version stated in evidence, so this is my choice; use 3.11 if the build fails on 3.12)",
+          "pip_packages": [
+            "cython",
+            "meson-python",
+            "meson",
+            "versioneer[toml]",
+            "numpy (unpinned; latest release compatible with the revision's build, chosen by me, not from evidence)",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain (gcc or clang) for Cython extensions",
+            "git (for versioneer to derive the version from the checkout)"
+          ],
+          "build_commands": [
+            "git checkout 6850d49c8de2 && python -m pip install cython meson-python meson 'versioneer[toml]' numpy python-dateutil tzdata pytest hypothesis",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "Python 3.12 choice is mine: no documented or era-inferred Python constraint was supplied.",
+            "NumPy is unbounded in the evidence (no documented constraint, no era ceiling); I chose the latest NumPy that builds against this revision and state that choice explicitly.",
+            "Build-tool packages (meson-python, meson, versioneer, cython) come from the project's build-system requirements as I understand them; they are not documented in the evidence, so treat them as an inference and check pyproject.toml at the buggy commit."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/frame/test_reductions.py pandas/tests/series/test_reductions.py -k 'timedelta64_overflow or timedelta64_all_nat_skipna_false or td64_sum_all_nat or td64_summation_overflow' -v -p no:cacheprovider",
+        "reproducing_test": "pandas/tests/frame/test_reductions.py::test_sum_timedelta64_overflow_raises[axis-skipna] (parametrized over axis in {0,1} and skipna in {True,False}); the developer's diff also adds test_sum_timedelta64_all_nat_skipna_false and series/test_reductions.py::test_td64_sum_all_nat_skipna_false",
+        "success_criterion": "On the buggy revision 6850d49c8de2, test_sum_timedelta64_overflow_raises fails for all four axis/skipna combinations because df.sum does not raise (pytest reports DID NOT RAISE OutOfBoundsTimedelta), and the all-NaT and Series tests are reported as pass or fail per the buggy behaviour. On the fixed revision (PR #66227 merged), all four overflow cases raise OutOfBoundsTimedelta with message matching 'overflow in timedelta operation', and the all-NaT skipna=False tests pass (dtype m8[ns], all NaT/NaN results; Series returns pd.NaT). The transition is fail-on-buggy to pass-on-fixed for the overflow test.",
+        "numerical_probe": "df = DataFrame({'a': arr, 'b': arr, 'c': arr}) with arr = np.array([half, half, half], dtype='m8[ns]') and half = np.iinfo(np.int64).max // 2, then df.sum(axis=axis, skipna=skipna)",
+        "input_output_examples": [
+          {
+            "input": "x = pd.Series([pd.Timedelta(100000, 'days'), pd.Timedelta(100000, 'days')]); x.sum()",
+            "buggy_output": "ValueError",
+            "expected_output": "OutOfBoundsTimedelta"
+          },
+          {
+            "input": "Series([NaT, NaT]).sum(skipna=False)",
+            "buggy_output": "raised a false overflow error",
+            "expected_output": "NaT"
+          }
+        ],
+        "risks": [
+          "Architecture: the overflow is pure int64 arithmetic on the nanops path, so it should reproduce on any 64-bit platform. The evidence does not show a platform-specific trigger, so I do not assume one. Do not expect a 32-bit or non-x86 build to transition differently without testing.",
+          "Warnings as errors: pandas' pytest config may set filterwarnings to error. On the buggy revision the RuntimeWarning could surface as an exception of a different type, so the test would fail for a different reason (RuntimeWarning raised instead of DID NOT RAISE). It still fails on buggy, but confirm the failure message to make sure the transition is genuine and not an artefact of warning handling.",
+          "The all-NaT skipna=False tests may already pass on the buggy revision, because the evidence only says a false raise happens for Series([NaT, NaT]).sum(skipna=False) and the DataFrame case is not stated. Only the overflow test is a guaranteed fail-to-pass transition.",
+          "Build time: the first editable Cython/meson build of pandas is slow. Use a clean build directory and avoid mixing in a previously built tree from another revision.",
+          "The issue example reports Series.sum raising ValueError on buggy, while the test matches OutOfBoundsTimedelta. Confirm which exception the buggy build actually raises for the Series path before trusting the example mapping.",
+          "groupby.sum and resample.sum still saturate silently after the fix (per the PR note). Do not add tests for them; they will not transition.",
+          "The NumPy and Python versions are my choices, not evidence-supported. Newer NumPy may change overflow or warning semantics; if the buggy revision does not reproduce, try an older NumPy compatible with that pandas era before concluding the test is wrong."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "Developer test diff in PR #66227 (pandas/tests/frame/test_reductions.py and pandas/tests/series/test_reductions.py)",
+          "why": "The assertion is an exception-type and message match (OutOfBoundsTimedelta, 'overflow in timedelta operation'), plus dtype and isna checks for the NaT case. There is no float tolerance involved."
+        },
+        "fails_on_buggy": "df.sum on three m8[ns] columns of half-int64-max values returns a saturated int64-max timedelta with only a RuntimeWarning, so pytest.raises(OutOfBoundsTimedelta) reports DID NOT RAISE and the test fails. If warnings are errors, a RuntimeWarning is raised instead, which still fails the test but for a different reason.",
+        "passes_on_fixed": "The fixed guard in _wrap_results detects that the result exceeds lib.i8max (np.abs(result) > lib.i8max) and raises OutOfBoundsTimedelta with the matching message, so the overflow test passes for all four axis/skipna combinations. The all-NaT skipna=False tests pass because NaT positions are masked out before the overflow check."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5402,
+        "output_tokens": 3593,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 10844,
+        "output_tokens": 1991,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

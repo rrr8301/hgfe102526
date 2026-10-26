@@ -1,0 +1,103 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/pandas_66678_claude-haiku-5-5/mined/pandas-dev__pandas_66678.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 26258,
+    "output_tokens": 5379,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66678,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66678",
+      "buggy_commit": "6663b2123b9a90c1d77212d7928c2a915fc69c38",
+      "fixed_commit": "18e2ea6f3344b064169b24618fc5e8480c288b56",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6636,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the rolling cov/corr accumulator defect in pandas (roll_corr in pandas/_libs/window/aggregations.pyx) by building pandas at the buggy commit 6663b2123b9a and running the developer's new tests in pandas/tests/window/test_pairwise.py; the tests should fail on the buggy build (wrong values or NaN after a large value leaves the window, or large shared offset) and pass after the fix.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain (gcc or clang)",
+            "git"
+          ],
+          "build_commands": [
+            "git checkout 6663b2123b9a",
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "Cython is needed at build time because the defect lives in a Cython .pyx module (roll_corr); the build must be rebuilt from source at the buggy commit, since the editable install compiles the extension.",
+            "NumPy version is not stated by the evidence (documented but unconstrained, no era ceiling); the strategy chooses the NumPy that pip resolves for the chosen Python and does not pin it, and the oracle relies only on np.cov and np.corrcoef, which are stable across NumPy versions."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/window/test_pairwise.py -k 'outlier_exit or shared_offset or extreme_range' -p no:cacheprovider -q",
+        "reproducing_test": "pandas/tests/window/test_pairwise.py::test_rolling_cov_corr_outlier_exit, test_rolling_cov_corr_shared_offset, test_rolling_cov_corr_outlier_exit_no_nan, test_rolling_cov_corr_extreme_range_recovers (parametrized over method cov/corr, swap_xy, offset_y, offset)",
+        "success_criterion": "On the buggy revision 6663b2123b9a the new tests fail: the shared-offset and outlier-exit cases return values differing from the NumPy recentred oracle beyond rtol=1e-12, and the no-NaN and extreme-range cases find NaN in windows after the large value leaves. On the fixed revision the same selected tests all pass, meaning the tm.assert_series_equal checks succeed and no NaN appears after the window-1 position.",
+        "numerical_probe": "rolling(5).cov(y).iloc[4:7] on x = [1,2,4,7,3,5,9,2,6,8] + 1e12 and y = [2,1,5,3,8,4,7,9,1,6] + 1e12 should be close to [1.1, -0.3, -0.8]; check that the buggy build deviates from this.",
+        "input_output_examples": [
+          {
+            "input": "x = pd.Series([1, 2, 4, 7, 3, 5, 9, 2, 6, 8], dtype=\"float64\") + 1e12; y = pd.Series([2, 1, 5, 3, 8, 4, 7, 9, 1, 6], dtype=\"float64\") + 1e12; x.rolling(5).cov(y).iloc[4:7].tolist()",
+            "buggy_output": "[1.099968..., -0.300072..., -0.800026...]",
+            "expected_output": "[1.1, -0.3, -0.8]"
+          }
+        ],
+        "risks": [
+          "The behaviour depends on floating-point rounding of the accumulators; the defect may not reproduce on platforms whose BLAS/compiler produce different rounding (for example with FMA contraction or different -ffast-math settings), so the transition may not occur on every architecture.",
+          "The evidence does not state the platform, compiler, or threading configuration in which the defect was observed; the strategy assumes a standard x86_64 Linux build with default flags and no sanitisers.",
+          "The 1e12 offset and 1e7 value are the only magnitudes cited; the shared-offset test uses 1e10 and 1e14 and the extreme-range test uses 1e308, whose behaviour at those magnitudes is not stated in the evidence, so those parametrized cases may not transition.",
+          "Expected values in the PR reproducer are given only to a few digits and the tolerance is not stated there; the tests rely on rtol=1e-12 (and rtol=1e-5 in the no-NaN test), which the evidence names but does not confirm for the reproducer.",
+          "The NumPy version is unconstrained in the evidence; np.cov/np.corrcoef results could differ slightly across versions, which could affect the oracle at rtol=1e-12.",
+          "If the test file or the fix diff in the PR is not applied on the buggy commit, the new tests may not exist there; the reproducing test diff must be applied to the buggy checkout before running.",
+          "Running the full test file is unnecessary; the -k filter selects only the new cases, avoiding unrelated failures."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "rtol=1e-12, atol=0 (rtol=1e-5 in the no-NaN test)",
+          "reference_source": "NumPy two-pass np.cov / np.corrcoef applied to each window recentred on its first element, as written in the developer's test",
+          "why": "The incremental accumulators cannot be compared to exact values to machine precision; the developer's test uses a recentred two-pass NumPy oracle and a tolerance the incremental update is designed to hold to."
+        },
+        "fails_on_buggy": "On the buggy revision the accumulators collapse to round-off after the large value exits, so tm.assert_series_equal against the NumPy oracle fails at rtol=1e-12, or the no-NaN assertion finds NaN in later windows because a negative ssqdm_x reaches the square root in calc_corr.",
+        "passes_on_fixed": "On the fixed revision the anchored accumulators cancel the common offset exactly and the outlier is not used as an anchor, so every window matches the recentred NumPy oracle within tolerance and no NaN appears."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 7124,
+        "output_tokens": 2017,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 19134,
+        "output_tokens": 3362,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

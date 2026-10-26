@@ -1,0 +1,106 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/scikit-learn_29135_claude-haiku-5-5/mined/scikit-learn__scikit-learn_29135.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 22424,
+    "output_tokens": 6008,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scikit-learn/scikit-learn",
+      "pr_number": 29135,
+      "reference": "https://github.com/scikit-learn/scikit-learn/pull/29135",
+      "buggy_commit": "99916c40d1f145d75a3393c8d6357593c2b0a486",
+      "fixed_commit": "8d0b243cb53ff609d32ecd7aafc5c098381eac86",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5856,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the KNNImputer uniform-weight nan-distance defect in scikit-learn PR 29135 by building the buggy revision 99916c40d1f1 from source and running the developer's test test_knn_imputer_nan_distance, which should fail for weights='uniform' (value 1.5 instead of 1) and pass for weights='distance' on the buggy revision, and pass for both weights on the fixed revision. The behaviour is pure float64 arithmetic on NaN distances from nan_euclidean_distances, so it should not depend on platform or sanitiser, but the compiled extension must be built from the buggy commit.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": ">=3.9",
+          "pip_packages": [
+            "numpy>=1.19.5",
+            "scipy>=1.6.0",
+            "joblib>=1.2.0",
+            "threadpoolctl>=3.1.0",
+            "pytest>=7.1.2",
+            "matplotlib>=3.3.4"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain (gcc or clang) for scikit-learn's Cython extensions"
+          ],
+          "build_commands": [
+            "git checkout 99916c40d1f1",
+            "pip install -r build_tools/requirements.txt 2>/dev/null || pip install cython numpy scipy joblib threadpoolctl pytest",
+            "pip install --no-build-isolation -e .",
+            "git checkout 99916c40d1f1 -- sklearn/impute/tests/test_knn.py && git apply <reproducing_test_diff>"
+          ],
+          "pinned_because": [
+            "numpy >=1.19.5 and scipy >=1.6.0 are documented in README.rst as numerically relevant, so they are the only numeric floors relied on; no era ceiling was stated, so no upper pin is applied",
+            "joblib, threadpoolctl, matplotlib are documented but not numerically relevant and are left unpinned beyond their floors"
+          ]
+        },
+        "test_command": "pytest sklearn/impute/tests/test_knn.py -k test_knn_imputer_nan_distance -v",
+        "reproducing_test": "sklearn/impute/tests/test_knn.py::test_knn_imputer_nan_distance, parametrized over na in [-1, np.nan] and weights in ['uniform', 'distance'] (4 cases per the developer diff; the na=-1 and na=np.nan variants should behave identically)",
+        "success_criterion": "On the buggy revision 99916c40d1f1, the test fails at the first assert_allclose on X1 for the weights='uniform' cases, because transform returns 1.5 where 1 is expected, while the weights='distance' cases pass. On the fixed revision, all four parametrized cases pass, including the X2 block with the two-donor mean checks.",
+        "numerical_probe": "KNNImputer(n_neighbors=2, missing_values=na, weights='uniform').fit([[1,1],[na,2]]).transform([[0,na]]) should give [[0,1]] on fixed code and [[0,1.5]] on buggy code; nan_euclidean_distances([[0,nan]],[[1,1],[nan,2]]) gives [[1.41421356, nan]].",
+        "input_output_examples": [
+          {
+            "input": "X_train=[[1, 1], [np.nan, 2]]; X_test=[[0, np.nan]]; KNNImputer(n_neighbors=2, weights='uniform').fit(X_train).transform(X_test)",
+            "buggy_output": "[[0, 1.5]]",
+            "expected_output": "[[0, 1]]"
+          },
+          {
+            "input": "Same X_train and X_test with KNNImputer(n_neighbors=2, weights='distance')",
+            "buggy_output": "[[0, 1]]",
+            "expected_output": "[[0, 1]]"
+          }
+        ],
+        "risks": [
+          "The test file in the developer diff also changes expected values in test_knn_imputer_all_samples_are_neighbors; that existing test will also change outcome across the transition, but the target is test_knn_imputer_nan_distance, so select it explicitly with -k.",
+          "Build system at this era may be setup.py/Cython-based or meson-based; the exact build command depends on the revision's build_tools and was not stated in the evidence, so the build command above is an assumption to verify against the checkout.",
+          "Dtype is not stated in the evidence; with na=-1 the input is integer-valued and converted internally, so the NaN distance path must be confirmed on the buggy build rather than assumed.",
+          "No platform-specific behaviour (architecture, sanitiser, threading) is indicated; the defect is a logic gap in _calc_impute, so it should reproduce on any x86_64 Linux build with a standard compiler.",
+          "The oracle is assert_allclose with default rtol=1e-7, which is not stated in the evidence as the developer's choice; the values are exact in binary (1 vs 1.5), so the default tolerance is not decisive."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "rtol=1e-7 (assert_allclose default)",
+          "reference_source": "expected arrays hard-coded in test_knn_imputer_nan_distance (issue #29079)",
+          "why": "Expected values 1 and 0 and 3 are exact; the comparison uses assert_allclose defaults, and the buggy value 1.5 differs by far more than any tolerance."
+        },
+        "fails_on_buggy": "For weights='uniform', transform returns 1.5 in the imputed slot where 1 is asserted, so assert_allclose raises AssertionError on the first block. This happens because the NaN-distance donor gets weight 1 instead of 0 in the uniform mean.",
+        "passes_on_fixed": "With the fix, uniform weights set weight_matrix[np.isnan(donors_dist)] = 0, so the imputed value is 1 and assert_allclose passes for both X1 and X2 blocks for all parametrizations."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5263,
+        "output_tokens": 2967,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 17161,
+        "output_tokens": 3041,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

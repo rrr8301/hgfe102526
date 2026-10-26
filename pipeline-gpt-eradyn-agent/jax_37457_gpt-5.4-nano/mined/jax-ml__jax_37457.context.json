@@ -1,0 +1,331 @@
+{
+  "repo": "jax-ml/jax",
+  "pr_number": 37457,
+  "reference": "https://github.com/jax-ml/jax/pull/37457",
+  "buggy_commit": "837f78e592d58325cc095211da7f91dece4c1523",
+  "fixed_commit": "efbd24c780549d3863cce9530f5fd203808d2470",
+  "pr_date": "",
+  "category": "special_value",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": "3.10.20 (main, Mar 11 2026, 17:46:40) [GCC 14.3.0]",
+    "dependencies": [
+      {
+        "name": "jax",
+        "constraint": "jax: 0.6.2",
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "issue#37422 reproducer/system info and logs show `jax: 0.6.2`"
+      },
+      {
+        "name": "jaxlib",
+        "constraint": "jaxlib: 0.6.2",
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "issue#37422 reproducer/system info and logs show `jaxlib: 0.6.2`"
+      },
+      {
+        "name": "numpy",
+        "constraint": "numpy: 2.2.6",
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "issue#37422 reproducer/system info and logs show `numpy: 2.2.6`"
+      }
+    ],
+    "installation_commands": [],
+    "build_commands": [],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "explicit: jax jax: 0.6.2  [numerically relevant]",
+      "explicit: jaxlib jaxlib: 0.6.2  [numerically relevant]",
+      "explicit: numpy numpy: 2.2.6  [numerically relevant]"
+    ],
+    "numerical_backend": "CPU fallback (CUDA-enabled jaxlib not installed); platform shows Linux/WSL2; NVIDIA GPU present but run falls back to CPU",
+    "dependency_constraints": [
+      {
+        "package": "jax",
+        "documented_constraint": "jax: 0.6.2",
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "explicit",
+        "source": "issue#37422 reproducer/system info and logs show `jax: 0.6.2`"
+      },
+      {
+        "package": "jaxlib",
+        "documented_constraint": "jaxlib: 0.6.2",
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "explicit",
+        "source": "issue#37422 reproducer/system info and logs show `jaxlib: 0.6.2`"
+      },
+      {
+        "package": "numpy",
+        "documented_constraint": "numpy: 2.2.6",
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "explicit",
+        "source": "issue#37422 reproducer/system info and logs show `numpy: 2.2.6`"
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "special_value",
+    "affected_api": "jax.nn.dot_product_attention",
+    "observed_behavior": "When `jax.debug_infs(True)` is enabled with float64 inputs, `jax.nn.dot_product_attention` triggers a `FloatingPointError` during the intermediate `convert_element_type` where a large negative constant is cast from float64 to float32; this happens before softmax normalization can remove infinities.",
+    "expected_behavior": "The attention output should be finite and no `FloatingPointError` should be raised when `jax.debug_infs(True)` is enabled.",
+    "manifestation": "exception",
+    "trigger_conditions": [
+      "`jax_enable_x64` is True (float64 execution)",
+      "`jax.debug_infs(True)` is enabled",
+      "Calling `jax.nn.dot_product_attention` with float64 arrays for query/key/value inputs and a boolean mask",
+      "Masking path uses large negative logits from `_get_large_negative(float64)` that overflow when cast to float32 inside `_dot_product_attention_core` (described as `padded_logits.astype(np.float32)` / `convert_element_type`"
+    ],
+    "input_output_examples": [
+      {
+        "input": "T=5, S=7, K=3, N=6, H=11; mask = np.r_[:S] <= S // 2; jax.config.update('jax_enable_x64', True); with jax.debug_infs(True): jax.nn.dot_product_attention(np.zeros((T, N, H), dtype=np.float64), np.zeros((S, K, H), dtype=np.float64), np.zeros((S, K, H), dtype=np.float64), mask=mask); out.block_until_ready()",
+        "buggy_output": "Raises `FloatingPointError` due to an invalid `inf` value reported in `convert_element_type` (triggered by intermediate cast of the large negative constant to float32).",
+        "expected_output": "No `FloatingPointError` with `jax.debug_infs(True)`; `out.block_until_ready()` completes and the attention output is finite.",
+        "value_kind": "exception",
+        "source": "issue#37422 minimal reproducible example; PR#37457 root cause description"
+      }
+    ],
+    "oracle_clues": [
+      "Root cause: for float64, `_get_large_negative(float64)` returns approximately `-1.26e308`, which overflows to `-inf` when cast to float32 in `_dot_product_attention_core` (`padded_logits.astype(np.float32)`), and `jax.debug_infs(True)` fires on that intermediate `-inf` in the `convert_element_type` op before softmax can normalize it away.",
+      "Fix: cap `_get_large_negative` at float32 maximum (~`3.4e38`), producing `~ -2.38e38` which is still large enough that `exp(x) \u2248 0` after softmax, so masked positions receive zero probability and no `FloatingPointError` is raised.",
+      "Test added: `testDotProductAttentionFloat64MaskDebugInfs` reproduces the exact shape/dtype from the issue and asserts no `FloatingPointError` is raised."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": "float64 (inputs)",
+    "precision": null,
+    "magnitude": "_get_large_negative(float64) returns ~-1.26e308 and is capped at float32 max (~3.4e38), resulting value ~-2.38e38; large-negative mask values are intended so exp(x)\u22480 after softmax",
+    "tolerance": null,
+    "category_specific_evidence": [
+      "Category-specific special value: -inf is involved, triggered under jax.debug_infs(True) when a large negative mask value overflows during cast from float64 to float32.",
+      "Root cause: for float64 inputs, logits are promoted to float64 and _get_large_negative(float64) returns ~-1.26e308; this value is valid float64 but overflows to -inf when cast to float32 for softmax (padded_logits.astype(np.float32) in _dot_product_attention_core).",
+      "Incorrect handling: the intermediate convert_element_type op sees -inf (before softmax normalization can normalize it away), causing FloatingPointError to be raised when debug_infs=True.",
+      "Correct handling: cap _get_large_negative at float32 max (~3.4e38) so the cast to float32 stays finite; resulting value ~-2.38e38 is still large enough that exp(x) \u2248 0 after softmax, so masked positions receive zero probability.",
+      "Evidence of where it enters: in _dot_product_attention_core, before softmax, during padded_logits.astype(np.float32) / convert_element_type op.",
+      "Evidence that other dtypes are unaffected: no effect on float32/float16/bfloat16 inputs because their dtype_max is already within float32 range.",
+      "Special values not mentioned: NaN, +inf, signed zero, and subnormals are not stated in the provided passages."
+    ],
+    "reproduction_risks": [
+      "Reproduction depends on enabling float64 (jax_enable_x64=True) and setting jax.debug_infs(True), otherwise the FloatingPointError may not be triggered.",
+      "Reproduction may require the exact attention path where padded_logits are cast to float32 in _dot_product_attention_core (the issue is specifically in the intermediate convert_element_type during the float64->float32 cast).",
+      "Using float32/float16/bfloat16 inputs likely won\u2019t reproduce because the large-negative value is already within float32 range (no overflow to -inf)."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.language_version",
+      "value": "3.10.20 (main, Mar 11 2026, 17:46:40) [GCC 14.3.0]",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.numerical_backend",
+      "value": "CPU fallback (CUDA-enabled jaxlib not installed); platform shows Linux/WSL2; NVIDIA GPU present but run falls back to CPU",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "jax",
+      "source": "issue#37422 reproducer/system info and logs show `jax: 0.6.2`",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "jaxlib",
+      "source": "issue#37422 reproducer/system info and logs show `jaxlib: 0.6.2`",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "numpy",
+      "source": "issue#37422 reproducer/system info and logs show `numpy: 2.2.6`",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "jax.nn.dot_product_attention",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "When `jax.debug_infs(True)` is enabled with float64 inputs, `jax.nn.dot_product_attention` triggers a `FloatingPointError` during the intermediate `convert_element_type` where a large negative constant is cast from float64 to float32; this happens before softmax normalization can remove infinities.",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "The attention output should be finite and no `FloatingPointError` should be raised when `jax.debug_infs(True)` is enabled.",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "exception",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 4,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 1,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.dtype",
+      "value": "float64 (inputs)",
+      "source": "diff",
+      "evidence_location": "diff:jax/_src/nn/functions.py:858-868"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "_get_large_negative(float64) returns ~-1.26e308 and is capped at float32 max (~3.4e38), resulting value ~-2.38e38; large-negative mask values are intended so exp(x)\u22480 after softmax",
+      "source": "diff",
+      "evidence_location": "diff:jax/_src/nn/functions.py:858-868"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 7,
+      "source": "diff",
+      "evidence_location": "diff:jax/_src/nn/functions.py:858-868"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "diff",
+      "evidence_location": "diff:jax/_src/nn/functions.py:858-868"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "issue:issue#37422",
+        "readme:README.md",
+        "commit:commits",
+        "pr_body:PR#37457",
+        "diff:jax/_src/nn/functions.py:858-868",
+        "issue:issue#37422",
+        "issue:issue#37422"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "issue:issue#37422",
+        "pr_body:PR#37457",
+        "discussion:PR#37457",
+        "diff:jax/_src/nn/functions.py:858-868",
+        "issue:issue#37422",
+        "issue:issue#37422",
+        "issue:issue#37422"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "diff:jax/_src/nn/functions.py:858-868",
+        "commit:commits",
+        "pr_body:PR#37457",
+        "issue:issue#37422",
+        "discussion:PR#37457",
+        "test_diff:tests/nn_test.py:335-355",
+        "issue:issue#37422",
+        "discussion:tests/nn_test.py"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "special_value",
+        "checked": 4,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          }
+        ],
+        "present": [
+          "environment.dependencies",
+          "environment.language_version"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "special_value",
+        "checked": 8,
+        "score": 1.0,
+        "required_total": 6,
+        "required_present": 6,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.dtype",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 7469,
+    "output_tokens": 1514,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.003386,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": []
+}

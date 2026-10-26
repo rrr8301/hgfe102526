@@ -1,0 +1,128 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 95d6c79524dd8..164e17e4bb1b2 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -1056,6 +1056,7 @@ Sparse
+ ^^^^^^
+ - Bug in :meth:`DataFrame.count`, :meth:`DataFrame.sum`, :meth:`DataFrame.mean`, :meth:`DataFrame.min`, and :meth:`DataFrame.max` on :class:`SparseDtype` columns forcing the result into the column's own dtype: ``count`` returned ``1`` for every sparse column, the sum of a narrow integer column silently wrapped around, the mean of an integer column was truncated to an integer, and a missing result (e.g. from ``min_count`` or an empty column) came back as a fill value or raised (:issue:`55123`)
+ - Bug in :meth:`DataFrame.prod`, :meth:`DataFrame.median`, :meth:`DataFrame.var`, :meth:`DataFrame.std`, :meth:`DataFrame.sem`, :meth:`DataFrame.skew`, :meth:`DataFrame.kurt`, :meth:`DataFrame.describe`, and their :class:`Series` counterparts raising ``TypeError: cannot perform <op> with type Sparse[...]`` on :class:`SparseDtype` data; :meth:`SparseArray.prod`, :meth:`SparseArray.median`, :meth:`SparseArray.var`, :meth:`SparseArray.std`, :meth:`SparseArray.sem`, :meth:`SparseArray.skew`, and :meth:`SparseArray.kurt` now exist to match (:issue:`68194`)
++- Bug in :meth:`Series.any`, :meth:`Series.all`, :meth:`DataFrame.any`, :meth:`DataFrame.all`, :meth:`SparseArray.any`, and :meth:`SparseArray.all` mishandling missing values on :class:`SparseDtype` data: with ``skipna=True`` a missing value was reduced for its own truthiness instead of being skipped, and with ``skipna=False`` missing values were dropped instead of reduced; :meth:`SparseArray.any` and :meth:`SparseArray.all` also raised a ``TypeError`` when called with the ``skipna`` argument (:issue:`68390`)
+ - Bug in :meth:`Series.cumsum`, :meth:`Series.cumprod`, :meth:`Series.cummin`, :meth:`Series.cummax` and their :class:`DataFrame` counterparts raising ``NotImplementedError`` on :class:`SparseDtype` data (:issue:`68187`)
+ - Bug in :meth:`Series.mean` with ``skipna=False`` ignoring missing values for :class:`SparseDtype`-backed :class:`Series` (:issue:`65478`)
+ - Bug in :meth:`Series.reindex` and alignment raising when extending a boolean :class:`SparseDtype`-backed :class:`Series`; missing entries now upcast to ``object`` to match the dense behavior (:issue:`32119`)
+diff --git a/pandas/core/arrays/sparse/array.py b/pandas/core/arrays/sparse/array.py
+index 8550bd45623eb..3a113f5c06ef4 100644
+--- a/pandas/core/arrays/sparse/array.py
++++ b/pandas/core/arrays/sparse/array.py
+@@ -145,7 +145,21 @@ def tocsc(self, /) -> csc_array | csc_matrix: ...
+ 
+ # Reductions whose SparseArray method takes skipna and must be handed it directly.
+ _skipna_aware_reductions = frozenset(
+-    {"sum", "prod", "mean", "median", "var", "std", "sem", "skew", "kurt", "min", "max"}
++    {
++        "sum",
++        "prod",
++        "mean",
++        "median",
++        "var",
++        "std",
++        "sem",
++        "skew",
++        "kurt",
++        "min",
++        "max",
++        "any",
++        "all",
++    }
+ )
+ 
+ # Reductions of complex input that give a real result.
+@@ -1689,10 +1703,20 @@ def _dense_reduce(self, name: str, *, skipna: bool, **kwargs):
+         """
+         return getattr(nanops, f"nan{name}")(self._densify(), skipna=skipna, **kwargs)
+ 
+-    def all(self, axis=None, *args, **kwargs):
++    def all(self, axis=None, *args, skipna: bool = True, **kwargs) -> bool:
+         """
+         Tests whether all elements evaluate True
+ 
++        Parameters
++        ----------
++        axis : int, default None
++            Not Used. NumPy compatibility.
++        skipna : bool, default True
++            Exclude NA/null values. If False, NA is evaluated for truthiness
++            like any other value.
++        *args, **kwargs
++            Not Used. NumPy compatibility.
++
+         Returns
+         -------
+         all : bool
+@@ -1702,18 +1726,39 @@ def all(self, axis=None, *args, **kwargs):
+         numpy.all
+         """
+         nv.validate_all(args, kwargs)
++        skipna = validate_bool_kwarg(skipna, "skipna")
+ 
+         values = self.sp_values
+-
+-        if len(values) != len(self) and not np.all(self.fill_value):
++        fill_value = self.fill_value
++        if skipna:
++            # NaN and NaT are truthy, which is already what skipping them means for
++            #  all() (see nanops.nanall); only a falsy object None needs the mask
++            if values.dtype.kind == "O":
++                values = self._valid_sp_values
++            if isna(fill_value):
++                fill_value = True
++
++        # not np.all(): an object pd.NA fill then raises like dense; see
++        #  test_any_all_na_fill_value
++        if self.sp_index.ngaps > 0 and not fill_value:
+             return False
+ 
+-        return values.all()
++        return values.all().item()
+ 
+-    def any(self, axis: AxisInt = 0, *args, **kwargs) -> bool:
++    def any(self, axis: AxisInt = 0, *args, skipna: bool = True, **kwargs) -> bool:
+         """
+         Tests whether at least one of elements evaluate True
+ 
++        Parameters
++        ----------
++        axis : int, default 0
++            Not Used. NumPy compatibility.
++        skipna : bool, default True
++            Exclude NA/null values. If False, NA is evaluated for truthiness
++            like any other value.
++        *args, **kwargs
++            Not Used. NumPy compatibility.
++
+         Returns
+         -------
+         any : bool
+@@ -1723,10 +1768,20 @@ def any(self, axis: AxisInt = 0, *args, **kwargs) -> bool:
+         numpy.any
+         """
+         nv.validate_any(args, kwargs)
++        skipna = validate_bool_kwarg(skipna, "skipna")
+ 
+         values = self.sp_values
+-
+-        if len(values) != len(self) and np.any(self.fill_value):
++        fill_value = self.fill_value
++        if skipna:
++            # unlike all(), a truthy NaN does change the answer (see nanops.nanany),
++            #  so every subtype that can hold NA needs the mask
++            if values.dtype.kind not in "biu":
++                values = self._valid_sp_values
++            if isna(fill_value):
++                fill_value = False
++
++        # not np.any(); see the note in all()
++        if self.sp_index.ngaps > 0 and fill_value:
+             return True
+ 
+         return values.any().item()

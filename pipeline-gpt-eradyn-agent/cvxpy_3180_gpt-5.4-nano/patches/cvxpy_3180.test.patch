@@ -1,0 +1,427 @@
+diff --git a/cvxpy/tests/test_atoms.py b/cvxpy/tests/test_atoms.py
+index 50b5e739d1..d17d2d32d6 100644
+--- a/cvxpy/tests/test_atoms.py
++++ b/cvxpy/tests/test_atoms.py
+@@ -2087,6 +2087,72 @@ def test_tr_inv(self) -> None:
+         # where X of the naive result is I.
+         self.assertTrue(prob.value < naiveRes)
+ 
++    def test_log_det_sign(self) -> None:
++        """log_det can be negative, e.g. log(det(0.5*I)) < 0."""
++        X = Variable((2, 2), symmetric=True)
++        atom = cp.log_det(X)
++        self.assertFalse(atom.is_nonneg())
++        X.value = 0.5 * np.eye(2)
++        self.assertTrue(atom.value < 0)
++
++    def test_sign_shape(self) -> None:
++        """cp.sign should preserve the shape of its argument."""
++        atom = cp.sign(self.x)
++        self.assertEqual(atom.shape, (2,))
++        self.assertEqual(cp.sign(self.A).shape, (2, 2))
++
++    def test_lambda_max_value_none_parameter(self) -> None:
++        """lambda_max.value should return None when parameter has no value."""
++        P = Parameter((3, 3), symmetric=True)
++        atom = cp.lambda_max(P)
++        self.assertIsNone(atom.value)
++        P.value = np.eye(3)
++        self.assertAlmostEqual(atom.value, 1.0)
++
++    def test_spectral_atoms_value_none_variable(self) -> None:
++        """value should return None when argument is an unset Variable."""
++        X = cp.Variable((3, 3), symmetric=True)
++        self.assertIsNone(cp.lambda_max(X).value)
++        self.assertIsNone(cp.lambda_sum_largest(X, 2).value)
++        self.assertIsNone(cp.log_det(X).value)
++        self.assertIsNone(cp.tr_inv(X).value)
++
++    def test_length_all_zeros(self) -> None:
++        """length of an all-zero vector should return 0."""
++        atom = cp.length(self.x)
++        self.x.value = np.zeros(2)
++        self.assertEqual(atom.value, 0)
++
++    def test_one_minus_pos_grad(self) -> None:
++        """one_minus_pos._grad should return a list of sparse matrices."""
++        from cvxpy.atoms.one_minus_pos import one_minus_pos
++        atom = one_minus_pos(self.x)
++        grad = atom._grad([np.array([0.5, 0.3])])
++        self.assertIsInstance(grad, list)
++        self.assertEqual(len(grad), 1)
++        np.testing.assert_array_equal(grad[0].toarray(), -np.eye(2))
++
++    def test_imag_hermitian_not_symmetric(self) -> None:
++        """imag(Hermitian) is skew-symmetric, not symmetric."""
++        H = Variable((3, 3), hermitian=True)
++        self.assertFalse(cp.imag(H).is_symmetric())
++
++    def test_imag_symmetric_is_symmetric(self) -> None:
++        """imag(symmetric real matrix) is symmetric (zero matrix)."""
++        S = Variable((3, 3), symmetric=True)
++        self.assertTrue(cp.imag(S).is_symmetric())
++
++    def test_real_hermitian_is_symmetric(self) -> None:
++        """real(Hermitian) is symmetric."""
++        H = Variable((3, 3), hermitian=True)
++        self.assertTrue(cp.real(H).is_symmetric())
++
++    def test_real_symmetric_is_symmetric(self) -> None:
++        """real(symmetric) is symmetric."""
++        S = Variable((3, 3), symmetric=True)
++        self.assertTrue(cp.real(S).is_symmetric())
++
++
+ class TestDotsort(BaseTest):
+     """ Unit tests for the dotsort atom. """
+ 
+diff --git a/cvxpy/tests/test_attributes.py b/cvxpy/tests/test_attributes.py
+index 0b713e7b00..e8e5e8a475 100644
+--- a/cvxpy/tests/test_attributes.py
++++ b/cvxpy/tests/test_attributes.py
+@@ -250,6 +250,15 @@ def test_integer_var_value(self):
+         x.value = val
+         np.testing.assert_array_equal(x.value, val.astype(float), strict=True)
+ 
++    def test_cvx_attr2constr_invert_none_duals(self):
++        """CvxAttr2Constr.invert should not crash when dual_vars is None."""
++        x = cp.Variable(2, nonneg=True, integer=True)
++        prob = cp.Problem(cp.Minimize(cp.sum(x)), [x >= 1])
++        prob.solve(solver=cp.HIGHS)
++        assert prob.status == cp.OPTIMAL
++        np.testing.assert_allclose(x.value, [1, 1], atol=1e-5)
++
++
+ class TestMultipleAttributes:
+ 
+     def test_multiple_attributes(self) -> None:
+diff --git a/cvxpy/tests/test_complex.py b/cvxpy/tests/test_complex.py
+index aad727294e..a9147166bb 100644
+--- a/cvxpy/tests/test_complex.py
++++ b/cvxpy/tests/test_complex.py
+@@ -26,6 +26,21 @@
+ from cvxpy.tests.base_test import BaseTest
+ 
+ 
++class TestComplex2RealAccepts(BaseTest):
++    def test_accepts_returns_bool(self) -> None:
++        """Complex2Real.accepts() should return bool, not None."""
++        from cvxpy.reductions.complex2real.complex2real import Complex2Real
++        reduction = Complex2Real()
++        # Complex problem should be accepted
++        x = Variable((2, 2), complex=True)
++        prob = Problem(Minimize(cp.norm(x, 'fro')), [x == np.eye(2)])
++        self.assertIs(reduction.accepts(prob), True)
++        # Real problem should not be accepted
++        y = Variable((2, 2))
++        prob_real = Problem(Minimize(cp.norm(y, 'fro')), [y == np.eye(2)])
++        self.assertIs(reduction.accepts(prob_real), False)
++
++
+ class TestComplex(BaseTest):
+     """ Unit tests for the expression/expression module. """
+ 
+@@ -639,6 +654,16 @@ def test_diag(self) -> None:
+         result = prob.solve(solver="SCS")
+         self.assertAlmostEqual(result, 2)
+ 
++    def test_diag_vec_hermitian(self) -> None:
++        """diag(complex_vector) is not Hermitian unless entries are real."""
++        v_complex = cp.Variable(3, complex=True)
++        D_complex = cp.diag(v_complex)
++        assert not D_complex.is_hermitian()
++
++        v_real = cp.Variable(3)
++        D_real = cp.diag(v_real)
++        assert D_real.is_hermitian()
++
+     def test_complex_qp(self) -> None:
+         """Test a QP with a complex variable.
+         """
+diff --git a/cvxpy/tests/test_cone2cone.py b/cvxpy/tests/test_cone2cone.py
+index 1e3a3bf07e..a4dce67316 100644
+--- a/cvxpy/tests/test_cone2cone.py
++++ b/cvxpy/tests/test_cone2cone.py
+@@ -912,3 +912,23 @@ def test_approx_cone2cone_dual_recovery(self) -> None:
+         inverted = reduction.invert(mock_solution, inverse_data)
+         self.assertIn(pow_con.id, inverted.dual_vars)
+         self.assertEqual(inverted.dual_vars[pow_con.id], mock_dual_value)
++
++
++class TestSlacksInvert(BaseTest):
++
++    def test_slacks_invert_none_opt_val(self) -> None:
++        """Slacks.invert should not crash when opt_val is None."""
++        solution = Solution(s.SOLVER_ERROR, None, {}, {}, {})
++        inv_data = {'x_id': 0, s.OBJ_OFFSET: 5.0}
++        result = a2d.Slacks.invert(solution, inv_data)
++        self.assertIsNone(result.opt_val)
++
++    def test_pow_cone_nd_is_dcp(self) -> None:
++        """PowConeND.is_dcp() should check affinity of arguments."""
++        x = cp.Variable(2, nonneg=True)
++        z = cp.Variable()
++        alpha = np.array([0.5, 0.5])
++        constr = PowConeND(x, z, alpha)
++        self.assertTrue(constr.is_dcp())
++        self.assertTrue(constr.args[0].is_affine())
++        self.assertTrue(constr.args[1].is_affine())
+diff --git a/cvxpy/tests/test_constraints.py b/cvxpy/tests/test_constraints.py
+index 0b0d62ca83..c224f784ae 100644
+--- a/cvxpy/tests/test_constraints.py
++++ b/cvxpy/tests/test_constraints.py
+@@ -619,3 +619,43 @@ def test_bounds_attr(self) -> None:
+             cp.Variable((2,), bounds=[np.array([1, np.nan]), np.nan])
+         with pytest.raises(ValueError, match="np.nan is not feasible as lower or upper bound."):
+             cp.Variable((2,), bounds=[np.array([1, np.nan]), np.array([2, np.nan])])
++
++    def test_psd_residual_complex(self) -> None:
++        """PSD.residual should use .H (not .T) for complex Hermitian matrices."""
++        X = cp.Variable((2, 2), hermitian=True)
++        constr = X >> 0
++        # A Hermitian PSD matrix
++        X.value = np.array([[2, 1+1j], [1-1j, 2]])
++        self.assertAlmostEqual(constr.residual, 0.0)
++        # A non-PSD Hermitian matrix
++        X.value = np.array([[1, 3+1j], [3-1j, 1]])
++        self.assertTrue(constr.residual > 0)
++
++    def test_finite_set_residual_none(self) -> None:
++        """FiniteSet.residual should return None when variable has no value."""
++        from cvxpy.constraints.finite_set import FiniteSet
++        x = cp.Variable()
++        constr = FiniteSet(x, [1, 2, 3])
++        self.assertIsNone(constr.residual)
++
++    def test_dual_cone_no_args(self) -> None:
++        """_dual_cone() without args should work for PSD and SOC."""
++        from cvxpy.constraints.psd import PSD
++        # PSD
++        X = cp.Variable((2, 2), symmetric=True)
++        psd_constr = X >> 0
++        prob = cp.Problem(cp.Minimize(cp.trace(X)), [psd_constr, cp.trace(X) >= 1])
++        prob.solve(solver=cp.CLARABEL)
++        self.assertEqual(prob.status, cp.OPTIMAL)
++        dual_constr = psd_constr._dual_cone()
++        self.assertIsInstance(dual_constr, PSD)
++
++        # SOC
++        x = cp.Variable(3)
++        t = cp.Variable()
++        soc_constr = SOC(t, x)
++        prob = cp.Problem(cp.Minimize(t), [soc_constr, x == np.ones(3)])
++        prob.solve(solver=cp.CLARABEL)
++        self.assertEqual(prob.status, cp.OPTIMAL)
++        dual_constr = soc_constr._dual_cone()
++        self.assertIsInstance(dual_constr, SOC)
+diff --git a/cvxpy/tests/test_dgp.py b/cvxpy/tests/test_dgp.py
+index 57e0212b7d..12be737bd3 100644
+--- a/cvxpy/tests/test_dgp.py
++++ b/cvxpy/tests/test_dgp.py
+@@ -314,3 +314,31 @@ def test_pnorm_scalar(self) -> None:
+         prob.solve(gp=True)
+         self.assertEqual(prob.status, cvxpy.OPTIMAL)
+         np.testing.assert_allclose(x.value, 4.0, atol=1e-4)
++
++    def test_dgp_infeasible_no_crash(self) -> None:
++        """Infeasible DGP problem should not crash in invert()."""
++        x = cvxpy.Variable(pos=True)
++        prob = cvxpy.Problem(cvxpy.Minimize(x), [x >= 2, x <= 1])
++        prob.solve(solver=cvxpy.CLARABEL, gp=True)
++        self.assertIn(prob.status, [cvxpy.INFEASIBLE, cvxpy.INFEASIBLE_INACCURATE])
++
++    def test_pnorm_negative_p_dgp(self) -> None:
++        """pnorm with p < 0 is log-log concave, so Maximize should be DGP."""
++        x = cvxpy.Variable(3, pos=True)
++        # Maximize pnorm(x, p=-1) s.t. x <= 2, x >= 0.5
++        # Optimal: all x_i = 2, pnorm = (3 * 2^(-1))^(-1) = 2/3
++        prob = cvxpy.Problem(
++            cvxpy.Maximize(cvxpy.pnorm(x, p=-1)),
++            [x <= 2, x >= 0.5],
++        )
++        self.assertTrue(prob.is_dgp())
++        prob.solve(gp=True, solver=cvxpy.SCS)
++        self.assertEqual(prob.status, cvxpy.OPTIMAL)
++        self.assertAlmostEqual(prob.value, 2.0 / 3.0, places=3)
++
++        # Minimize pnorm(x, p=-1) should NOT be DGP.
++        prob2 = cvxpy.Problem(
++            cvxpy.Minimize(cvxpy.pnorm(x, p=-1)),
++            [x <= 2, x >= 0.5],
++        )
++        self.assertFalse(prob2.is_dgp())
+diff --git a/cvxpy/tests/test_dqcp.py b/cvxpy/tests/test_dqcp.py
+index de418aeb4e..1ad417b542 100644
+--- a/cvxpy/tests/test_dqcp.py
++++ b/cvxpy/tests/test_dqcp.py
+@@ -747,3 +747,29 @@ def test_psd_constraint_bug(self) -> None:
+                   "Unable to find suitable interval for bisection)"
+         ):
+             problem.solve(qcp=True, solver=cp.SCS, max_iters=1)
++
++    def test_dist_ratio_dqcp(self) -> None:
++        """dist_ratio DQCP problem should give correct result."""
++        x = cp.Variable(2)
++        a = np.array([0.0, 0.0])
++        b = np.array([3.0, 0.0])
++        atom = cp.dist_ratio(x, a, b)
++        prob = cp.Problem(cp.Minimize(atom), [cp.norm(x) <= 2])
++        prob.solve(solver=SOLVER, qcp=True)
++        self.assertEqual(prob.status, s.OPTIMAL)
++        self.assertAlmostEqual(prob.value, 0.0, places=3)
++
++    def test_dqcp_power_infeasible(self) -> None:
++        """DQCP with power(ceil(x), 2) <= -5 should be infeasible."""
++        x = cp.Variable(nonneg=True)
++        problem = cp.Problem(cp.Minimize(0), [cp.power(cp.ceil(x), 2) <= -5])
++        problem.solve(SOLVER, qcp=True)
++        self.assertEqual(problem.status, s.INFEASIBLE)
++
++    def test_bisection_low_zero(self) -> None:
++        """Bisection with low=0 should not infinite-loop."""
++        x = cp.Variable()
++        problem = cp.Problem(cp.Minimize(cp.ceil(x)), [x >= 15, x <= 17])
++        problem.solve(SOLVER, qcp=True, low=0, high=100)
++        self.assertEqual(problem.status, s.OPTIMAL)
++        self.assertAlmostEqual(problem.value, 15.0, places=3)
+diff --git a/cvxpy/tests/test_expressions.py b/cvxpy/tests/test_expressions.py
+index c35c09e286..984373311d 100644
+--- a/cvxpy/tests/test_expressions.py
++++ b/cvxpy/tests/test_expressions.py
+@@ -576,7 +576,7 @@ def test_hermitian(self) -> None:
+         expr = cp.real(v)
+         assert expr.is_hermitian()
+         expr = cp.imag(v)
+-        assert expr.is_hermitian()
++        assert not expr.is_hermitian()  # imag(H) is skew-symmetric for Hermitian H
+         expr = cp.conj(v)
+         assert expr.is_hermitian()
+         expr = cp.promote(Variable(), (2, 2))
+diff --git a/cvxpy/tests/test_grad.py b/cvxpy/tests/test_grad.py
+index 2e767961b4..70b831ce9f 100644
+--- a/cvxpy/tests/test_grad.py
++++ b/cvxpy/tests/test_grad.py
+@@ -982,6 +982,40 @@ def test_quad_form_issue_1260(self):
+         # access quad_form.expr.grad without error
+         prob.constraints[1].expr.grad
+ 
++    def test_ceil_floor_grad(self):
++        """ceil and floor _grad should return a list of zero sparse matrices."""
++        x = cp.Variable(3)
++        x.value = np.array([1.5, 2.3, -0.7])
++
++        for atom in [cp.ceil(x), cp.floor(x)]:
++            grad = atom.grad
++            assert isinstance(grad, dict)
++            assert x in grad
++            np.testing.assert_array_equal(grad[x].toarray(), np.zeros((3, 3)))
++
++    def test_grad_undefined_atoms(self):
++        """Atoms with undefined gradients should return None per variable, not crash."""
++        from cvxpy.atoms.sign import sign
++        x = cp.Variable(3)
++        x.value = np.array([1.0, -2.0, 3.0])
++        grad = sign(x).grad
++        assert isinstance(grad, dict)
++        assert grad[x] is None
++
++        from cvxpy.atoms.length import length
++        v = cp.Variable(4)
++        v.value = np.array([1.0, 2.0, 0.0, 0.0])
++        grad = length(v).grad
++        assert isinstance(grad, dict)
++        assert grad[v] is None
++
++        from cvxpy.atoms.pf_eigenvalue import pf_eigenvalue
++        M = cp.Variable((2, 2))
++        M.value = np.array([[0.5, 0.1], [0.2, 0.3]])
++        grad = pf_eigenvalue(M).grad
++        assert isinstance(grad, dict)
++        assert grad[M] is None
++
+ 
+ if __name__ == "__main__":
+     pytest.main([__file__, "-v"])
+diff --git a/cvxpy/tests/test_objectives.py b/cvxpy/tests/test_objectives.py
+index 0e7eda190d..1c58360f54 100644
+--- a/cvxpy/tests/test_objectives.py
++++ b/cvxpy/tests/test_objectives.py
+@@ -133,3 +133,7 @@ def test_add_problems(self) -> None:
+         assert (-alpha*cp.Maximize(-expr1)).is_dcp()
+ 
+         assert (-alpha*cp.Maximize(-expr1)).is_dcp()
++
++        # Test Maximize + Minimize raises DCPError (not bare Exception)
++        with self.assertRaises(DCPError):
++            cp.Maximize(-expr1) + cp.Minimize(expr2)
+diff --git a/cvxpy/tests/test_problem.py b/cvxpy/tests/test_problem.py
+index 12f732bebd..ec28317941 100644
+--- a/cvxpy/tests/test_problem.py
++++ b/cvxpy/tests/test_problem.py
+@@ -38,6 +38,8 @@
+ from cvxpy.expressions.constants import Constant, Parameter
+ from cvxpy.expressions.variable import Variable
+ from cvxpy.problems.problem import Problem
++from cvxpy.reductions import Dcp2Cone
++from cvxpy.reductions.solution import Solution
+ from cvxpy.reductions.solvers.conic_solvers import scs_conif
+ from cvxpy.reductions.solvers.conic_solvers.conic_solver import ConicSolver
+ from cvxpy.reductions.solvers.defines import (
+@@ -2326,3 +2328,16 @@ def test_cp_node_count_warn(self) -> None:
+             cp.Problem(cp.Maximize(0), [c >= 0])
+             assert len(w) == 0
+ 
++    def test_canonicalization_invert_none_duals(self) -> None:
++        """Canonicalization.invert should handle None dual_vars."""
++        x = cp.Variable(2)
++        prob = cp.Problem(cp.Minimize(cp.sum(x)), [x >= 1])
++        reduction = Dcp2Cone()
++        new_prob, inv_data = reduction.apply(prob)
++
++        # Simulate a solver returning None dual_vars (e.g., MIP solvers).
++        pv = {vid: np.ones(2) for vid in inv_data.id_map}
++        sol = Solution("optimal", 2.0, pv, None, {})
++        result = reduction.invert(sol, inv_data)
++        assert result.dual_vars is None
++
+diff --git a/cvxpy/tests/test_quantum_rel_entr.py b/cvxpy/tests/test_quantum_rel_entr.py
+index 9d2195d56e..1a2ef62f89 100644
+--- a/cvxpy/tests/test_quantum_rel_entr.py
++++ b/cvxpy/tests/test_quantum_rel_entr.py
+@@ -171,3 +171,16 @@ def test_3(self):
+         sth.solve(**self.MOSEK_ARGS)
+         sth.verify_objective(places=3)
+         sth.verify_primal_values(places=3)
++
++    def test_real_inputs(self):
++        """quantum_rel_entr with real inputs should solve without error."""
++        n = 2
++        X = cp.Variable((n, n), symmetric=True)
++        Y = np.eye(n)
++        prob = cp.Problem(
++            cp.Minimize(cp.quantum_rel_entr(X, Y)),
++            [cp.trace(X) == 1, X >> 0]
++        )
++        prob.solve(**self.CLARABEL_ARGS)
++        assert prob.status == cp.OPTIMAL
++        np.testing.assert_allclose(prob.value, -np.log(n), atol=1e-3)
+diff --git a/cvxpy/tests/test_von_neumann_entr.py b/cvxpy/tests/test_von_neumann_entr.py
+index 3e5a48d1c9..c522b7e775 100644
+--- a/cvxpy/tests/test_von_neumann_entr.py
++++ b/cvxpy/tests/test_von_neumann_entr.py
+@@ -282,3 +282,15 @@ def test_4(self):
+         sth.solve(**self.SOLVE_ARGS)
+         sth.verify_objective(places=3)
+         sth.verify_primal_values(places=3)
++
++    def test_max_entropy(self):
++        """Maximum entropy for n=3 density matrix is log(3)."""
++        n = 3
++        N = cp.Variable((n, n), symmetric=True)
++        prob = cp.Problem(
++            cp.Maximize(von_neumann_entr(N)),
++            [trace(N) == 1, N >> 0]
++        )
++        prob.solve(solver=cp.CLARABEL)
++        assert prob.status == cp.OPTIMAL
++        np.testing.assert_allclose(prob.value, np.log(n), atol=1e-3)

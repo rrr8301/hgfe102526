@@ -1,0 +1,94 @@
+diff --git a/pandas/tests/apply/test_series_apply.py b/pandas/tests/apply/test_series_apply.py
+index cea6fb793c0c7..f9c26d4e3eff3 100644
+--- a/pandas/tests/apply/test_series_apply.py
++++ b/pandas/tests/apply/test_series_apply.py
+@@ -667,3 +667,14 @@ def test_series_apply_unpack_nested_data():
+     result = ser.apply(lambda x: Series(x))
+     expected = DataFrame({0: [1.0, 4.0], 1: [2.0, 5.0], 2: [3.0, 6.0], 3: [np.nan, 7]})
+     tm.assert_frame_equal(result, expected)
++
++
++@pytest.mark.parametrize("dtype", ["Int64", "UInt64"])
++def test_apply_nullable_integer_precision(dtype):
++    # GH#63903
++    large_int = 10000000000000001  # above float64 integer precision limit
++    ser = Series([large_int, None], dtype=dtype)
++
++    result = ser.apply(lambda x: x + 2 if pd.notna(x) else x)
++    expected = Series([large_int + 2, pd.NA], dtype=dtype)
++    tm.assert_series_equal(result, expected)
+diff --git a/pandas/tests/extension/test_masked.py b/pandas/tests/extension/test_masked.py
+index fadc51ea714c0..671210781b371 100644
+--- a/pandas/tests/extension/test_masked.py
++++ b/pandas/tests/extension/test_masked.py
+@@ -173,25 +173,16 @@ def skip_if_doesnt_support_2d(self, dtype, request):
+ 
+     @pytest.mark.parametrize("na_action", [None, "ignore"])
+     def test_map(self, data_missing, na_action, using_nan_is_na):
++        # GH#63903
+         result = data_missing.map(lambda x: x, na_action=na_action)
+-        if data_missing.dtype == Float32Dtype() and using_nan_is_na:
+-            # map roundtrips through objects, which converts to float64
+-            expected = data_missing.to_numpy(dtype="float64", na_value=np.nan)
+-        else:
+-            expected = data_missing.to_numpy()
+-        tm.assert_numpy_array_equal(result, expected)
++        tm.assert_extension_array_equal(result, data_missing)
+ 
+     def test_map_na_action_ignore(self, data_missing_for_sorting, using_nan_is_na):
++        # GH#63903
+         zero = data_missing_for_sorting[2]
+         result = data_missing_for_sorting.map(lambda x: zero, na_action="ignore")
+-        if data_missing_for_sorting.dtype.kind == "b":
+-            expected = np.array([False, pd.NA, False], dtype=object)
+-        elif not using_nan_is_na:
+-            # TODO: would we prefer to get NaN in this case to get a non-object?
+-            expected = np.array([zero, pd.NA, zero], dtype=object)
+-        else:
+-            expected = np.array([zero, np.nan, zero])
+-        tm.assert_numpy_array_equal(result, expected)
++        expected = pd.array([zero, pd.NA, zero], dtype=data_missing_for_sorting.dtype)
++        tm.assert_extension_array_equal(result, expected)
+ 
+     def _get_expected_exception(self, op_name, obj, other):
+         try:
+diff --git a/pandas/tests/series/methods/test_map.py b/pandas/tests/series/methods/test_map.py
+index bfda028b58011..743da96faf236 100644
+--- a/pandas/tests/series/methods/test_map.py
++++ b/pandas/tests/series/methods/test_map.py
+@@ -23,6 +23,7 @@
+     timedelta_range,
+ )
+ import pandas._testing as tm
++from pandas.core.arrays.masked import BaseMaskedDtype
+ 
+ # The fixture it's mostly used in pandas/tests/apply, so it's defined in that
+ # conftest, which is out of scope here. So we need to manually import
+@@ -243,7 +244,11 @@ def test_map_empty(request, index):
+     s = Series(index)
+     result = s.map({})
+ 
+-    expected = Series(np.nan, index=s.index)
++    # GH#63903
++    if isinstance(s.dtype, BaseMaskedDtype):
++        expected = Series(pd.NA, index=s.index, dtype=s.dtype)
++    else:
++        expected = Series(np.nan, index=s.index)
+     tm.assert_series_equal(result, expected)
+ 
+ 
+@@ -677,3 +682,14 @@ def test_map_pyarrow_timestamp(as_td):
+     #  we don't for Series.map
+     expected_index = Index(expected).astype("int64[pyarrow]")
+     tm.assert_index_equal(res_index, expected_index)
++
++
++@pytest.mark.parametrize("dtype", ["Int64", "UInt64"])
++def test_map_nullable_integer_precision(dtype):
++    # GH#63903
++    large_int = 10000000000000001  # above float64 integer precision limit
++    ser = Series([large_int, None], dtype=dtype)
++
++    result = ser.map(lambda x: x + 2 if pd.notna(x) else x)
++    expected = Series([large_int + 2, pd.NA], dtype=dtype)
++    tm.assert_series_equal(result, expected)

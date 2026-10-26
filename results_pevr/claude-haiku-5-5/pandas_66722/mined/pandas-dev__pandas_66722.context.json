@@ -1,0 +1,377 @@
+{
+  "repo": "pandas-dev/pandas",
+  "pr_number": 66722,
+  "reference": "https://github.com/pandas-dev/pandas/pull/66722",
+  "buggy_commit": "8cb88cf1fbd02c747abd1e5d51201bd379c27b71",
+  "fixed_commit": "20c379a35b05f9cf453df2bb66adb70358ec123b",
+  "pr_date": "",
+  "category": "accuracy",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "NumPy",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "readme:README.md"
+      },
+      {
+        "name": "python-dateutil",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md"
+      },
+      {
+        "name": "tzdata",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md (only required on Windows/Emscripten)"
+      },
+      {
+        "name": "Cython",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md (installed from PyPI via pip install cython for source builds)"
+      }
+    ],
+    "installation_commands": [
+      "pip install cython",
+      "pip install .",
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "build_commands": [
+      "Cython rebuild of pandas/_libs/testing.pyx (per PR#66722 validation)"
+    ],
+    "test_commands": [
+      "pytest pandas/tests/util/test_assert_series_equal.py (targeted tests implied by PR#66722; exact command not stated)"
+    ],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: NumPy \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: python-dateutil \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: tzdata \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: Cython \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "NumPy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "readme:README.md"
+      },
+      {
+        "package": "python-dateutil",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md"
+      },
+      {
+        "package": "tzdata",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md (only required on Windows/Emscripten)"
+      },
+      {
+        "package": "Cython",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md (installed from PyPI via pip install cython for source builds)"
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "accuracy",
+    "affected_api": "pandas._libs.testing.assert_almost_equal",
+    "observed_behavior": "With check_dtype=False and check_exact=False, pd.testing.assert_series_equal raises no AssertionError when comparing an int64 Series [2**60 + 1] against a float64 Series [float(2**60)], even though the values are 1 apart and atol=0.5. assert_almost_equal short-circuits on array_equivalent(), which casts the large integer to float64 before any tolerance logic runs.",
+    "expected_behavior": "An AssertionError should be raised, because the values differ by 1 and atol=0.5 (with rtol=0) is smaller than that difference. atol and rtol should be applied to the exact integer values.",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "one operand is an integer dtype (e.g. int64) and the other is a float dtype",
+      "check_dtype=False and check_exact=False",
+      "integer value is large enough (e.g. 2**60+1) that casting to float64 loses precision",
+      "float operand is integer-valued (e.g. float(2**60))",
+      "rtol >= 0 and atol >= 0",
+      "comparison goes through array_equivalent() early-return in assert_almost_equal"
+    ],
+    "input_output_examples": [
+      {
+        "input": "pd.testing.assert_series_equal(pd.Series([2**60 + 1], dtype='int64'), pd.Series([float(2**60)], dtype='float64'), check_dtype=False, check_exact=False, rtol=0, atol=0.5)",
+        "buggy_output": "no AssertionError raised (comparison passes)"
+      }
+    ],
+    "oracle_clues": []
+  },
+  "numerical_characteristics": {
+    "dtype": "int64 vs float64 (mixed integer and floating operands, check_dtype=False); also uint64 vs float64 in one test case",
+    "precision": "float64 cannot exactly represent integers above 2**53, so a large int64 cast to float64 loses the one-integer difference; the fix compares exact Python ints via int(a) and int(b)",
+    "magnitude": "large integers near 2**53 and above, e.g. 2**60+1 vs float(2**60), 2**53+1 vs float(2**53), and 2**63+1 uint64 vs float64 2**63",
+    "tolerance": "rtol=0, atol=0.5 must fail and atol=1 must pass for a one-integer difference; rtol and atol must be non-negative for the new path to apply",
+    "category_specific_evidence": [
+      "Issue #66699 reproducer: pd.Series([2**60+1], dtype='int64') vs pd.Series([float(2**60)], dtype='float64') with check_dtype=False, check_exact=False, rtol=0, atol=0.5 gives no AssertionError although values differ by 1.",
+      "array_equivalent() casts large int to float64 and returns early before tolerance logic, causing the tolerance to be ignored.",
+      "The fix in testing.pyx handles the case locally: when one operand is an integer and the other is a float with integer value, it compares exact ints and applies max(rtol*max(|ia|,|ib|), atol).",
+      "Added tests test_assert_almost_equal_large_mixed_integer_float_atol assert not-almost-equal at atol=0.5 and almost-equal at atol=1 for cases including 2**60+1, 2**53+1, -(2**53)-1 and uint64 2**63+1.",
+      "PR validation: targeted tests 300 passed, 2 xfailed; compatibility with PR #66696 HEAD: 8 passed; manual boundary matrix passed.",
+      "Affected user-facing function per whatsnew: testing.assert_series_equal ignoring rtol and atol with large integer and floating dtypes and check_dtype=False."
+    ],
+    "reproduction_risks": [
+      "Reviewer discussion suggested reordering the rtol/atol non-negativity check first for cost; the final code order may differ from the diff shown.",
+      "Same-dtype integer case is addressed separately by PR #66696 and is not covered by this change, so reproductions for same-dtype integers may not be covered.",
+      "array_equivalent() itself was left unchanged; the discrepancy is in the testing comparison path."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "pip install cython",
+        "pip install .",
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.build_commands",
+      "value": [
+        "Cython rebuild of pandas/_libs/testing.pyx (per PR#66722 validation)"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.test_commands",
+      "value": [
+        "pytest pandas/tests/util/test_assert_series_equal.py (targeted tests implied by PR#66722; exact command not stated)"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "NumPy",
+      "source": "readme:README.md",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "python-dateutil",
+      "source": "readme:README.md",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "tzdata",
+      "source": "readme:README.md (only required on Windows/Emscripten)",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "Cython",
+      "source": "readme:README.md (installed from PyPI via pip install cython for source builds)",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "pandas._libs.testing.assert_almost_equal",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "With check_dtype=False and check_exact=False, pd.testing.assert_series_equal raises no AssertionError when comparing an int64 Series [2**60 + 1] against a float64 Series [float(2**60)], even though the values are 1 apart and atol=0.5. assert_almost_equal short-circuits on array_equivalent(), which casts the large integer to float64 before any tolerance logic runs.",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "An AssertionError should be raised, because the values differ by 1 and atol=0.5 (with rtol=0) is smaller than that difference. atol and rtol should be applied to the exact integer values.",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 6,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 1,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.dtype",
+      "value": "int64 vs float64 (mixed integer and floating operands, check_dtype=False); also uint64 vs float64 in one test case",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.precision",
+      "value": "float64 cannot exactly represent integers above 2**53, so a large int64 cast to float64 loses the one-integer difference; the fix compares exact Python ints via int(a) and int(b)",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "large integers near 2**53 and above, e.g. 2**60+1 vs float(2**60), 2**53+1 vs float(2**53), and 2**63+1 uint64 vs float64 2**63",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.tolerance",
+      "value": "rtol=0, atol=0.5 must fail and atol=1 must pass for a one-integer difference; rtol and atol must be non-negative for the new path to apply",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 6,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "readme:README.md",
+        "commit:commits",
+        "issue:issue#66699",
+        "pr_body:PR#66722",
+        "diff:pandas/_libs/testing.pyx:204-231",
+        "issue:issue#66699",
+        "issue:issue#66699"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "pr_body:PR#66722",
+        "discussion:pandas/_libs/testing.pyx",
+        "issue:issue#66699",
+        "issue:issue#66699",
+        "diff:pandas/_libs/testing.pyx:204-231",
+        "discussion:pandas/_libs/testing.pyx",
+        "discussion:doc/source/whatsnew/v3.1.0.rst"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "pr_body:PR#66722",
+        "discussion:doc/source/whatsnew/v3.1.0.rst",
+        "test_diff:pandas/tests/util/test_assert_almost_equal.py:169-221",
+        "issue:issue#66699",
+        "issue:issue#66699",
+        "diff:pandas/_libs/testing.pyx:204-231",
+        "discussion:pandas/_libs/testing.pyx"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "accuracy",
+        "checked": 5,
+        "score": 1.0,
+        "required_total": 2,
+        "required_present": 2,
+        "required_missing": [],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          },
+          {
+            "path": "environment.numerical_backend",
+            "why": "BLAS/LAPACK choice changes results for linear algebra instances"
+          }
+        ],
+        "present": [
+          "environment.test_commands",
+          "environment.dependencies",
+          "environment.build_commands"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "accuracy",
+        "checked": 10,
+        "score": 1.0,
+        "required_total": 7,
+        "required_present": 7,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.dtype",
+          "numerical_characteristics.tolerance",
+          "numerical_characteristics.magnitude",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 11365,
+    "output_tokens": 2630,
+    "cache_read_tokens": 0,
+    "cost_usd": 0,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": []
+}

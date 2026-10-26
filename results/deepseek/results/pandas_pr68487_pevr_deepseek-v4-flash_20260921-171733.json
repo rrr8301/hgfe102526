@@ -1,0 +1,1491 @@
+[
+  {
+    "slug": "pandas_68487",
+    "bug_type": "special_value",
+    "image": "python:3.11",
+    "status": "REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 3/6 reported example(s) show the reported difference between the revisions; the numerical oracle agrees (defect signal present on buggy, absent on fixed)",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "flipped",
+    "examples_verdict": "diverged",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import numpy as np\nimport pandas as pd\nfrom pandas.core import nanops\nfrom pandas.arrays import SparseArray\nfrom pandas import SparseDtype\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"nanops.nanmedian(np.array([1, np.nan, 3], dtype=\\\"float32\\\"), skipna=False)\", \"nanops.nanmedian(np.array([1, np.nan, 3], dtype=\\\"float32\\\"), skipna=False)\", [], \"result.dtype == float32\"], [\"nanops.nanmedian(np.array([1, np.nan, 3], dtype=\\\"complex128\\\"), skipna=False)\", \"nanops.nanmedian(np.array([1, np.nan, 3], dtype=\\\"complex128\\\"), skipna=False)\", [], \"result.dtype == complex128\"], [\"nanops.nanmedian(np.array([1, np.nan, 3], dtype=\\\"complex64\\\").reshape(1, 3), axis=1, skipna=False)\", \"nanops.nanmedian(np.array([1, np.nan, 3], dtype=\\\"complex64\\\").reshape(1, 3), axis=1, skipna=False)\", [], \"result.dtype == complex64\"], [\"nanops.nanvar(np.array([1, 2, 3], dtype=\\\"float32\\\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}\", \"nanops.nanvar(np.array([1, 2, 3], dtype=\\\"float32\\\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}\", [], \"result.dtype == float32\"], [\"pd.DataFrame({\\\"a\\\": [1 + 2j, np.nan], \\\"b\\\": [1 + 2j, 3 + 4j]}).median(skipna=False)\", \"pd.DataFrame({\\\"a\\\": [1 + 2j, np.nan], \\\"b\\\": [1 + 2j, 3 + 4j]}).median(skipna=False)\", [], \"pd.Series([complex(np.nan), 2 + 3j], index=[\\\"a\\\", \\\"b\\\"]), dtype complex128\"], [\"pd.DataFrame({\\\"a\\\": SparseArray(np.array([1, np.nan, 3], dtype=\\\"float32\\\"), dtype=pd.SparseDtype(\\\"float32\\\", np.nan))}).median(skipna=False)\", \"pd.DataFrame({\\\"a\\\": SparseArray(np.array([1, np.nan, 3], dtype=\\\"float32\\\"), dtype=pd.SparseDtype(\\\"float32\\\", np.nan))}).median(skipna=False)\", [], \"assert_series_equal(result, expected.astype(pd.SparseDtype(expected.dtype))) i.e. sparse dtype float32 / complex128 matching the dense result\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "nanops_dtype_preservation": "import numpy as np\nimport pandas as pd\nfrom pandas.core import nanops\n\n_CODES = {\n    \"float16\": 16.0,\n    \"float32\": 32.0,\n    \"float64\": 64.0,\n    \"complex64\": 64.5,\n    \"complex128\": 128.5,\n}\n\ndef dcode(x):\n    dt = np.asarray(x).dtype\n    return _CODES.get(dt.name, float(dt.itemsize))\n\nv32 = np.array([1, np.nan, 3], dtype=\"float32\")\nprobe(\"nanmedian_f32_dtype\", dcode(nanops.nanmedian(v32, skipna=False)))\n\nvc128 = np.array([1, np.nan, 3], dtype=\"complex128\")\nprobe(\"nanmedian_c128_dtype\", dcode(nanops.nanmedian(vc128, skipna=False)))\n\nvc64_2d = np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3)\nprobe(\"nanmedian_c64_2d_dtype\", dcode(nanops.nanmedian(vc64_2d, axis=1, skipna=False)))\n\nvv = np.array([1, 2, 3], dtype=\"float32\")\nprobe(\"nanvar_f32_ddof5_dtype\", dcode(nanops.nanvar(vv, ddof=5)))\nprobe(\"nanstd_f32_ddof5_dtype\", dcode(nanops.nanstd(vv, ddof=5)))\nprobe(\"nansem_f32_ddof5_dtype\", dcode(nanops.nansem(vv, ddof=5)))\n\ndf = pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]})\nprobe(\"frame_median_c128_dtype\", dcode(df.median(skipna=False)))\n",
+        "nanops_report_examples_dtype_signature": "import numpy as np\nimport pandas as pd\nfrom pandas.core import nanops\n\n\ndef enc(x):\n    # numeric signature of the result dtype: bit width of the (sub)type,\n    # plus 0.5 when the result stays complex (imaginary part carried)\n    dt = getattr(x, \"dtype\", None)\n    if dt is None:\n        dt = np.asarray(x).dtype\n    sub = getattr(dt, \"subtype\", dt)\n    bits = float(sub.itemsize * 8)\n    if sub.kind == \"c\":\n        bits += 0.5\n    return bits\n\n\n# ex1: nanmedian 1-D float32, skipna=False -> float32 expected, float64 buggy\nprobe(\"ex1_nanmedian_float32\", enc(nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"float32\"), skipna=False)))\n\n# ex2: nanmedian 1-D complex128, skipna=False -> complex128 expected, float64 buggy\nprobe(\"ex2_nanmedian_complex128\", enc(nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex128\"), skipna=False)))\n\n# ex3: nanmedian 2-D complex64, axis=1, skipna=False -> complex64 expected, float64 buggy\nprobe(\"ex3_nanmedian_complex64_axis1\", enc(nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3), axis=1, skipna=False)))\n\n# ex4: ddof >= count in the nanvar family -> float32 expected, float64 buggy\nprobe(\"ex4_nanvar_float32_ddof5\", enc(nanops.nanvar(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)))\nprobe(\"ex4b_nanstd_float32_ddof5\", enc(nanops.nanstd(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)))\nprobe(\"ex4c_nansem_float32_ddof5\", enc(nanops.nansem(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)))\n\n# ex5: DataFrame complex median, skipna=False -> complex128 expected, float64 buggy\n_df = pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]})\nprobe(\"ex5_frame_complex_median\", enc(_df.median(skipna=False)))\n\n# ex6: sparse float32 DataFrame median, skipna=False -> float32 expected, float64 buggy\n_sp = pd.DataFrame({\"a\": pd.arrays.SparseArray(np.array([1, np.nan, 3], dtype=\"float32\"), dtype=pd.SparseDtype(\"float32\", np.nan))})\nprobe(\"ex6_sparse_frame_median\", enc(_sp.median(skipna=False)))\n"
+      },
+      "fixed": {
+        "nanops_dtype_preservation": "import numpy as np\nimport pandas as pd\nfrom pandas.core import nanops\n\n_CODES = {\n    \"float16\": 16.0,\n    \"float32\": 32.0,\n    \"float64\": 64.0,\n    \"complex64\": 64.5,\n    \"complex128\": 128.5,\n}\n\ndef dcode(x):\n    dt = np.asarray(x).dtype\n    return _CODES.get(dt.name, float(dt.itemsize))\n\nv32 = np.array([1, np.nan, 3], dtype=\"float32\")\nprobe(\"nanmedian_f32_dtype\", dcode(nanops.nanmedian(v32, skipna=False)))\n\nvc128 = np.array([1, np.nan, 3], dtype=\"complex128\")\nprobe(\"nanmedian_c128_dtype\", dcode(nanops.nanmedian(vc128, skipna=False)))\n\nvc64_2d = np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3)\nprobe(\"nanmedian_c64_2d_dtype\", dcode(nanops.nanmedian(vc64_2d, axis=1, skipna=False)))\n\nvv = np.array([1, 2, 3], dtype=\"float32\")\nprobe(\"nanvar_f32_ddof5_dtype\", dcode(nanops.nanvar(vv, ddof=5)))\nprobe(\"nanstd_f32_ddof5_dtype\", dcode(nanops.nanstd(vv, ddof=5)))\nprobe(\"nansem_f32_ddof5_dtype\", dcode(nanops.nansem(vv, ddof=5)))\n\ndf = pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]})\nprobe(\"frame_median_c128_dtype\", dcode(df.median(skipna=False)))\n",
+        "reported_examples": "from pandas import SparseDtype\nfrom pandas.arrays import SparseArray\nimport numpy as np\nimport pandas as pd\nfrom pandas.core import nanops\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"nanops.nanmedian(np.array([1, np.nan, 3], dtype=\\\"float32\\\"), skipna=False)\", \"nanops.nanmedian(np.array([1, np.nan, 3], dtype=\\\"float32\\\"), skipna=False)\", [], \"result.dtype == float32\"], [\"nanops.nanmedian(np.array([1, np.nan, 3], dtype=\\\"complex128\\\"), skipna=False)\", \"nanops.nanmedian(np.array([1, np.nan, 3], dtype=\\\"complex128\\\"), skipna=False)\", [], \"result.dtype == complex128\"], [\"nanops.nanmedian(np.array([1, np.nan, 3], dtype=\\\"complex64\\\").reshape(1, 3), axis=1, skipna=False)\", \"nanops.nanmedian(np.array([1, np.nan, 3], dtype=\\\"complex64\\\").reshape(1, 3), axis=1, skipna=False)\", [], \"result.dtype == complex64\"], [\"nanops.nanvar(np.array([1, 2, 3], dtype=\\\"float32\\\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}\", \"nanops.nanvar(np.array([1, 2, 3], dtype=\\\"float32\\\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}\", [], \"result.dtype == float32\"], [\"pd.DataFrame({\\\"a\\\": [1 + 2j, np.nan], \\\"b\\\": [1 + 2j, 3 + 4j]}).median(skipna=False)\", \"pd.DataFrame({\\\"a\\\": [1 + 2j, np.nan], \\\"b\\\": [1 + 2j, 3 + 4j]}).median(skipna=False)\", [], \"pd.Series([complex(np.nan), 2 + 3j], index=[\\\"a\\\", \\\"b\\\"]), dtype complex128\"], [\"pd.DataFrame({\\\"a\\\": SparseArray(np.array([1, np.nan, 3], dtype=\\\"float32\\\"), dtype=pd.SparseDtype(\\\"float32\\\", np.nan))}).median(skipna=False)\", \"pd.DataFrame({\\\"a\\\": SparseArray(np.array([1, np.nan, 3], dtype=\\\"float32\\\"), dtype=pd.SparseDtype(\\\"float32\\\", np.nan))}).median(skipna=False)\", [], \"assert_series_equal(result, expected.astype(pd.SparseDtype(expected.dtype))) i.e. sparse dtype float32 / complex128 matching the dense result\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "nanops_report_examples_dtype_signature": "import numpy as np\nimport pandas as pd\nfrom pandas.core import nanops\n\n\ndef enc(x):\n    # numeric signature of the result dtype: bit width of the (sub)type,\n    # plus 0.5 when the result stays complex (imaginary part carried)\n    dt = getattr(x, \"dtype\", None)\n    if dt is None:\n        dt = np.asarray(x).dtype\n    sub = getattr(dt, \"subtype\", dt)\n    bits = float(sub.itemsize * 8)\n    if sub.kind == \"c\":\n        bits += 0.5\n    return bits\n\n\n# ex1: nanmedian 1-D float32, skipna=False -> float32 expected, float64 buggy\nprobe(\"ex1_nanmedian_float32\", enc(nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"float32\"), skipna=False)))\n\n# ex2: nanmedian 1-D complex128, skipna=False -> complex128 expected, float64 buggy\nprobe(\"ex2_nanmedian_complex128\", enc(nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex128\"), skipna=False)))\n\n# ex3: nanmedian 2-D complex64, axis=1, skipna=False -> complex64 expected, float64 buggy\nprobe(\"ex3_nanmedian_complex64_axis1\", enc(nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3), axis=1, skipna=False)))\n\n# ex4: ddof >= count in the nanvar family -> float32 expected, float64 buggy\nprobe(\"ex4_nanvar_float32_ddof5\", enc(nanops.nanvar(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)))\nprobe(\"ex4b_nanstd_float32_ddof5\", enc(nanops.nanstd(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)))\nprobe(\"ex4c_nansem_float32_ddof5\", enc(nanops.nansem(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)))\n\n# ex5: DataFrame complex median, skipna=False -> complex128 expected, float64 buggy\n_df = pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]})\nprobe(\"ex5_frame_complex_median\", enc(_df.median(skipna=False)))\n\n# ex6: sparse float32 DataFrame median, skipna=False -> float32 expected, float64 buggy\n_sp = pd.DataFrame({\"a\": pd.arrays.SparseArray(np.array([1, np.nan, 3], dtype=\"float32\"), dtype=pd.SparseDtype(\"float32\", np.nan))})\nprobe(\"ex6_sparse_frame_median\", enc(_sp.median(skipna=False)))\n"
+      }
+    },
+    "report": {
+      "status": "REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 3/6 reported example(s) show the reported difference between the revisions; the numerical oracle agrees (defect signal present on buggy, absent on fixed)",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "flipped",
+      "examples_verdict": "diverged",
+      "success_criterion": "With the PR's new tests applied to buggy commit d34d3e05636e8be8617d89d352f3d636558fbc12, the selected pytest run FAILS on the dtype/imaginary-part assertions (at minimum test_nanmedian_skipna_false_keeps_dtype, test_median_skipna_false_keeps_complex and the ddof>=3 parametrizations of test_nanvar_family_keeps_dtype and test_frame_nan_result_dtype_matches_dense), and the same run passes once pandas/core/nanops.py is fixed.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": 19,
+            "failed": 12,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 31,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "nanops_dtype_preservation",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=3.200e+01, tol=0.000e+00)"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "nanmedian_f32_dtype": 64.0,
+              "nanmedian_c128_dtype": 64.0,
+              "nanmedian_c64_2d_dtype": 64.0,
+              "nanvar_f32_ddof5_dtype": 32.0,
+              "nanstd_f32_ddof5_dtype": 32.0,
+              "nansem_f32_ddof5_dtype": 64.0,
+              "frame_median_c128_dtype": 64.0
+            },
+            "fixed_values": {
+              "nanmedian_f32_dtype": 32.0,
+              "nanmedian_c128_dtype": 128.5,
+              "nanmedian_c64_2d_dtype": 64.5,
+              "nanvar_f32_ddof5_dtype": 32.0,
+              "nanstd_f32_ddof5_dtype": 32.0,
+              "nansem_f32_ddof5_dtype": 32.0,
+              "frame_median_c128_dtype": 128.5
+            }
+          },
+          {
+            "label": "nanops_report_examples_dtype_signature",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=3.200e+01, tol=1.000e-09)"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "ex1_nanmedian_float32": 64.0,
+              "ex2_nanmedian_complex128": 64.0,
+              "ex3_nanmedian_complex64_axis1": 64.0,
+              "ex4_nanvar_float32_ddof5": 32.0,
+              "ex4b_nanstd_float32_ddof5": 32.0,
+              "ex4c_nansem_float32_ddof5": 64.0,
+              "ex5_frame_complex_median": 64.0,
+              "ex6_sparse_frame_median": 32.0
+            },
+            "fixed_values": {
+              "ex1_nanmedian_float32": 32.0,
+              "ex2_nanmedian_complex128": 128.5,
+              "ex3_nanmedian_complex64_axis1": 64.5,
+              "ex4_nanvar_float32_ddof5": 32.0,
+              "ex4b_nanstd_float32_ddof5": 32.0,
+              "ex4c_nansem_float32_ddof5": 32.0,
+              "ex5_frame_complex_median": 128.5,
+              "ex6_sparse_frame_median": 32.0
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced NaN"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced NaN"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"float32\"), skipna=False)": "nan",
+              "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex128\"), skipna=False)": "nan",
+              "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3), axis=1, skipna=False)": [
+                "nan"
+              ],
+              "nanops.nanvar(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}": "nan",
+              "pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]}).median(skipna=False)": [
+                "nan",
+                2.0
+              ],
+              "pd.DataFrame({\"a\": SparseArray(np.array([1, np.nan, 3], dtype=\"float32\"), dtype=pd.SparseDtype(\"float32\", np.nan))}).median(skipna=False)": [
+                "nan"
+              ]
+            },
+            "fixed_values": {
+              "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"float32\"), skipna=False)": "nan",
+              "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex128\"), skipna=False)": {
+                "real": "np.float64(nan)",
+                "imag": 0.0
+              },
+              "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3), axis=1, skipna=False)": [
+                {
+                  "real": "nan",
+                  "imag": 0.0
+                }
+              ],
+              "nanops.nanvar(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}": "nan",
+              "pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]}).median(skipna=False)": [
+                {
+                  "real": "nan",
+                  "imag": 0.0
+                },
+                {
+                  "real": 2.0,
+                  "imag": 3.0
+                }
+              ],
+              "pd.DataFrame({\"a\": SparseArray(np.array([1, np.nan, 3], dtype=\"float32\"), dtype=pd.SparseDtype(\"float32\", np.nan))}).median(skipna=False)": [
+                "nan"
+              ]
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"float32\"), skipna=False)",
+            "expected_output": "result.dtype == float32 (matches values.dtype)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "returns a bare np.nan scalar, so result.dtype == float64 (widened from float32)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"float32\"), skipna=False)",
+              "observed": "nan",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"float32\"), skipna=False)",
+              "observed": "nan",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex128\"), skipna=False)",
+            "expected_output": "result.dtype == complex128 (matches values.dtype)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "bare float np.nan -> result.dtype == float64, imaginary part dropped",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex128\"), skipna=False)",
+              "observed": "nan",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex128\"), skipna=False)",
+              "observed": {
+                "real": "np.float64(nan)",
+                "imag": 0.0
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3), axis=1, skipna=False)",
+            "expected_output": "result.dtype == complex64 (matches values.dtype)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "2-D result takes its dtype from the first reduced slice: dtype float64, not complex64",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3), axis=1, skipna=False)",
+              "observed": [
+                "nan"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3), axis=1, skipna=False)",
+              "observed": [
+                {
+                  "real": "nan",
+                  "imag": 0.0
+                }
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "nanops.nanvar(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}",
+            "expected_output": "result.dtype == float32 (matches values.dtype)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "count and its degrees of freedom become bare floats, widening the 1-D result to dtype float64",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "nanops.nanvar(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}",
+              "observed": "nan",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "nanops.nanvar(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}",
+              "observed": "nan",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]}).median(skipna=False)",
+            "expected_output": "pd.Series([complex(np.nan), 2 + 3j], index=[\"a\", \"b\"]), dtype complex128",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Series of dtype float64: the column-a NaN is a real (non-complex) scalar, so column b is cast down and loses its imaginary part",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]}).median(skipna=False)",
+              "observed": [
+                "nan",
+                2.0
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]}).median(skipna=False)",
+              "observed": [
+                {
+                  "real": "nan",
+                  "imag": 0.0
+                },
+                {
+                  "real": 2.0,
+                  "imag": 3.0
+                }
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "pd.DataFrame({\"a\": SparseArray(np.array([1, np.nan, 3], dtype=\"float32\"), dtype=pd.SparseDtype(\"float32\", np.nan))}).median(skipna=False)",
+            "expected_output": "assert_series_equal(result, expected.astype(pd.SparseDtype(expected.dtype))) i.e. sparse dtype float32 / complex128 matching the dense result",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "sparse result dtype does not match dense (widened to float64); same mismatch for sem/std with ddof=5 and complex128 median",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pd.DataFrame({\"a\": SparseArray(np.array([1, np.nan, 3], dtype=\"float32\"), dtype=pd.SparseDtype(\"float32\", np.nan))}).median(skipna=False)",
+              "observed": [
+                "nan"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.DataFrame({\"a\": SparseArray(np.array([1, np.nan, 3], dtype=\"float32\"), dtype=pd.SparseDtype(\"float32\", np.nan))}).median(skipna=False)",
+              "observed": [
+                "nan"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 3,
+            "n_failed": 1,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 4,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata",
+            "numpy>=2.0.0",
+            "cython>=3.1.0",
+            "meson>=1.2.3",
+            "meson-python>=0.19.0",
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1",
+            "pytest-cython>=0.4.0",
+            "pytest-cov",
+            "pytest-localserver"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-09-12T07:10:01-07:00",
+        "fixed_commit_date": "2026-09-12T07:14:34-07:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-09-12T07:14:34-07:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.2",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.49.0",
+              "meson-python": "0.21.1",
+              "meson": "1.12.0",
+              "wheel": "0.48.0",
+              "cython": "3.3.0",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.0",
+              "cython": "cython==3.3.0"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1877.gd34d3e0563.dirty) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1877.gd34d3e0563.dirty) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1877.gd34d3e0563.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1877.gd34d3e0563.dirty-cp311-cp311-linux_x86_64.whl size=16087181 sha256=70c35c3d3af32adb0da7bb5963c59a7466ee51eaca319d590cd8cd4b06b98ba2\n  Stored in directory: /tmp/pip-ephem-wheel-cache-yca1v1kc/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1877.gd34d3e0563.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.2",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.49.0",
+              "meson-python": "0.21.1",
+              "meson": "1.12.0",
+              "wheel": "0.48.0",
+              "cython": "3.3.0",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.0",
+              "cython": "cython==3.3.0"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1878.gcacc8a1186) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1878.gcacc8a1186) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1878.gcacc8a1186) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1878.gcacc8a1186-cp311-cp311-linux_x86_64.whl size=16086948 sha256=8cfb560c0308e91c9a1ad7cf7f2a7bba93f1697b6a945b891c50ebbaa038d68e\n  Stored in directory: /tmp/pip-ephem-wheel-cache-jl0y7tlk/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1878.gcacc8a1186\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": 19,
+        "failed": 12,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 31,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 3,
+        "verdict": "flipped",
+        "pairs": [
+          {
+            "label": "nanops_dtype_preservation",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=3.200e+01, tol=0.000e+00)"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "nanmedian_f32_dtype": 64.0,
+              "nanmedian_c128_dtype": 64.0,
+              "nanmedian_c64_2d_dtype": 64.0,
+              "nanvar_f32_ddof5_dtype": 32.0,
+              "nanstd_f32_ddof5_dtype": 32.0,
+              "nansem_f32_ddof5_dtype": 64.0,
+              "frame_median_c128_dtype": 64.0
+            },
+            "fixed_values": {
+              "nanmedian_f32_dtype": 32.0,
+              "nanmedian_c128_dtype": 128.5,
+              "nanmedian_c64_2d_dtype": 64.5,
+              "nanvar_f32_ddof5_dtype": 32.0,
+              "nanstd_f32_ddof5_dtype": 32.0,
+              "nansem_f32_ddof5_dtype": 32.0,
+              "frame_median_c128_dtype": 128.5
+            }
+          },
+          {
+            "label": "nanops_report_examples_dtype_signature",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=3.200e+01, tol=1.000e-09)"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "ex1_nanmedian_float32": 64.0,
+              "ex2_nanmedian_complex128": 64.0,
+              "ex3_nanmedian_complex64_axis1": 64.0,
+              "ex4_nanvar_float32_ddof5": 32.0,
+              "ex4b_nanstd_float32_ddof5": 32.0,
+              "ex4c_nansem_float32_ddof5": 64.0,
+              "ex5_frame_complex_median": 64.0,
+              "ex6_sparse_frame_median": 32.0
+            },
+            "fixed_values": {
+              "ex1_nanmedian_float32": 32.0,
+              "ex2_nanmedian_complex128": 128.5,
+              "ex3_nanmedian_complex64_axis1": 64.5,
+              "ex4_nanvar_float32_ddof5": 32.0,
+              "ex4b_nanstd_float32_ddof5": 32.0,
+              "ex4c_nansem_float32_ddof5": 32.0,
+              "ex5_frame_complex_median": 128.5,
+              "ex6_sparse_frame_median": 32.0
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced NaN"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced NaN"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"float32\"), skipna=False)": "nan",
+              "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex128\"), skipna=False)": "nan",
+              "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3), axis=1, skipna=False)": [
+                "nan"
+              ],
+              "nanops.nanvar(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}": "nan",
+              "pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]}).median(skipna=False)": [
+                "nan",
+                2.0
+              ],
+              "pd.DataFrame({\"a\": SparseArray(np.array([1, np.nan, 3], dtype=\"float32\"), dtype=pd.SparseDtype(\"float32\", np.nan))}).median(skipna=False)": [
+                "nan"
+              ]
+            },
+            "fixed_values": {
+              "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"float32\"), skipna=False)": "nan",
+              "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex128\"), skipna=False)": {
+                "real": "np.float64(nan)",
+                "imag": 0.0
+              },
+              "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3), axis=1, skipna=False)": [
+                {
+                  "real": "nan",
+                  "imag": 0.0
+                }
+              ],
+              "nanops.nanvar(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}": "nan",
+              "pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]}).median(skipna=False)": [
+                {
+                  "real": "nan",
+                  "imag": 0.0
+                },
+                {
+                  "real": 2.0,
+                  "imag": 3.0
+                }
+              ],
+              "pd.DataFrame({\"a\": SparseArray(np.array([1, np.nan, 3], dtype=\"float32\"), dtype=pd.SparseDtype(\"float32\", np.nan))}).median(skipna=False)": [
+                "nan"
+              ]
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 6,
+        "n_judged": 6,
+        "n_reproduced": 3,
+        "evaluable": true,
+        "n_diverged": 3,
+        "n_unobserved": 0,
+        "n_contested": 0,
+        "unobserved": [],
+        "verdict": "diverged",
+        "examples": [
+          {
+            "input": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"float32\"), skipna=False)",
+            "expected_output": "result.dtype == float32 (matches values.dtype)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "returns a bare np.nan scalar, so result.dtype == float64 (widened from float32)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"float32\"), skipna=False)",
+              "observed": "nan",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"float32\"), skipna=False)",
+              "observed": "nan",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex128\"), skipna=False)",
+            "expected_output": "result.dtype == complex128 (matches values.dtype)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "bare float np.nan -> result.dtype == float64, imaginary part dropped",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex128\"), skipna=False)",
+              "observed": "nan",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex128\"), skipna=False)",
+              "observed": {
+                "real": "np.float64(nan)",
+                "imag": 0.0
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3), axis=1, skipna=False)",
+            "expected_output": "result.dtype == complex64 (matches values.dtype)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "2-D result takes its dtype from the first reduced slice: dtype float64, not complex64",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3), axis=1, skipna=False)",
+              "observed": [
+                "nan"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "nanops.nanmedian(np.array([1, np.nan, 3], dtype=\"complex64\").reshape(1, 3), axis=1, skipna=False)",
+              "observed": [
+                {
+                  "real": "nan",
+                  "imag": 0.0
+                }
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "nanops.nanvar(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}",
+            "expected_output": "result.dtype == float32 (matches values.dtype)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "count and its degrees of freedom become bare floats, widening the 1-D result to dtype float64",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "nanops.nanvar(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}",
+              "observed": "nan",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "nanops.nanvar(np.array([1, 2, 3], dtype=\"float32\"), ddof=5)  # also nanstd, nansem, ddof in {3, 5}",
+              "observed": "nan",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]}).median(skipna=False)",
+            "expected_output": "pd.Series([complex(np.nan), 2 + 3j], index=[\"a\", \"b\"]), dtype complex128",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Series of dtype float64: the column-a NaN is a real (non-complex) scalar, so column b is cast down and loses its imaginary part",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]}).median(skipna=False)",
+              "observed": [
+                "nan",
+                2.0
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.DataFrame({\"a\": [1 + 2j, np.nan], \"b\": [1 + 2j, 3 + 4j]}).median(skipna=False)",
+              "observed": [
+                {
+                  "real": "nan",
+                  "imag": 0.0
+                },
+                {
+                  "real": 2.0,
+                  "imag": 3.0
+                }
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "pd.DataFrame({\"a\": SparseArray(np.array([1, np.nan, 3], dtype=\"float32\"), dtype=pd.SparseDtype(\"float32\", np.nan))}).median(skipna=False)",
+            "expected_output": "assert_series_equal(result, expected.astype(pd.SparseDtype(expected.dtype))) i.e. sparse dtype float32 / complex128 matching the dense result",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "sparse result dtype does not match dense (widened to float64); same mismatch for sem/std with ddof=5 and complex128 median",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pd.DataFrame({\"a\": SparseArray(np.array([1, np.nan, 3], dtype=\"float32\"), dtype=pd.SparseDtype(\"float32\", np.nan))}).median(skipna=False)",
+              "observed": [
+                "nan"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.DataFrame({\"a\": SparseArray(np.array([1, np.nan, 3], dtype=\"float32\"), dtype=pd.SparseDtype(\"float32\", np.nan))}).median(skipna=False)",
+              "observed": [
+                "nan"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 3,
+          "n_failed": 1,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 4,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "With the PR's new tests applied to buggy commit d34d3e05636e8be8617d89d352f3d636558fbc12, the selected pytest run FAILS on the dtype/imaginary-part assertions (at minimum test_nanmedian_skipna_false_keeps_dtype, test_median_skipna_false_keeps_complex and the ddof>=3 parametrizations of test_nanvar_family_keeps_dtype and test_frame_nan_result_dtype_matches_dense), and the same run passes once pandas/core/nanops.py is fixed."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata",
+          "numpy>=2.0.0",
+          "cython>=3.1.0",
+          "meson>=1.2.3",
+          "meson-python>=0.19.0",
+          "pytest>=8.3.4",
+          "pytest-xdist>=3.6.1",
+          "pytest-cython>=0.4.0",
+          "pytest-cov",
+          "pytest-localserver"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-09-12T07:10:01-07:00",
+      "fixed_commit_date": "2026-09-12T07:14:34-07:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-09-12T07:14:34-07:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.2",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.49.0",
+            "meson-python": "0.21.1",
+            "meson": "1.12.0",
+            "wheel": "0.48.0",
+            "cython": "3.3.0",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.0",
+            "cython": "cython==3.3.0"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1877.gd34d3e0563.dirty) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1877.gd34d3e0563.dirty) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1877.gd34d3e0563.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1877.gd34d3e0563.dirty-cp311-cp311-linux_x86_64.whl size=16087181 sha256=70c35c3d3af32adb0da7bb5963c59a7466ee51eaca319d590cd8cd4b06b98ba2\n  Stored in directory: /tmp/pip-ephem-wheel-cache-yca1v1kc/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1877.gd34d3e0563.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.2",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.49.0",
+            "meson-python": "0.21.1",
+            "meson": "1.12.0",
+            "wheel": "0.48.0",
+            "cython": "3.3.0",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.0",
+            "cython": "cython==3.3.0"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1878.gcacc8a1186) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1878.gcacc8a1186) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1878.gcacc8a1186) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1878.gcacc8a1186-cp311-cp311-linux_x86_64.whl size=16086948 sha256=8cfb560c0308e91c9a1ad7cf7f2a7bba93f1697b6a945b891c50ebbaa038d68e\n  Stored in directory: /tmp/pip-ephem-wheel-cache-jl0y7tlk/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1878.gcacc8a1186\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 3,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce GH#68487 at buggy commit d34d3e05 (nanops returning bare np.nan / bare Python floats instead of a dtype-carrying scalar, widening nanmedian(skipna=False) and the nanvar family and losing complex imaginary parts) and show the same code paths keep the input dtype on fixed commit cacc8a11.",
+          "milestones": [
+            "buggy_environment_ready [buggy] \u2014 The buggy revision's pre-built virtualenv imports pandas correctly and the four added reproduction tests are collected by pytest. (2 steps, verify: steps_succeeded)",
+            "buggy_defect_observable [buggy] \u2014 On buggy, the reproduction test selector fails and both a direct nanops probe and the report's own examples show the widened dtype / lost imaginary part. (3 steps, verify: test_ran, test_fails, probe_shows_defect)",
+            "fixed_environment_ready [fixed] \u2014 The fixed revision's pre-built virtualenv imports pandas correctly and collects the same reproduction tests. (2 steps, verify: steps_succeeded)",
+            "fixed_behavior_differs [fixed] \u2014 On fixed, the reproduction selector passes, the same probe reports dtype-preserving behavior, the report's examples reproduce their expected values, and the two revisions differ. (3 steps, verify: test_passes, probe_clean, examples_reproduced, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import numpy as np, pandas as pd, sys; print(pd.__version__, pd.__file__, np.__version__, sys.version)\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 0.51
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.test_nanops pandas.tests.frame.test_reductions pandas.tests.arrays.sparse.test_reductions -k \"test_nanmedian_skipna_false_keeps_dtype or test_nanvar_family_keeps_dtype or test_median_skipna_false_keeps_complex or test_frame_nan_result_dtype_matches_dense or test_describe\" --collect-only -q --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 2.67
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.test_nanops pandas.tests.frame.test_reductions pandas.tests.arrays.sparse.test_reductions -k \"test_nanmedian_skipna_false_keeps_dtype or test_nanvar_family_keeps_dtype or test_median_skipna_false_keeps_complex or test_frame_nan_result_dtype_matches_dense or test_describe\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning -q -rf",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 2.74
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "nanops_input_dtype_kept",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(nanops_input_dtype_kept) \u2014 Measure directly, with numeric indicators, whether nanmedian(skipna=False) and the ddof>=count nanvar family keep the input dtype and whether the complex median keeps its imaginary part."
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_error",
+        "pathology": null,
+        "reasons": [
+          "the probe itself could not run (ImportError: cannot import name 'SparseDtype' from 'pandas.arrays' (/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/arrays/__init__.py)) \u2014 fix the probe, not the revision"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_defect_observable",
+          "verified": false,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Show that on buggy d34d3e05 nanops returns bare np.nan / bare Python floats (widening nanmedian(skipna=False) and the ddof>=count nanvar family and dropping complex imaginary parts, including DataFrame/Sparse paths) while the same probes and the report's own examples preserve the input dtype on fixed cacc8a11.",
+          "milestones": [
+            "buggy_defect_observed [buggy] \u2014 On buggy, a corrected probe that actually records observations shows the widened dtype / lost imaginary part, and the report's own examples evaluate using only valid imports. (2 steps, verify: probe_ran, probe_shows_defect)",
+            "fixed_environment_ready [fixed] \u2014 The fixed revision's pre-built virtualenv imports pandas correctly and collects the same reproduction tests. (2 steps, verify: steps_succeeded)",
+            "fixed_behavior_differs [fixed] \u2014 On fixed, the reproduction selector passes, the same probe reports dtype-preserving behavior, the report's examples reproduce their expected values, and the two revisions differ. (3 steps, verify: test_passes, probe_clean, examples_reproduced, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "nanops_dtype_preservation",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "values do not match the reference (finite compare: abs_err=3.200e+01, tol=0.000e+00)"
+        ],
+        "expected": [
+          32.0,
+          128.5,
+          64.5,
+          32.0,
+          32.0,
+          32.0,
+          128.5
+        ],
+        "observed": [
+          64.0,
+          64.0,
+          64.0,
+          32.0,
+          32.0,
+          64.0,
+          64.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced NaN"
+        ],
+        "expected": null,
+        "observed": [
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          2.0,
+          "nan"
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_defect_observed",
+          "verified": true,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'nanops_dtype_preservation': values do not match the reference (finite compare: abs_err=3.200e+01, tol=0.000e+00)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -c \"import numpy as np, pandas as pd; print(pd.__version__, np.__version__, pd.__file__)\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 0.51
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -m pytest --pyargs pandas.tests.test_nanops pandas.tests.frame.test_reductions pandas.tests.arrays.sparse.test_reductions -k \"test_nanmedian_skipna_false_keeps_dtype or test_nanvar_family_keeps_dtype or test_median_skipna_false_keeps_complex or test_frame_nan_result_dtype_matches_dense or test_describe\" --collect-only -q --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.91
+      },
+      {
+        "verification": {
+          "milestone": "fixed_environment_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -m pytest --pyargs pandas.tests.test_nanops pandas.tests.frame.test_reductions pandas.tests.arrays.sparse.test_reductions -k \"test_nanmedian_skipna_false_keeps_dtype or test_nanvar_family_keeps_dtype or test_median_skipna_false_keeps_complex or test_frame_nan_result_dtype_matches_dense or test_describe\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.68
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "nanops_dtype_preservation",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": [
+          32.0,
+          128.5,
+          64.5,
+          32.0,
+          32.0,
+          32.0,
+          128.5
+        ],
+        "observed": [
+          32.0,
+          128.5,
+          64.5,
+          32.0,
+          32.0,
+          32.0,
+          128.5
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced NaN"
+        ],
+        "expected": null,
+        "observed": [
+          "nan",
+          0.0,
+          "nan",
+          0.0,
+          "nan",
+          "nan",
+          0.0,
+          2.0,
+          3.0,
+          "nan"
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "fixed_behavior_differs",
+          "verified": false,
+          "results": [
+            {
+              "check": "test_passes",
+              "passed": true,
+              "detail": "test pass on fixed (milestone required pass)"
+            },
+            {
+              "check": "probe_clean",
+              "passed": true,
+              "detail": "every probe is clean on fixed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "3/6 mined example(s) reproduced (verdict diverged, 0 still wrong on fixed)"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": true,
+              "detail": "the reproducing test goes FAIL -> PASS"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Show that the report's six cases keep their input dtype on fixed cacc8a11 (selector passes, per-example dtype signatures match the input dtype) while the identical paired probe records widened float64 on buggy d34d3e05 \u2014 decided by the probes, not by the report's dtype-level expressions, which evaluate to a bare nan on both revisions.",
+          "milestones": [
+            "buggy_report_cases_dtype_signature [buggy] \u2014 Record, on buggy, each of the report's six examples as a value-distinguishable dtype signature (bit width of the result dtype, +0.5 when the result stays complex), under a fixed label so it pairs with the fixed run. (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "fixed_dtype_preservation_confirmed [fixed] \u2014 On fixed the reproduction selector passes, the identical per-example dtype-signature probe is clean and differs from the buggy pair, and the report's own examples are re-evaluated as recorded evidence (without claiming they reproduce, since they encode dtype assertions). (3 steps, verify: steps_succeeded, test_ran, test_passes, probe_ran, probe_clean, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "nanops_report_examples_dtype_signature",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "values do not match the reference (finite compare: abs_err=3.200e+01, tol=1.000e-09)"
+        ],
+        "expected": [
+          32.0,
+          128.5,
+          64.5,
+          32.0,
+          32.0,
+          32.0,
+          128.5,
+          32.0
+        ],
+        "observed": [
+          64.0,
+          64.0,
+          64.0,
+          32.0,
+          32.0,
+          64.0,
+          64.0,
+          32.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_report_cases_dtype_signature",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'nanops_report_examples_dtype_signature': values do not match the reference (finite compare: abs_err=3.200e+01, tol=1.000e-09)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -m pytest --pyargs pandas.tests.test_nanops pandas.tests.frame.test_reductions pandas.tests.arrays.sparse.test_reductions -k \"test_nanmedian_skipna_false_keeps_dtype or test_nanvar_family_keeps_dtype or test_median_skipna_false_keeps_complex or test_frame_nan_result_dtype_matches_dense or test_describe\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.69
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "nanops_report_examples_dtype_signature",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": [
+          32.0,
+          128.5,
+          64.5,
+          32.0,
+          32.0,
+          32.0,
+          128.5,
+          32.0
+        ],
+        "observed": [
+          32.0,
+          128.5,
+          64.5,
+          32.0,
+          32.0,
+          32.0,
+          128.5,
+          32.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced NaN"
+        ],
+        "expected": null,
+        "observed": [
+          "nan",
+          0.0,
+          "nan",
+          0.0,
+          "nan",
+          "nan",
+          0.0,
+          2.0,
+          3.0,
+          "nan"
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "fixed_dtype_preservation_confirmed",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on fixed"
+            },
+            {
+              "check": "test_passes",
+              "passed": true,
+              "detail": "test pass on fixed (milestone required pass)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": true,
+              "detail": "every probe is clean on fixed"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": true,
+              "detail": "the reproducing test goes FAIL -> PASS"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "flipped",
+        "examples_verdict": "diverged",
+        "examples": "3/6"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 3/6 reported example(s) show the reported difference between the revisions; the numerical oracle agrees (defect signal present on buggy, absent on fixed)"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "deepseek-v4-flash",
+      "calls": 3,
+      "input_tokens": 16253,
+      "output_tokens": 34282,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.052404
+    }
+  }
+]

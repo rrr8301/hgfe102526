@@ -1,0 +1,100 @@
+{
+  "input": "pipeline_no_historic/pandas_66696/mined/pandas-dev__pandas_66696.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 23293,
+    "output_tokens": 6183,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66696,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66696",
+      "buggy_commit": "518f2a3cb9504555b40c1d5aaab4690245a7d265",
+      "fixed_commit": "a3cbd3804cb17c32dfb7c81698257d9287ff6d91",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7721,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#66400 in pandas: assert_almost_equal/assert_series_equal with check_exact=False and explicit atol/rtol on integers above 2**53 casts operands to float64, so the tolerance is applied to rounded values. The developer's tests should fail on buggy commit 518f2a3cb950 and pass on the fixed revision of PR#66696. Build pandas from source at the buggy commit, then run the targeted pytest selections.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.11.9",
+          "pip_packages": [
+            "cython",
+            "numpy==2.2.5",
+            "python-dateutil",
+            "tzdata",
+            "pytest==8.3.5"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "numpy==2.2.5 is the installed version reported in issue#66400 (issue-era evidence, not a documented constraint); chosen to match the reporter's environment",
+            "pytest==8.3.5 is the installed version reported in issue#66400 (issue-era evidence, not a documented constraint); chosen to match the reporter's environment",
+            "python 3.11.9 is the stated language version from the evidence",
+            "pandas itself is built from the checked-out buggy commit, so its installed version is not pinned; the reported 2.2.3 is not relied upon for the build"
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/util/test_assert_almost_equal.py pandas/tests/util/test_assert_series_equal.py -k \"large_integers or large_int_atol or integers_negative_tolerance\" -v",
+        "reproducing_test": "pandas/tests/util/test_assert_almost_equal.py::test_assert_almost_equal_large_integers_within_atol, pandas/tests/util/test_assert_almost_equal.py::test_assert_not_almost_equal_large_integers_outside_atol, pandas/tests/util/test_assert_almost_equal.py::test_assert_almost_equal_integers_negative_tolerance, pandas/tests/util/test_assert_series_equal.py::test_assert_series_equal_large_int_atol",
+        "success_criterion": "On the buggy revision 518f2a3cb950, test_assert_almost_equal_large_integers_within_atol (int, np.int64, np.uint64) and test_assert_series_equal_large_int_atol (int64, Int64) fail because 1450804465901089690 vs 1450804465901089614 (76 apart, atol=100) is reported unequal after float64 rounding, and test_assert_not_almost_equal_large_integers_outside_atol fails because values 100 apart with atol=10 compare equal after rounding to the same float64. On the fixed revision all of these pass, and the negative-tolerance ValueError test passes on both revisions. The transition is buggy-fail to fixed-pass for the first, second and third tests listed.",
+        "numerical_probe": "a = 1450804465901089690; b = 1450804465901089614; tm.assert_almost_equal(a, b, rtol=0, atol=100)",
+        "input_output_examples": [
+          {
+            "input": "a = 1450804465901089690; b = 1450804465901089614; assert_series_equal(pd.Series([a]), pd.Series([b]), check_dtype=False, check_exact=False, atol=100, rtol=0)",
+            "buggy_output": "AssertionError raised",
+            "expected_output": "no AssertionError"
+          }
+        ],
+        "risks": [
+          "Fix covers only integer-integer operands with rtol>=0 and atol>=0; mixed int/float cases (issue#66699, check_dtype=False with int64 2**60+1 vs float64 2**60) are not covered and must not be used as the transition test.",
+          "Outcome depends on check_exact=False so the comparison reaches the tolerance check instead of an earlier equality short-circuit; the Series test sets check_exact=False explicitly.",
+          "Negative tolerances bypass the integer path and are validated by math.isclose; the negative-tolerance test is a guard that should pass on both revisions, not a transition test.",
+          "Build requires Cython and a compiler toolchain on the host; pandas uses C extensions (testing.pyx) so the editable build must be rebuilt at each revision checkout or the buggy compiled code will persist.",
+          "Numpy and pytest versions are issue-era pins with no documented constraint; a different numpy version could change uint64 and int64 scalar handling and alter whether the buggy path is hit.",
+          "No platform or sanitiser requirement is stated in the evidence; the float64 rounding behaviour is platform-independent IEEE 754 so the defect should reproduce on common x86_64 and arm64 Linux, but this is inferred rather than documented.",
+          "The success criterion is a transition, so the buggy-revision failure relies on the tests being run against the actual buggy commit, not the fixed test files alone; the test files in the diff must be applied to the buggy tree."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "pandas/_libs/testing.pyx comment and PR#66696 fix description: integer-integer comparison should be exact with threshold max(rtol*max(|a|,|b|), atol)",
+          "why": "The expected outcome is defined by integer arithmetic on the exact values (76 apart with atol=100 passes; 100 apart with atol=10 fails), which is an exact comparison rather than a floating tolerance."
+        },
+        "fails_on_buggy": "On the buggy revision, assert_almost_equal casts both integers to C double; 1450804465901089690 and 1450804465901089614 round to values 256 apart, which exceeds atol=100, so an AssertionError is raised for a difference that is actually 76 and should pass. The same rounding makes values 100 apart compare equal in the outside-atol test, so that test's expected AssertionError is not raised and the test fails.",
+        "passes_on_fixed": "On the fixed revision the integer path compares the exact integers, so the 76-apart pair passes with atol=100 and the 100-apart pair raises AssertionError with atol=10 as the tests expect; the negative-tolerance ValueError test passes on both revisions."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6023,
+        "output_tokens": 2058,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 17270,
+        "output_tokens": 4125,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

@@ -1,0 +1,250 @@
+diff --git a/doc/whats_new/upcoming_changes/sklearn.linear_model/31856.fix.rst b/doc/whats_new/upcoming_changes/sklearn.linear_model/31856.fix.rst
+new file mode 100644
+index 0000000000000..8d9138d2b449a
+--- /dev/null
++++ b/doc/whats_new/upcoming_changes/sklearn.linear_model/31856.fix.rst
+@@ -0,0 +1,6 @@
++- Fix the convergence criteria for SGD models, to avoid premature convergence when
++  `tol != None`. This primarily impacts :class:`SGDOneClassSVM` but also affects 
++  :class:`SGDClassifier` and :class:`SGDRegressor`. Before this fix, only the loss
++  function without penalty was used as the convergence check, whereas now, the full
++  objective with regularization is used.
++  By :user:`Guillaume Lemaitre <glemaitre>` and :user:`kostayScr <kostayScr>`
+diff --git a/sklearn/linear_model/_sgd_fast.pyx.tp b/sklearn/linear_model/_sgd_fast.pyx.tp
+index 2225bf797ecd9..58a7ced683d3f 100644
+--- a/sklearn/linear_model/_sgd_fast.pyx.tp
++++ b/sklearn/linear_model/_sgd_fast.pyx.tp
+@@ -422,8 +422,10 @@ def _plain_sgd{{name_suffix}}(
+     cdef double update = 0.0
+     cdef double intercept_update = 0.0
+     cdef double sumloss = 0.0
++    cdef double cur_loss_val = 0.0
+     cdef double score = 0.0
+-    cdef double best_loss = INFINITY
++    cdef double objective_sum = 0.0
++    cdef double best_objective = INFINITY
+     cdef double best_score = -INFINITY
+     cdef {{c_type}} y = 0.0
+     cdef {{c_type}} sample_weight
+@@ -465,6 +467,7 @@ def _plain_sgd{{name_suffix}}(
+     with nogil:
+         for epoch in range(max_iter):
+             sumloss = 0
++            objective_sum = 0
+             if verbose > 0:
+                 with gil:
+                     print("-- Epoch %d" % (epoch + 1))
+@@ -486,7 +489,23 @@ def _plain_sgd{{name_suffix}}(
+                     eta = eta0 / pow(t, power_t)
+ 
+                 if verbose or not early_stopping:
+-                    sumloss += loss.cy_loss(y, p)
++                    cur_loss_val = loss.cy_loss(y, p)
++                    sumloss += cur_loss_val
++                    objective_sum += cur_loss_val
++                    # for PA1/PA2 (passive/aggressive model, online algorithm) use only the loss
++                    if learning_rate != PA1 and learning_rate != PA2:
++                        # sum up all the terms in the optimization objective function 
++                        # (i.e. also include regularization in addition to the loss)
++                        # Note: for the L2 term SGD optimizes 0.5 * L2**2, due to using
++                        # weight decay that's why the 0.5 coefficient is required
++                        if penalty_type > 0: # if regularization is enabled
++                            objective_sum += alpha * (
++                                (1 - l1_ratio) * 0.5 * w.norm() ** 2 +
++                                l1_ratio * w.l1norm()
++                            )
++                        if one_class:  # specific to One-Class SVM
++                            # nu is alpha * 2 (alpha is set as nu / 2 by the caller)
++                            objective_sum += intercept * (alpha * 2)
+ 
+                 if y > 0.0:
+                     class_weight = weight_pos
+@@ -552,16 +571,6 @@ def _plain_sgd{{name_suffix}}(
+                 t += 1
+                 count += 1
+ 
+-            # report epoch information
+-            if verbose > 0:
+-                with gil:
+-                    print("Norm: %.2f, NNZs: %d, Bias: %.6f, T: %d, "
+-                          "Avg. loss: %f"
+-                          % (w.norm(), np.nonzero(weights)[0].shape[0],
+-                             intercept, count, sumloss / train_count))
+-                    print("Total training time: %.2f seconds."
+-                          % (time() - t_start))
+-
+             # floating-point under-/overflow check.
+             if (not isfinite(intercept) or any_nonfinite(weights)):
+                 infinity = True
+@@ -571,6 +580,14 @@ def _plain_sgd{{name_suffix}}(
+             if early_stopping:
+                 with gil:
+                     score = validation_score_cb(weights.base, intercept)
++                    if verbose > 0:  # report epoch information
++                        print("Norm: %.2f, NNZs: %d, Bias: %.6f, T: %d, "
++                            "Avg. loss: %f, Objective: %f, Validation score: %f"
++                            % (w.norm(), np.nonzero(weights)[0].shape[0],
++                                intercept, count, sumloss / train_count,
++                                objective_sum / train_count, score))
++                        print("Total training time: %.2f seconds."
++                            % (time() - t_start))
+                 if tol > -INFINITY and score < best_score + tol:
+                     no_improvement_count += 1
+                 else:
+@@ -579,12 +596,25 @@ def _plain_sgd{{name_suffix}}(
+                     best_score = score
+             # or evaluate the loss on the training set
+             else:
+-                if tol > -INFINITY and sumloss > best_loss - tol * train_count:
++                if verbose > 0:  # report epoch information
++                    with gil:
++                        print("Norm: %.2f, NNZs: %d, Bias: %.6f, T: %d, "
++                            "Avg. loss: %f, Objective: %f"
++                            % (w.norm(), np.nonzero(weights)[0].shape[0],
++                                intercept, count, sumloss / train_count,
++                                objective_sum / train_count))
++                        print("Total training time: %.2f seconds."
++                            % (time() - t_start))
++                # true objective = objective_sum / number of samples
++                if (
++                    tol > -INFINITY
++                    and objective_sum / train_count > best_objective - tol
++                ):
+                     no_improvement_count += 1
+                 else:
+                     no_improvement_count = 0
+-                if sumloss < best_loss:
+-                    best_loss = sumloss
++                if objective_sum / train_count < best_objective:
++                    best_objective = objective_sum / train_count
+ 
+             # if there is no improvement several times in a row
+             if no_improvement_count >= n_iter_no_change:
+diff --git a/sklearn/linear_model/_stochastic_gradient.py b/sklearn/linear_model/_stochastic_gradient.py
+index 21be890275dd4..c65cdbdcf51ce 100644
+--- a/sklearn/linear_model/_stochastic_gradient.py
++++ b/sklearn/linear_model/_stochastic_gradient.py
+@@ -2252,9 +2252,9 @@ class SGDOneClassSVM(OutlierMixin, BaseSGD):
+     >>> import numpy as np
+     >>> from sklearn import linear_model
+     >>> X = np.array([[-1, -1], [-2, -1], [1, 1], [2, 1]])
+-    >>> clf = linear_model.SGDOneClassSVM(random_state=42)
++    >>> clf = linear_model.SGDOneClassSVM(random_state=42, tol=None)
+     >>> clf.fit(X)
+-    SGDOneClassSVM(random_state=42)
++    SGDOneClassSVM(random_state=42, tol=None)
+ 
+     >>> print(clf.predict([[4, 4]]))
+     [1]
+diff --git a/sklearn/utils/_weight_vector.pxd.tp b/sklearn/utils/_weight_vector.pxd.tp
+index bb1a4db486d2a..79e5be6e1df1e 100644
+--- a/sklearn/utils/_weight_vector.pxd.tp
++++ b/sklearn/utils/_weight_vector.pxd.tp
+@@ -31,6 +31,7 @@ cdef class WeightVector{{name_suffix}}(object):
+     cdef double average_b
+     cdef int n_features
+     cdef double sq_norm
++    cdef double l1_norm
+ 
+     cdef void add(self, {{c_type}} *x_data_ptr, int *x_ind_ptr,
+                   int xnnz, {{c_type}} c) noexcept nogil
+@@ -41,5 +42,6 @@ cdef class WeightVector{{name_suffix}}(object):
+     cdef void scale(self, {{c_type}} c) noexcept nogil
+     cdef void reset_wscale(self) noexcept nogil
+     cdef {{c_type}} norm(self) noexcept nogil
++    cdef {{c_type}} l1norm(self) noexcept nogil
+ 
+ {{endfor}}
+diff --git a/sklearn/utils/_weight_vector.pyx.tp b/sklearn/utils/_weight_vector.pyx.tp
+index ae2aade7787e0..81fafe7874081 100644
+--- a/sklearn/utils/_weight_vector.pyx.tp
++++ b/sklearn/utils/_weight_vector.pyx.tp
+@@ -25,9 +25,9 @@ dtypes = [('64', 'double', 1e-9),
+ 
+ cimport cython
+ from libc.limits cimport INT_MAX
+-from libc.math cimport sqrt
++from libc.math cimport sqrt, fabs
+ 
+-from sklearn.utils._cython_blas cimport _dot, _scal, _axpy
++from sklearn.utils._cython_blas cimport _dot, _scal, _axpy, _asum
+ 
+ {{for name_suffix, c_type, reset_wscale_threshold in dtypes}}
+ 
+@@ -53,6 +53,8 @@ cdef class WeightVector{{name_suffix}}(object):
+         The number of features (= dimensionality of ``w``).
+     sq_norm : {{c_type}}
+         The squared norm of ``w``.
++    l1_norm : {{c_type}}
++        The L1 norm of ``w``.
+     """
+ 
+     def __cinit__(self,
+@@ -67,6 +69,7 @@ cdef class WeightVector{{name_suffix}}(object):
+         self.wscale = 1.0
+         self.n_features = w.shape[0]
+         self.sq_norm = _dot(self.n_features, self.w_data_ptr, 1, self.w_data_ptr, 1)
++        self.l1_norm = _asum(self.n_features, self.w_data_ptr, 1)
+ 
+         self.aw = aw
+         if self.aw is not None:
+@@ -78,7 +81,7 @@ cdef class WeightVector{{name_suffix}}(object):
+                   {{c_type}} c) noexcept nogil:
+         """Scales sample x by constant c and adds it to the weight vector.
+ 
+-        This operation updates ``sq_norm``.
++        This operation updates ``sq_norm`` and ``l1_norm``.
+ 
+         Parameters
+         ----------
+@@ -94,8 +97,8 @@ cdef class WeightVector{{name_suffix}}(object):
+         cdef int j
+         cdef int idx
+         cdef double val
+-        cdef double innerprod = 0.0
+-        cdef double xsqnorm = 0.0
++        cdef double l2norm_accumulator = 0.0
++        cdef double l1norm_accumulator = 0.0
+ 
+         # the next two lines save a factor of 2!
+         cdef {{c_type}} wscale = self.wscale
+@@ -104,11 +107,13 @@ cdef class WeightVector{{name_suffix}}(object):
+         for j in range(xnnz):
+             idx = x_ind_ptr[j]
+             val = x_data_ptr[j]
+-            innerprod += (w_data_ptr[idx] * val)
+-            xsqnorm += (val * val)
+             w_data_ptr[idx] += val * (c / wscale)
+ 
+-        self.sq_norm += (xsqnorm * c * c) + (2.0 * innerprod * wscale * c)
++            l2norm_accumulator += w_data_ptr[idx] * w_data_ptr[idx]
++            l1norm_accumulator += fabs(w_data_ptr[idx])
++
++        self.sq_norm = l2norm_accumulator * (wscale * wscale)
++        self.l1_norm = l1norm_accumulator * wscale
+ 
+     # Update the average weights according to the sparse trick defined
+     # here: https://research.microsoft.com/pubs/192769/tricks-2012.pdf
+@@ -180,10 +185,11 @@ cdef class WeightVector{{name_suffix}}(object):
+     cdef void scale(self, {{c_type}} c) noexcept nogil:
+         """Scales the weight vector by a constant ``c``.
+ 
+-        It updates ``wscale`` and ``sq_norm``. If ``wscale`` gets too
+-        small we call ``reset_swcale``."""
++        It updates ``wscale``, ``sq_norm``, and ``l1_norm``. If ``wscale`` gets too
++        small we call ``reset_wscale``."""
+         self.wscale *= c
+         self.sq_norm *= (c * c)
++        self.l1_norm *= fabs(c)
+ 
+         if self.wscale < {{reset_wscale_threshold}}:
+             self.reset_wscale()
+@@ -204,4 +210,8 @@ cdef class WeightVector{{name_suffix}}(object):
+         """The L2 norm of the weight vector. """
+         return sqrt(self.sq_norm)
+ 
++    cdef {{c_type}} l1norm(self) noexcept nogil:
++        """The L1 norm of the weight vector. """
++        return self.l1_norm
++
+ {{endfor}}

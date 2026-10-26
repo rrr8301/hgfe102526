@@ -1,0 +1,102 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_66243_gpt-5.4-nano/mined/pandas-dev__pandas_66243.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 10039,
+    "output_tokens": 2684,
+    "cost_usd": 0.005363,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66243,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66243",
+      "buggy_commit": "6c0bbdc5e7bfd67ab4976e30ad0dafb8922b068f",
+      "fixed_commit": "e47fb8357cdb7b84449101ba8edc952874a9ce65",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 6633,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas Rolling.cov/Rolling.corr NaN-poisoning when a rolling window\u2019s valid-pair count drops to 0 due to a NaN gap in one input; ensure the project\u2019s own test `test_rolling_cov_corr_nan_gap_recovery` fails on buggy commit 6c0bbdc5e7bf and passes on the fixed revision from PR #66243.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.11",
+          "pip_packages": [
+            "numpy",
+            "cython",
+            "python-dateutil",
+            "pytest"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip setuptools wheel",
+            "python -m pip install cython numpy python-dateutil pytest",
+            "git clone https://github.com/pandas-dev/pandas.git",
+            "cd pandas",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "Need to build pandas with its C extensions (Rolling pairwise kernels/Welford updates) for the NaN-poisoning behavior to occur consistently; editable install with `--no-build-isolation` matches the provided installation pattern.",
+            "NumPy is required (documented in README); no specific version constraint was provided in the evidence, so choose a modern compatible NumPy and keep it constant across buggy/fixed runs."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/window/test_pairwise.py -k \"rolling_cov_corr_nan_gap_recovery\"",
+        "reproducing_test": "test_rolling_cov_corr_nan_gap_recovery (pandas/tests/window/test_pairwise.py)",
+        "success_criterion": "On revision 6c0bbdc5e7bf the test\u2019s `tm.assert_series_equal(result, expected)` fails because the result becomes NaN for the later overlapping windows (i=3) instead of the expected finite value; after checking out the fixed PR #66243 revision (the commit range containing the guard/reset for `nobs==0` in remove_cov/remove_corr), the same assertion passes and `result.iloc[3]` equals 50.0 for cov and 1.0 for corr (with earlier entries remaining NaN as in `expected`).",
+        "numerical_probe": "Use NaN in `b` at index 1 so that for rolling window=2 there exists an intermediate step where the window has zero valid (non-NaN) pairs, triggering the buggy 0/0 during the downdate/removal update; verify the test\u2019s series equality rather than separately inspecting intermediate accumulators.",
+        "input_output_examples": [
+          {
+            "input": "a = pd.Series([1.0, 10.0, 20.0, 30.0]); b = pd.Series([1.0, np.nan, 20.0, 30.0]); a.rolling(2).cov(b)",
+            "buggy_output": "was all-NaN incl. i=3",
+            "expected_output": "expected 50.0 (at i=3) with Series([np.nan, np.nan, np.nan, 50.0])"
+          },
+          {
+            "input": "a = pd.Series([1.0, 10.0, 20.0, 30.0]); b = pd.Series([1.0, np.nan, 20.0, 30.0]); a.rolling(2).corr(b)",
+            "buggy_output": "was all-NaN incl. i=3",
+            "expected_output": "expected 1.0 (at i=3) with Series([np.nan, np.nan, np.nan, 1.0])"
+          }
+        ],
+        "risks": [
+          "Version/ABI risk: The evidence does not specify NumPy or pandas fixed revision identifiers besides the buggy commit hash; you must run the test on (1) the pandas commit `6c0bbdc5e7bf` and (2) the fixed commit from PR #66243 to observe the transition.",
+          "Platform/toolchain risk: Rolling pairwise computations live partly in compiled extensions; behavior should be consistent across platforms, but any architecture-specific floating-point or BLAS/parallel differences could make the failure mode appear differently (the evidence does not document a platform constraint).",
+          "Trigger risk: If `b` does not contain a NaN in the middle such that the rolling window of size 2 ever has zero valid pairs, the NaN-poisoning path may not be exercised; this strategy uses exactly the provided `b = [1.0, np.nan, 20.0, 30.0]`.",
+          "Era/dependency constraint risk: The evidence provides no documented version constraints for NumPy/python-dateutil/tzdata/Cython beyond that they are required/unbounded. Keep the same dependency versions across both buggy and fixed runs to ensure the behavioral transition is attributable to the pandas change."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "Explicit oracle in the provided test: `expected = Series([np.nan, np.nan, np.nan, expected_last])` where `expected_last` is 50.0 for cov and 1.0 for corr (GH#65739 behavior described in PR body).",
+          "why": "The test compares the entire resulting Series with `tm.assert_series_equal`, so exact match is required (including NaN positions and exact float values for the last entry)."
+        },
+        "fails_on_buggy": "`tm.assert_series_equal` fails because `result` contains NaN at i=3 (the window update divides by nobs==0 during downdate, producing NaN and poisoning subsequent overlapping windows), so the actual last value is NaN instead of 50.0/1.0 as required by `expected`.",
+        "passes_on_fixed": "`tm.assert_series_equal` passes after the PR fix that guards the downdate with `if nobs[0]:` and otherwise resets accumulators (mean/ssqdm) instead of performing 0/0, preventing NaN poisoning and yielding the finite last values 50.0 for cov and 1.0 for corr."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 2824,
+        "output_tokens": 1244,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.00212
+      },
+      "miner_usage": {
+        "input_tokens": 7215,
+        "output_tokens": 1440,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0032430000000000002,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

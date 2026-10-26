@@ -1,0 +1,271 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 3a7d2ed501a74..a11368e491c4b 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -667,6 +667,7 @@ I/O
+ - Fixed bug in :meth:`HDFStore.select` where a ``where`` combining a row condition with an ``==``/``!=`` filter on a data column of more than 31 values (e.g. ``"index>0 & col=big_list"``) silently returned extra rows that did not match the filter when read with ``iterator=True`` or ``chunksize`` (:issue:`12953`)
+ - Fixed bug in :meth:`HDFStore.select` where an ``==``/``!=`` filter on a timezone-aware datetime data column of more than 31 values silently returned the wrong rows (typically none) on a plain read, because the timezone was dropped before the filter was applied (:issue:`12953`)
+ - Fixed :meth:`DataFrame.to_hdf` and :meth:`Series.to_hdf` to round-trip a :class:`CategoricalIndex` in both ``"fixed"`` and ``"table"`` formats; previously raised ``AssertionError`` (:issue:`33909`, :issue:`16118`)
++- Bug in :meth:`DataFrame.to_json` and :meth:`Series.to_json` with ``date_format="epoch"`` where datetime or timedelta values held behind another dtype, such as :class:`CategoricalDtype` or :class:`SparseDtype`, were written in their own resolution instead of ``date_unit``, and where :class:`SparseDtype` raised ``AttributeError`` (:issue:`66709`)
+ - Bug in :meth:`Series.to_json` with ``date_format="iso"`` where a timezone-aware datetime :class:`Series` was serialized without the trailing ``Z`` marker, losing the timezone information that is retained for an equivalent :class:`DatetimeIndex` or :class:`DataFrame` column (:issue:`65744`)
+ - Fixed bug in :func:`read_hdf` where a store it had opened was left open if reading failed with an error other than ``ValueError``, ``TypeError``, or ``LookupError`` (e.g. ``AssertionError``), so a subsequent attempt to reopen the file for writing raised "file is already opened" (:issue:`28430`)
+ - Fixed bug in :meth:`DataFrame.to_parquet` (``pyarrow`` engine) where a local file path was opened twice, once by pandas and again by pyarrow, wasting a syscall and silently truncating output to 0 bytes on filesystems that finalize a file's contents on close (:issue:`65810`)
+diff --git a/pandas/_libs/src/vendored/ujson/python/objToJSON.c b/pandas/_libs/src/vendored/ujson/python/objToJSON.c
+index 817fff37b1e31..58c89851301d3 100644
+--- a/pandas/_libs/src/vendored/ujson/python/objToJSON.c
++++ b/pandas/_libs/src/vendored/ujson/python/objToJSON.c
+@@ -318,6 +318,76 @@ static Py_ssize_t get_attr_length(PyObject *obj, char *attr) {
+   return ret;
+ }
+ 
++/* Number of nanoseconds in one step of ``unit``, or -1 for units that are not
++ * a fixed number of nanoseconds (years, months) or do not fit in an int64. */
++static int64_t nanosPerUnit(NPY_DATETIMEUNIT unit) {
++  switch (unit) {
++  case NPY_FR_W:
++    return 604800000000000LL;
++  case NPY_FR_D:
++    return 86400000000000LL;
++  case NPY_FR_h:
++    return 3600000000000LL;
++  case NPY_FR_m:
++    return 60000000000LL;
++  case NPY_FR_s:
++    return 1000000000LL;
++  case NPY_FR_ms:
++    return 1000000LL;
++  case NPY_FR_us:
++    return 1000LL;
++  case NPY_FR_ns:
++    return 1LL;
++  default:
++    return -1;
++  }
++}
++
++/*
++ * Function: scaleDatetimeUnit
++ * ---------------------------
++ *
++ * Rescales an integer datetime/timedelta value from ``fromUnit`` to
++ * ``toUnit``, e.g. for writing epoch values in the unit requested by
++ * ``date_unit``. Mutates the provided value directly. Returns 0 on success,
++ * -1 (with an exception set) on error.
++ */
++static int scaleDatetimeUnit(int64_t *value, NPY_DATETIMEUNIT fromUnit,
++                             NPY_DATETIMEUNIT toUnit) {
++  if (fromUnit == toUnit) {
++    return 0;
++  }
++
++  const int64_t fromNanos = nanosPerUnit(fromUnit);
++  const int64_t toNanos = nanosPerUnit(toUnit);
++  if (fromNanos == -1 || toNanos == -1) {
++    PyErr_SetString(PyExc_ValueError,
++                    "Cannot write datetime64 or timedelta64 values with this "
++                    "resolution as epoch values");
++    return -1;
++  }
++
++  if (fromNanos < toNanos) {
++    // round toward negative infinity, matching the .dt.as_unit conversion
++    // used for plain datetime64 values; C division truncates toward zero,
++    // which would round pre-epoch values up to the following second
++    const int64_t factor = toNanos / fromNanos;
++    const int64_t remainder = *value % factor;
++    *value = *value / factor - (remainder < 0 ? 1 : 0);
++  } else {
++    const int64_t factor = fromNanos / toNanos;
++    if (*value > INT64_MAX / factor || *value < INT64_MIN / factor) {
++      PyErr_SetString(PyExc_OverflowError,
++                      "Datetime value is out of bounds for the requested "
++                      "date_unit");
++      return -1;
++    }
++    *value *= factor;
++  }
++
++  return 0;
++}
++
+ static npy_int64 get_long_attr(PyObject *o, const char *attr) {
+   // NB we are implicitly assuming that o is a Timedelta or Timestamp, or NaT
+ 
+@@ -1100,6 +1170,11 @@ static int Index_iterNext(JSOBJ obj, JSONTypeContext *tc) {
+   if (!GET_TC(tc)->cStr) {
+     return 0;
+   }
++  if (PyErr_Occurred()) {
++    // stop rather than fetch the next attribute with an exception pending,
++    // which would mask it
++    return 0;
++  }
+ 
+   if (index == 0) {
+     strcpy(GET_TC(tc)->cStr, "name");
+@@ -1153,6 +1228,11 @@ static int Series_iterNext(JSOBJ obj, JSONTypeContext *tc) {
+   if (!GET_TC(tc)->cStr) {
+     return 0;
+   }
++  if (PyErr_Occurred()) {
++    // stop rather than fetch the next attribute with an exception pending,
++    // which would mask it
++    return 0;
++  }
+ 
+   if (index == 0) {
+     strcpy(GET_TC(tc)->cStr, "name");
+@@ -1209,6 +1289,11 @@ static int DataFrame_iterNext(JSOBJ obj, JSONTypeContext *tc) {
+   if (!GET_TC(tc)->cStr) {
+     return 0;
+   }
++  if (PyErr_Occurred()) {
++    // stop rather than fetch the next attribute with an exception pending,
++    // which would mask it
++    return 0;
++  }
+ 
+   if (index == 0) {
+     strcpy(GET_TC(tc)->cStr, "columns");
+@@ -1432,14 +1517,18 @@ static char **NpyArr_encodeLabels(PyArrayObject *labels, PyObjectEncoder *enc,
+         } else {
+           int size_of_cLabel = 21; // 21 chars for int 64
+           cLabel = PyObject_Malloc(size_of_cLabel);
+-          if (!from_numpy) {
+-            // numpy arrays are already scaled to the correct unit
+-            // only need to scale if coming from a datetime/timedelta object
+-            if (scaleNanosecToUnit(&i8date, targetUnit) == -1) {
+-              NpyArr_freeLabels(ret, num);
+-              ret = 0;
+-              break;
+-            }
++          // numpy values are scaled from the array's own unit; datetime and
++          // timedelta objects were converted to nanos above and keep the
++          // conversion they have always used
++          const int scaled =
++              from_numpy ? scaleDatetimeUnit(&i8date, valueUnit, targetUnit)
++                         : scaleNanosecToUnit(&i8date, targetUnit);
++          if (scaled == -1) {
++            PyObject_Free(cLabel);
++            Py_DECREF(item);
++            NpyArr_freeLabels(ret, num);
++            ret = 0;
++            break;
+           }
+           snprintf(cLabel, size_of_cLabel, "%" PRId64, i8date);
+           len = strlen(cLabel);
+@@ -1542,8 +1631,16 @@ static void Object_beginTypeContext(JSOBJ _obj, JSONTypeContext *tc) {
+         pc->longValue = longVal;
+         tc->type = JT_UTF8;
+       } else {
+-        // numpy array was already scaled to unit, so just use int value for
+-        // epoch
++        // GH#66709 the values may already have been scaled to date_unit up
++        // front (see to_json), but not for datetime-likes hidden behind
++        // another dtype (e.g. Categorical, Sparse), so scale from the array's
++        // own unit here.
++        if (scaleDatetimeUnit(&longVal, enc->valueUnit, enc->datetimeUnit) ==
++            -1) {
++          enc->npyCtxtPassthru = NULL;
++          enc->npyType = -1;
++          goto INVALID;
++        }
+         pc->longValue = longVal;
+         tc->type = JT_LONG;
+       }
+@@ -1895,6 +1992,11 @@ static void Object_beginTypeContext(JSOBJ _obj, JSONTypeContext *tc) {
+       pc->rowLabels = NpyArr_encodeLabels((PyArrayObject *)values, enc,
+                                           pc->rowLabelsLen, values_is_utc);
+       Py_DECREF(tmpObj);
++      if (!pc->rowLabels) {
++        // the pending exception from encoding the labels would otherwise be
++        // overwritten while retrieving the other axis
++        goto INVALID;
++      }
+       tmpObj =
+           (enc->outputFormat == INDEX ? PyObject_GetAttrString(obj, "columns")
+                                       : PyObject_GetAttrString(obj, "index"));
+@@ -2144,6 +2246,7 @@ PyObject *objToJSON(PyObject *Py_UNUSED(self), PyObject *args,
+       .npyValue = NULL,
+       .datetimeIso = 0,
+       .datetimeUnit = NPY_FR_ms,
++      .valueUnit = NPY_FR_ns,
+       .outputFormat = COLUMNS,
+       .defaultHandler = NULL,
+   };
+diff --git a/pandas/io/json/_json.py b/pandas/io/json/_json.py
+index 63a72c8e5ec72..bc2fca0cd627e 100644
+--- a/pandas/io/json/_json.py
++++ b/pandas/io/json/_json.py
+@@ -43,7 +43,10 @@
+     is_string_dtype,
+     pandas_dtype,
+ )
+-from pandas.core.dtypes.dtypes import PeriodDtype
++from pandas.core.dtypes.dtypes import (
++    PeriodDtype,
++    SparseDtype,
++)
+ 
+ from pandas import (
+     ArrowDtype,
+@@ -85,6 +88,7 @@
+         CompressionOptions,
+         DtypeArg,
+         DtypeBackend,
++        DtypeObj,
+         FilePath,
+         IndexLabel,
+         JSONEngine,
+@@ -99,6 +103,18 @@
+ FrameSeriesStrT = TypeVar("FrameSeriesStrT", bound=Literal["frame", "series"])
+ 
+ 
++def _has_dt_accessor(dtype: DtypeObj) -> bool:
++    """
++    Whether this dtype takes the ``.dt.as_unit`` conversion below.
++
++    SparseDtype reports the subtype's kind, so the kind check alone is not
++    enough. This is not an exhaustive test for a usable ``.dt.as_unit`` -- it
++    only rules out what is known to reach here. Datetime-likes it returns False
++    for are scaled to date_unit by the C encoder instead.
++    """
++    return dtype.kind in "Mm" and not isinstance(dtype, SparseDtype)
++
++
+ # interface to/from
+ @overload
+ def to_json(
+@@ -196,27 +212,27 @@ def to_json(
+             raise ValueError(f"Invalid value '{date_unit}' for option 'date_unit'")
+         if isinstance(obj, DataFrame):
+             copied = False
+-            cols = np.nonzero(obj.dtypes.map(lambda dt: dt.kind in ["M", "m"]))[0]
++            cols = np.nonzero(obj.dtypes.map(_has_dt_accessor))[0]
+             if len(cols):
+                 obj = obj.copy(deep=False)
+                 copied = True
+                 for col in cols:
+                     obj.isetitem(col, obj.iloc[:, col].dt.as_unit(date_unit))
+-            if obj.index.dtype.kind in "Mm":
++            if _has_dt_accessor(obj.index.dtype):
+                 if not copied:
+                     obj = obj.copy(deep=False)
+                     copied = True
+                 obj.index = Series(obj.index).dt.as_unit(date_unit)
+-            if obj.columns.dtype.kind in "Mm":
++            if _has_dt_accessor(obj.columns.dtype):
+                 if not copied:
+                     obj = obj.copy(deep=False)
+                     copied = True
+                 obj.columns = Series(obj.columns).dt.as_unit(date_unit)
+         elif isinstance(obj, Series):
+-            if obj.dtype.kind in "Mm":
++            if _has_dt_accessor(obj.dtype):
+                 obj = obj.copy(deep=False)
+                 obj = obj.dt.as_unit(date_unit)
+-            if obj.index.dtype.kind in "Mm":
++            if _has_dt_accessor(obj.index.dtype):
+                 obj = obj.copy(deep=False)
+                 obj.index = Series(obj.index).dt.as_unit(date_unit)
+ 

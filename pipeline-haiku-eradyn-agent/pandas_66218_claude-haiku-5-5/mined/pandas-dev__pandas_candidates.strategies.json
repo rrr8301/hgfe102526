@@ -1,0 +1,108 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/pandas_66218_claude-haiku-5-5/mined/pandas-dev__pandas_66218.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 17387,
+    "output_tokens": 5852,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66218,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66218",
+      "buggy_commit": "12e8937939829d2e5f6a1942c91aea03e3998dc3",
+      "fixed_commit": "dcb12e2d4461d67c5a1a4b7931327607d619a08d",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 8129,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#63573 / PR#66218 by building pandas at the buggy commit 12e893793982 and running the four new as_unit tests in pandas/tests/extension/test_arrow.py. On the buggy revision, the Arrow as_unit path uses pc.cast(safe=False), which truncates toward zero and wraps on int64 overflow. The two floor tests should fail on value mismatch and the two overflow tests should fail with 'DID NOT RAISE'. On the fixed revision (floor arithmetic for downcasts, safe=True for upcasts) all four should pass.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "pyarrow",
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "pytest"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "Cython is documented as required for installation from sources (README.md), so it is installed before the build; no version pin is documented.",
+            "pyarrow is unpinned because the evidence gives no version; the strategy chooses the latest pyarrow that installs on the chosen Python, since the buggy pc.cast(safe=False) behaviour is in pandas code and the tests need pyarrow timestamp/duration dtypes.",
+            "NumPy, python-dateutil and tzdata have no documented constraint and no era ceiling; they are left at the versions pip resolves for the chosen Python, and NumPy is the reference backend for the expected values."
+          ]
+        },
+        "test_command": "pytest pandas/tests/extension/test_arrow.py -k 'as_unit_duration_negative_floors or as_unit_timestamp_pre_epoch_floors or as_unit_timestamp_overflow_raises or as_unit_duration_overflow_raises' -v",
+        "reproducing_test": "pandas/tests/extension/test_arrow.py::test_as_unit_duration_negative_floors (parametrized over ns->s, ns->ms, ns->us, us->s, ms->s), pandas/tests/extension/test_arrow.py::test_as_unit_timestamp_pre_epoch_floors (parametrized over s, ms, us), pandas/tests/extension/test_arrow.py::test_as_unit_timestamp_overflow_raises, pandas/tests/extension/test_arrow.py::test_as_unit_duration_overflow_raises",
+        "success_criterion": "Transition: on the buggy revision 12e893793982, the four new tests fail. The negative-duration and pre-epoch tests fail at tm.assert_series_equal because the Arrow result is truncated toward zero (e.g. -93784s instead of -93785s, and 1970-01-01 00:00:00 instead of 1969-12-31 23:59:59). The two overflow tests fail because pytest.raises finds no exception (DID NOT RAISE) for the int64-wrapped upcasts. On the fixed revision, all four tests pass, with the Arrow results equal to the NumPy-backed as_unit results and the overflow cases raising OutOfBoundsDatetime / OutOfBoundsTimedelta with 'overflow' in the message.",
+        "numerical_probe": "Compare pd.Series of timedelta/timestamp as_unit on Arrow dtypes against the NumPy-backed as_unit for the value -93784567890123 ns downcast to s, to see the truncation (-93784) versus floor (-93785) difference.",
+        "input_output_examples": [
+          {
+            "input": "-93784567890123ns -> s (negative duration, as_unit('s'))",
+            "buggy_output": "-93784s",
+            "expected_output": "-93785s"
+          },
+          {
+            "input": "1969-12-31 23:59:59.123456789ns -> s (pre-epoch timestamp, as_unit('s'))",
+            "buggy_output": "1970-01-01 00:00:00",
+            "expected_output": "1969-12-31 23:59:59"
+          },
+          {
+            "input": "year-2600 timestamp[s] -> ns (out-of-bounds upcast)",
+            "buggy_output": "int64-wrapped garbage value (no exception)",
+            "expected_output": "raises OutOfBoundsDatetime"
+          }
+        ],
+        "risks": [
+          "The buggy behaviour depends on the pyarrow version. pc.cast(safe=False) truncation and int64 wrap are what the evidence describes, but the evidence gives no pyarrow version, so a different pyarrow could mask or change the failure. Record the pyarrow version used when the transition is observed.",
+          "The overflow tests need pyarrow timestamp[s] and duration[s] dtypes; a pyarrow build without them would error rather than fail on the assertion, which would not show the transition.",
+          "Building pandas from source requires a C/C++ compiler and Cython; the build is slow and can fail on an unpinned NumPy or Cython that is too new for the commit's build files. If the build fails, pin NumPy and Cython to versions contemporary with the commit date (the PR date is blank, so this is inferred, not documented).",
+          "The reproduction is only evidenced on the platform implied by the reports (no architecture or sanitizer is documented). Nothing in the evidence shows a platform-specific or sanitizer-only trigger, so a standard x86_64 Linux build is assumed; if the transition does not appear there, that is the first thing to check.",
+          "The expected values in the tests come from NumPy-backed as_unit, so the tests fail on the buggy revision only if the NumPy path behaves as the PR describes (floor, raise on overflow). This is taken from the PR body and is not independently verified here."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "NumPy-backed as_unit results computed inside the test (pd.Series(...).dt.as_unit(...)), per the test diff.",
+          "why": "Downcast results are int64 timestamps/durations compared exactly with tm.assert_series_equal, and overflow is checked by pytest.raises on the exception type and the 'overflow' message; no floating-point tolerance applies."
+        },
+        "fails_on_buggy": "On 12e893793982, test_as_unit_duration_negative_floors and test_as_unit_timestamp_pre_epoch_floors fail in tm.assert_series_equal because pc.cast(safe=False) truncates toward zero, so the result differs from the floored NumPy reference by one unit (e.g. -93784 vs -93785 s) or crosses the epoch. test_as_unit_timestamp_overflow_raises and test_as_unit_duration_overflow_raises fail with 'DID NOT RAISE' because the int64-wrapped upcast returns a value instead of raising OutOfBoundsDatetime / OutOfBoundsTimedelta.",
+        "passes_on_fixed": "On the fixed revision, the downcast tests produce floor-toward--inf results equal to the NumPy-backed reference, and the overflow tests raise OutOfBoundsDatetime and OutOfBoundsTimedelta with 'overflow' in the message, so all four tests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6495,
+        "output_tokens": 3440,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 10892,
+        "output_tokens": 2412,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

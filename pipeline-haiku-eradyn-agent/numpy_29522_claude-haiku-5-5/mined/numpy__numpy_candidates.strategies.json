@@ -1,0 +1,111 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/numpy_29522_claude-haiku-5-5/mined/numpy__numpy_29522.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 16122,
+    "output_tokens": 7162,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "numpy/numpy",
+      "pr_number": 29522,
+      "reference": "https://github.com/numpy/numpy/pull/29522",
+      "buggy_commit": "f6c2bb97146adb8f8e1a65cd6fccd2a12976ba40",
+      "fixed_commit": "0653d084c7182480d317097099d5ad9509a766bc",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5208,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce PR #29522 by building numpy at the buggy commit f6c2bb97146a and running the developer's test_p_extremely_small (TestBinomial in numpy/random/tests/test_generator_mt19937.py) on the buggy revision, then on the fixed revision. No numpy or pytest version is given in the evidence, so Python 3.12 and current pip-installable pytest/hypothesis/Cython/meson-python are chosen by this plan, not taken from the evidence. Mechanism: with p=5e-17, 1-p rounds to exactly 1.0 in double precision, so the buggy exp(n*log(q)) gives qn=1 and every draw is 0. The fix uses exp(n*log1p(-p)), which gives P(X>=1) about 2.5e-6, so about 50 ones in 2e7 draws and a mean near 2.5e-6 as the test expects. The transition is decided by C double arithmetic (IEEE rounding of 1-p) and does not depend on platform, but the numpy build must include the fix and the test must run through Generator.binomial.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "pytest",
+            "hypothesis",
+            "Cython",
+            "meson-python",
+            "meson",
+            "ninja",
+            "pybind11"
+          ],
+          "system_packages": [
+            "git",
+            "gcc or clang with C compiler",
+            "gfortran not required"
+          ],
+          "build_commands": [
+            "git checkout f6c2bb97146a",
+            "git submodule update --init",
+            "pip install -e . --no-build-isolation"
+          ],
+          "pinned_because": [
+            "python_version 3.12 is chosen by this plan because the evidence leaves it null; no era constraint exists for it",
+            "pytest and hypothesis are documented in README.md with no version constraint; the test itself needs only pytest, hypothesis is listed for completeness",
+            "numpy has no documented or era constraint; the build tooling (meson-python, Cython, ninja) is the one needed to compile the C extension at this commit, and its exact versions are chosen here, not documented"
+          ]
+        },
+        "test_command": "python -m pytest numpy/random/tests/test_generator_mt19937.py -k test_p_extremely_small -v",
+        "reproducing_test": "numpy/random/tests/test_generator_mt19937.py::TestBinomial::test_p_extremely_small (from the PR diff: n=50000000000, p=5e-17, sample_size=20000000, x=random.binomial(n,p,size=sample_size) with random a Generator, asserts abs(n*p - x.mean()) < 6*sigma)",
+        "success_criterion": "Transition required: on buggy revision f6c2bb97146a the test FAILS with AssertionError (sample mean 0.0 deviates from expected 2.5e-06 by more than 6*sigma, about 2.12e-06); on the fixed revision (the PR merge including the log1p change in random_binomial_inversion) the test PASSES with sample mean about 2.25e-06 within 6 sigma. Run the same test command on both revisions, rebuilding with pip install -e . --no-build-isolation after each checkout.",
+        "numerical_probe": "n*p = 2.5e-6, sigma = sqrt(n*p*(1-p)/2e7) = 3.54e-7, 6*sigma = 2.12e-6, low_bound = 3.79e-7 > 0 so the test's own sanity assert holds.",
+        "input_output_examples": [
+          {
+            "input": "n=50000000000, p=5e-17, size=20000000, Generator.binomial (the test's call)",
+            "buggy_output": "x.mean() == 0.0 (all draws 0, because 1-p rounds to 1.0 so qn=exp(0)=1)",
+            "expected_output": "sample mean about 2.25e-06 against expected 2.4999999999999998e-06 (per PR body)"
+          },
+          {
+            "input": "n=50000000000, p=5e-17, size=20000000, legacy np.random.binomial",
+            "buggy_output": "x.max() == 0 (all values 0)",
+            "expected_output": "unchanged by the fix; legacy keeps legacy_random_binomial_inversion, so this path is not the transition and should not be used to reproduce it"
+          }
+        ],
+        "risks": [
+          "The provided test_command 'python -c \"import numpy, sys; sys.exit(numpy.test() is False)\"' runs the whole suite and is not selective; it is not used here, because the transition needs the single test node id above.",
+          "Legacy np.random.binomial is intentionally left unchanged by the fix, so reproducing through the legacy interface will show all zeros on both revisions and cannot demonstrate the transition; the test must go through Generator.binomial.",
+          "The test is statistical: the buggy failure is near-certain (about exp(-50) chance of zero hits on fixed-style sampling), but the fixed pass depends on the seed. With about 50 expected hits the 6-sigma window requires roughly 8 to 92 hits, which is very likely for any seed but not guaranteed for every seed.",
+          "Platform dependence: the buggy zero output follows from IEEE double rounding of 1-5e-17 to 1.0, so it should reproduce on any IEEE-754 platform; a non-IEEE or extended-precision build could change the rounding, and a sanitizer or debug build is not required.",
+          "Build environment: compiling numpy at f6c2bb97146a needs a working C compiler and the meson-python toolchain; if the build fails, the test cannot run on either revision, so the build step is a precondition of the transition.",
+          "Fixed revision identity is not given in the evidence (only the PR number); the fixed checkout must be the PR's merge or head commit that contains the log1p change, which the plan must determine from the PR rather than assume.",
+          "Python version, pytest version, and hypothesis version are unbounded in the evidence and chosen here; pytest/hypothesis are not numerically relevant to this transition."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "abs(expected_mean - sample_mean) < 6*sigma with sigma = sqrt(n*p*(1-p)/sample_size); plus assert expected_mean - 6*sigma > 0",
+          "reference_source": "PR #29522 test_p_extremely_small in numpy/random/tests/test_generator_mt19937.py",
+          "why": "The test compares a sampled mean against the analytic mean n*p with a 6-sigma statistical bound, so it is a tolerance oracle over random draws rather than an exact comparison."
+        },
+        "fails_on_buggy": "On f6c2bb97146a, Generator.binomial returns all zeros, so x.mean()=0.0; abs(2.5e-06 - 0.0)=2.5e-06 exceeds 6*sigma of about 2.12e-06, so the assertion 'abs(expected_mean - sample_mean) < 6 * sigma' raises AssertionError.",
+        "passes_on_fixed": "On the fixed revision, Generator.binomial draws about 50 ones in 2e7 (mean about 2.25e-06); abs(2.5e-06 - 2.25e-06)=2.5e-07 is below 6*sigma of about 2.12e-06, so the assertion holds and the test passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4457,
+        "output_tokens": 4771,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 11665,
+        "output_tokens": 2391,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

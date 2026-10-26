@@ -1,0 +1,1077 @@
+[
+  {
+    "slug": "statsmodels_9812",
+    "bug_type": "",
+    "image": "python:3.9",
+    "status": "NOT_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "test passes on BOTH revisions (it does not expose the bug); the numerical probe still shows the defect on fixed",
+    "transition": "pass->pass",
+    "fail_to_pass": false,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "not_reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "uecm_residual_values": "import numpy as np\nimport pandas as pd\nfrom statsmodels.datasets.co2 import load\nfrom statsmodels.tsa.ardl import UECM\n\n# Load sample data\ndata = load().data\ndata.index = pd.date_range('1958-03-29', periods=len(data), freq='W')\n\n# Create a simple UECM model similar to test setup\n# Using co2 data with some differencing setup\nendog = data['co2'].dropna()\nexog = None\n\n# Create UECM model with simple lag structure\nmod = UECM(endog, exog=exog, maxlag=1)\nres = mod.fit()\n\n# Capture the key values that show the bug:\n# On buggy: res.resid = model.endog - fittedvalues (levels)\n# On fixed: res.resid = model._y - fittedvalues (differences)\n\nresid_values = res.resid.values\nfitted_values = res.fittedvalues.values\nendog_values = res.model.endog.values\n\n# Try to get model._y if it exists (differenced series)\ntry:\n    y_values = res.model._y.values\nexcept:\n    y_values = np.array([])\n\n# Record the residual values\nprobe('resid_mean', float(np.nanmean(resid_values)))\nprobe('resid_std', float(np.nanstd(resid_values)))\nprobe('fitted_mean', float(np.nanmean(fitted_values)))\nprobe('endog_mean', float(np.nanmean(endog_values)))\n\nif len(y_values) > 0:\n    probe('model_y_mean', float(np.nanmean(y_values)))\n    # The bug: if resid uses endog, residuals will correlate with endog level values\n    # Check if resid \u2248 endog - fitted (buggy) or _y - fitted (correct)\n    residual_as_level_diff = endog_values - fitted_values\n    residual_as_y_diff = y_values - fitted_values\n    probe('resid_vs_level_diff_mae', float(np.nanmean(np.abs(resid_values - residual_as_level_diff))))\n    probe('resid_vs_y_diff_mae', float(np.nanmean(np.abs(resid_values - residual_as_y_diff))))\nelse:\n    probe('model_y_mean', float(np.nan))\n    residual_as_level_diff = endog_values - fitted_values\n    probe('resid_vs_level_diff_mae', float(np.nanmean(np.abs(resid_values - residual_as_level_diff))))\n    probe('resid_vs_y_diff_mae', float(np.nan))",
+        "reported_examples": "import numpy as np\ntry:\n    from statsmodels.datasets import co2\n    from statsmodels.tsa.vector_ar.vecm import coint_johansen, VECM\n    # Try to import UECM if available\n    try:\n        from statsmodels.tsa.vector_ar.vecm import UECM\n    except ImportError:\n        UECM = None\nexcept ImportError:\n    pass\n\n# Try to get the dane_data if available\ntry:\n    from statsmodels.datasets.danish_data import load_danish_data\n    dane_data = load_danish_data()\nexcept ImportError:\n    dane_data = None\n\n# Test the UECM model with the specified configuration\nif UECM is not None and dane_data is not None:\n    try:\n        # Setup: UECM model fit with dane_data.lrm as endog, lags=3, \n        # and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}\n        endog = dane_data[['lrm', 'lry', 'ibo', 'ide']]\n        \n        # Create the UECM model\n        model = UECM(endog['lrm'], exog=endog[['lry', 'ibo', 'ide']], \n                     k_ar_diff=3, exog_coint_k_ar_diff={\"lry\": 1, \"ibo\": 3, \"ide\": 2})\n        \n        # Fit the model\n        res = model.fit()\n        \n        # Record the actual residuals from the model\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::res.resid\", res.resid)\n        \n        # Record what the residuals should be (model._y - fittedvalues)\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::expected_resid\", \n              res.model._y - res.fittedvalues)\n        \n        # Record model.endog for comparison (what buggy version uses)\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::model.endog\", \n              res.model.endog)\n        \n        # Record model._y for comparison (what fixed version should use)\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::model._y\", \n              res.model._y)\n        \n        # Record fittedvalues\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::fittedvalues\", \n              res.fittedvalues)\n        \n        # Check if resid matches the expected computation\n        try:\n            np.testing.assert_allclose(res.resid, res.model._y - res.fittedvalues)\n            probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::assert_resid_correct\", True)\n        except AssertionError as e:\n            probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::assert_resid_correct\", \n                  \"__error__: \" + type(e).__name__ + \": \" + str(e))\n        \n    except Exception as e:\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}\", \n              \"__error__: \" + type(e).__name__ + \": \" + str(e))\nelse:\n    # If UECM or dane_data not available, record the error\n    if UECM is None:\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}\", \n              \"__error__: ImportError: UECM not available\")\n    if dane_data is None:\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}\", \n              \"__error__: ImportError: danish_data not available\")",
+        "described_examples": "try:\n    from statsmodels.tsa.vector_ar.vecm import VECM\n    import numpy as np\n    import pandas as pd\n    \n    # Load Danish data - use the proper data loading method\n    from statsmodels.datasets import co2\n    data = co2.load_pandas().data\n    \n    # Create sample data with the required columns\n    np.random.seed(123)\n    n = 100\n    dane_data = pd.DataFrame({\n        'lrm': np.random.randn(n).cumsum(),\n        'lry': np.random.randn(n).cumsum(),\n        'ibo': np.random.randn(n).cumsum(),\n        'ide': np.random.randn(n).cumsum()\n    })\n    \n    # Prepare the data\n    endog = dane_data[['lrm', 'lry', 'ibo', 'ide']]\n    \n    # Create the VECM model\n    model = VECM(\n        endog=endog,\n        k_ar_diff=3,\n        coint_rank=1,\n        deterministic='ci'\n    )\n    \n    result = model.fit()\n    probe(\"VECM model fit with dane_data columns lrm, lry, ibo, ide with k_ar_diff=3 and coint_rank=1\", result)\n    \nexcept Exception as e:\n    probe_exception(\"VECM model fit with dane_data columns lrm, lry, ibo, ide with k_ar_diff=3 and coint_rank=1\", e)"
+      },
+      "fixed": {
+        "uecm_residual_values": "import numpy as np\nimport pandas as pd\nfrom statsmodels.datasets.co2 import load\nfrom statsmodels.tsa.ardl import UECM\n\n# Load sample data (same as buggy revision)\ndata = load().data\ndata.index = pd.date_range('1958-03-29', periods=len(data), freq='W')\n\n# Create a simple UECM model similar to test setup\nendog = data['co2'].dropna()\nexog = None\n\n# Create UECM model with simple lag structure\nmod = UECM(endog, exog=exog, maxlag=1)\nres = mod.fit()\n\n# Capture the key values that show the fix:\n# On fixed: res.resid = model._y - fittedvalues (differences)\n\nresid_values = res.resid.values\nfitted_values = res.fittedvalues.values\nendog_values = res.model.endog.values\n\n# Try to get model._y if it exists (differenced series)\ntry:\n    y_values = res.model._y.values\nexcept:\n    y_values = np.array([])\n\n# Record the residual values\nprobe('resid_mean', float(np.nanmean(resid_values)))\nprobe('resid_std', float(np.nanstd(resid_values)))\nprobe('fitted_mean', float(np.nanmean(fitted_values)))\nprobe('endog_mean', float(np.nanmean(endog_values)))\n\nif len(y_values) > 0:\n    probe('model_y_mean', float(np.nanmean(y_values)))\n    # The fix: resid should use _y, not endog\n    residual_as_level_diff = endog_values - fitted_values\n    residual_as_y_diff = y_values - fitted_values\n    probe('resid_vs_level_diff_mae', float(np.nanmean(np.abs(resid_values - residual_as_level_diff))))\n    probe('resid_vs_y_diff_mae', float(np.nanmean(np.abs(resid_values - residual_as_y_diff))))\nelse:\n    probe('model_y_mean', float(np.nan))\n    residual_as_level_diff = endog_values - fitted_values\n    probe('resid_vs_level_diff_mae', float(np.nanmean(np.abs(resid_values - residual_as_level_diff))))\n    probe('resid_vs_y_diff_mae', float(np.nan))",
+        "reported_examples": "import numpy as np\ntry:\n    from statsmodels.datasets import co2\n    from statsmodels.tsa.vector_ar.vecm import coint_johansen, VECM\n    # Try to import UECM if available\n    try:\n        from statsmodels.tsa.vector_ar.vecm import UECM\n    except ImportError:\n        UECM = None\nexcept ImportError:\n    pass\n\n# Try to get the dane_data if available\ntry:\n    from statsmodels.datasets.danish_data import load_danish_data\n    dane_data = load_danish_data()\nexcept ImportError:\n    dane_data = None\n\n# Test the UECM model with the specified configuration\nif UECM is not None and dane_data is not None:\n    try:\n        # Setup: UECM model fit with dane_data.lrm as endog, lags=3, \n        # and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}\n        endog = dane_data[['lrm', 'lry', 'ibo', 'ide']]\n        \n        # Create the UECM model\n        model = UECM(endog['lrm'], exog=endog[['lry', 'ibo', 'ide']], \n                     k_ar_diff=3, exog_coint_k_ar_diff={\"lry\": 1, \"ibo\": 3, \"ide\": 2})\n        \n        # Fit the model\n        res = model.fit()\n        \n        # Record the actual residuals from the model\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::res.resid\", res.resid)\n        \n        # Record what the residuals should be (model._y - fittedvalues)\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::expected_resid\", \n              res.model._y - res.fittedvalues)\n        \n        # Record model.endog for comparison (what buggy version uses)\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::model.endog\", \n              res.model.endog)\n        \n        # Record model._y for comparison (what fixed version should use)\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::model._y\", \n              res.model._y)\n        \n        # Record fittedvalues\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::fittedvalues\", \n              res.fittedvalues)\n        \n        # Check if resid matches the expected computation\n        try:\n            np.testing.assert_allclose(res.resid, res.model._y - res.fittedvalues)\n            probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::assert_resid_correct\", True)\n        except AssertionError as e:\n            probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}::assert_resid_correct\", \n                  \"__error__: \" + type(e).__name__ + \": \" + str(e))\n        \n    except Exception as e:\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}\", \n              \"__error__: \" + type(e).__name__ + \": \" + str(e))\nelse:\n    # If UECM or dane_data not available, record the error\n    if UECM is None:\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}\", \n              \"__error__: ImportError: UECM not available\")\n    if dane_data is None:\n        probe(\"UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}\", \n              \"__error__: ImportError: danish_data not available\")",
+        "described_examples": "try:\n    from statsmodels.tsa.vector_ar.vecm import VECM\n    import numpy as np\n    import pandas as pd\n    \n    # Load Danish data - use the proper data loading method\n    from statsmodels.datasets import co2\n    data = co2.load_pandas().data\n    \n    # Create sample data with the required columns\n    np.random.seed(123)\n    n = 100\n    dane_data = pd.DataFrame({\n        'lrm': np.random.randn(n).cumsum(),\n        'lry': np.random.randn(n).cumsum(),\n        'ibo': np.random.randn(n).cumsum(),\n        'ide': np.random.randn(n).cumsum()\n    })\n    \n    # Prepare the data\n    endog = dane_data[['lrm', 'lry', 'ibo', 'ide']]\n    \n    # Create the VECM model\n    model = VECM(\n        endog=endog,\n        k_ar_diff=3,\n        coint_rank=1,\n        deterministic='ci'\n    )\n    \n    result = model.fit()\n    probe(\"VECM model fit with dane_data columns lrm, lry, ibo, ide with k_ar_diff=3 and coint_rank=1\", result)\n    \nexcept Exception as e:\n    probe_exception(\"VECM model fit with dane_data columns lrm, lry, ibo, ide with k_ar_diff=3 and coint_rank=1\", e)"
+      }
+    },
+    "report": {
+      "status": "NOT_REPRODUCED",
+      "rationale": "test passes on BOTH revisions (it does not expose the bug); the numerical probe still shows the defect on fixed",
+      "transition": "pass->pass",
+      "fail_to_pass": false,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "not_reproduced",
+      "success_criterion": "The test test_uecm_resid FAILS on the buggy commit with an assertion error (arrays not close) because res.resid does not equal res.model._y - res.fittedvalues. Once the fix is applied (changing @cache_readonly to @property and adding the resid override in UECMResults), the test will PASS.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 18,
+            "failed": null,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 18,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "VECM model fit with dane_data columns lrm, lry, ibo, ide with k_ar_diff=3 and coint_rank=1": "<statsmodels.tsa.vector_ar.vecm.VECMResults object at 0x7fec6b28b0d0>"
+            },
+            "fixed_values": {
+              "VECM model fit with dane_data columns lrm, lry, ibo, ide with k_ar_diff=3 and coint_rank=1": "<statsmodels.tsa.vector_ar.vecm.VECMResults object at 0x7f151e05c0d0>"
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}": {
+                "__numagent_repeated__": [
+                  "__error__: ImportError: UECM not available",
+                  "__error__: ImportError: danish_data not available"
+                ]
+              }
+            },
+            "fixed_values": {
+              "UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}": {
+                "__numagent_repeated__": [
+                  "__error__: ImportError: UECM not available",
+                  "__error__: ImportError: danish_data not available"
+                ]
+              }
+            }
+          },
+          {
+            "label": "uecm_residual_values",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: __init__() got an unexpected keyword argument 'maxlag'"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: __init__() got an unexpected keyword argument 'maxlag'"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          }
+        ],
+        "examples": [
+          {
+            "input": "UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}",
+            "expected_output": "res.resid computed as model._y - res.fittedvalues (differenced series minus fitted values)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "res.resid computed as model.endog - res.fittedvalues (levels minus fitted differences, producing residuals close to level values)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}",
+              "observed": {
+                "__numagent_repeated__": [
+                  "__error__: ImportError: UECM not available",
+                  "__error__: ImportError: danish_data not available"
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}",
+              "observed": {
+                "__numagent_repeated__": [
+                  "__error__: ImportError: UECM not available",
+                  "__error__: ImportError: danish_data not available"
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 5,
+            "n_failed": 2,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 2,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata",
+            "cython>=3.0.13",
+            "meson-python>=0.18.0",
+            "meson",
+            "ninja",
+            "numpy>=2.0.0",
+            "packaging>=21.3",
+            "pytest>=8.4.1",
+            "pytest-randomly",
+            "pytest-run-parallel",
+            "pytest-xdist",
+            "pytest-cov"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-05-23T19:54:37-04:00",
+        "fixed_commit_date": "2026-06-05T12:01:12+01:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-06-05T12:01:12+01:00",
+        "build": {
+          "git": "present",
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.9/site-packages/statsmodels/__init__.py",
+            "build_requires": [
+              "meson-python",
+              "cython>=3.0.13,<4",
+              "scipy>=1.13,<2",
+              "setuptools_scm>=9.2.0,<10"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.0.2",
+              "pandas": "2.3.3",
+              "matplotlib": "3.9.4",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.43.0",
+              "meson-python": "0.19.0",
+              "cython": "3.2.5",
+              "scipy": "1.13.1",
+              "setuptools-scm": "9.2.2"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.11.2"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.4.1,<9",
+              "pytest-randomly==4.1.0",
+              "pytest-run-parallel==0.9.1",
+              "pytest-xdist==3.8.0",
+              "pytest-cov==7.1.0",
+              "meson",
+              "ninja; sys_platform != \"emscripten\""
+            ],
+            "output": "--- end of build log ---\n.0.dev991+g0a3479739.d20260929) (2.0.2)\nCollecting interface-meta>=1.2.0\n  Downloading interface_meta-1.3.0-py3-none-any.whl (14 kB)\nRequirement already satisfied: typing-extensions>=4.2.0 in /usr/local/lib/python3.9/site-packages (from formulaic>=1.1.0->statsmodels==0.15.0.dev991+g0a3479739.d20260929) (4.16.0)\nCollecting wrapt>=1.0\n  Downloading wrapt-2.5.0-cp39-cp39-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (230 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 231.0/231.0 kB 223.9 MB/s eta 0:00:00\nCollecting narwhals>=1.17\n  Downloading narwhals-2.21.0-py3-none-any.whl (451 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 451.9/451.9 kB 211.0 MB/s eta 0:00:00\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/buggy/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev991+g0a3479739.d20260929) (2.9.0.post0)\nRequirement already satisfied: tzdata>=2022.7 in /usr/local/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev991+g0a3479739.d20260929) (2026.4)\nRequirement already satisfied: pytz>=2020.1 in /workspace/.venvs/buggy/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev991+g0a3479739.d20260929) (2026.4)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.9/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev991+g0a3479739.d20260929) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.0.dev991+g0a3479739.d20260929-cp39-cp39-linux_x86_64.whl size=12916258 sha256=08214bb0d202064e4858bdeb5be112ac09496f78be039eb81d4a69b03c89399f\n  Stored in directory: /tmp/pip-ephem-wheel-cache-jkhym2mp/wheels/af/59/8d/0bbd819162f7fc2bc4949215064695a6020b025da2e0f21c03\nSuccessfully built statsmodels\nInstalling collected packages: wrapt, patsy, narwhals, interface-meta, formulaic, statsmodels\nSuccessfully installed formulaic-1.2.2 interface-meta-1.3.0 narwhals-2.21.0 patsy-1.0.3 statsmodels-0.15.0.dev991+g0a3479739.d20260929 wrapt-2.5.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.0.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.9/site-packages/statsmodels/__init__.py",
+            "build_requires": [
+              "meson-python",
+              "cython>=3.0.13,<4",
+              "scipy>=1.13,<2",
+              "setuptools_scm>=9.2.0,<10"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.0.2",
+              "pandas": "2.3.3",
+              "matplotlib": "3.9.4",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.43.0",
+              "meson-python": "0.19.0",
+              "cython": "3.2.5",
+              "scipy": "1.13.1",
+              "setuptools-scm": "9.2.2"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.11.2"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.4.1,<9",
+              "pytest-randomly==4.1.0",
+              "pytest-run-parallel==0.9.1",
+              "pytest-xdist==3.8.0",
+              "pytest-cov==7.1.0",
+              "meson",
+              "ninja; sys_platform != \"emscripten\""
+            ],
+            "output": "--- end of build log ---\ny<3,>=1.22.3 in /usr/local/lib/python3.9/site-packages (from statsmodels==0.15.0.dev995+gc67d83dc9) (2.0.2)\nCollecting narwhals>=1.17\n  Downloading narwhals-2.21.0-py3-none-any.whl (451 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 451.9/451.9 kB 81.5 MB/s eta 0:00:00\nCollecting wrapt>=1.0\n  Downloading wrapt-2.5.0-cp39-cp39-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (230 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 231.0/231.0 kB 229.4 MB/s eta 0:00:00\nCollecting interface-meta>=1.2.0\n  Downloading interface_meta-1.3.0-py3-none-any.whl (14 kB)\nRequirement already satisfied: typing-extensions>=4.2.0 in /usr/local/lib/python3.9/site-packages (from formulaic>=1.1.0->statsmodels==0.15.0.dev995+gc67d83dc9) (4.16.0)\nRequirement already satisfied: tzdata>=2022.7 in /usr/local/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev995+gc67d83dc9) (2026.4)\nRequirement already satisfied: pytz>=2020.1 in /workspace/.venvs/fixed/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev995+gc67d83dc9) (2026.4)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/fixed/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev995+gc67d83dc9) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.9/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev995+gc67d83dc9) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.0.dev995+gc67d83dc9-cp39-cp39-linux_x86_64.whl size=12916142 sha256=8f2108ab90ebead3013919f95853a241b5784efd2face2689d42cf6d47bb610d\n  Stored in directory: /tmp/pip-ephem-wheel-cache-je8t3dm9/wheels/c8/8c/63/2a046f36555c1481521e72b76d461fc0c95a7d1e5f91387f47\nSuccessfully built statsmodels\nInstalling collected packages: wrapt, patsy, narwhals, interface-meta, formulaic, statsmodels\nSuccessfully installed formulaic-1.2.2 interface-meta-1.3.0 narwhals-2.21.0 patsy-1.0.3 statsmodels-0.15.0.dev995+gc67d83dc9 wrapt-2.5.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.0.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 18,
+        "failed": null,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 18,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "pass->pass",
+      "fail_to_pass": false,
+      "numeric": {
+        "n_pairs": 3,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "VECM model fit with dane_data columns lrm, lry, ibo, ide with k_ar_diff=3 and coint_rank=1": "<statsmodels.tsa.vector_ar.vecm.VECMResults object at 0x7fec6b28b0d0>"
+            },
+            "fixed_values": {
+              "VECM model fit with dane_data columns lrm, lry, ibo, ide with k_ar_diff=3 and coint_rank=1": "<statsmodels.tsa.vector_ar.vecm.VECMResults object at 0x7f151e05c0d0>"
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}": {
+                "__numagent_repeated__": [
+                  "__error__: ImportError: UECM not available",
+                  "__error__: ImportError: danish_data not available"
+                ]
+              }
+            },
+            "fixed_values": {
+              "UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}": {
+                "__numagent_repeated__": [
+                  "__error__: ImportError: UECM not available",
+                  "__error__: ImportError: danish_data not available"
+                ]
+              }
+            }
+          },
+          {
+            "label": "uecm_residual_values",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: __init__() got an unexpected keyword argument 'maxlag'"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: __init__() got an unexpected keyword argument 'maxlag'"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 1,
+        "n_judged": 1,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 0,
+        "n_contested": 0,
+        "unobserved": [],
+        "verdict": "not_reproduced",
+        "examples": [
+          {
+            "input": "UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}",
+            "expected_output": "res.resid computed as model._y - res.fittedvalues (differenced series minus fitted values)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "res.resid computed as model.endog - res.fittedvalues (levels minus fitted differences, producing residuals close to level values)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}",
+              "observed": {
+                "__numagent_repeated__": [
+                  "__error__: ImportError: UECM not available",
+                  "__error__: ImportError: danish_data not available"
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "UECM model fit with dane_data.lrm as endog, lags=3, and exog variables lry, ibo, ide with lags {lry: 1, ibo: 3, ide: 2}",
+              "observed": {
+                "__numagent_repeated__": [
+                  "__error__: ImportError: UECM not available",
+                  "__error__: ImportError: danish_data not available"
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 5,
+          "n_failed": 2,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 2,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "The test test_uecm_resid FAILS on the buggy commit with an assertion error (arrays not close) because res.resid does not equal res.model._y - res.fittedvalues. Once the fix is applied (changing @cache_readonly to @property and adding the resid override in UECMResults), the test will PASS."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata",
+          "cython>=3.0.13",
+          "meson-python>=0.18.0",
+          "meson",
+          "ninja",
+          "numpy>=2.0.0",
+          "packaging>=21.3",
+          "pytest>=8.4.1",
+          "pytest-randomly",
+          "pytest-run-parallel",
+          "pytest-xdist",
+          "pytest-cov"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-05-23T19:54:37-04:00",
+      "fixed_commit_date": "2026-06-05T12:01:12+01:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-06-05T12:01:12+01:00",
+      "build": {
+        "git": "present",
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.9/site-packages/statsmodels/__init__.py",
+          "build_requires": [
+            "meson-python",
+            "cython>=3.0.13,<4",
+            "scipy>=1.13,<2",
+            "setuptools_scm>=9.2.0,<10"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.0.2",
+            "pandas": "2.3.3",
+            "matplotlib": "3.9.4",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.43.0",
+            "meson-python": "0.19.0",
+            "cython": "3.2.5",
+            "scipy": "1.13.1",
+            "setuptools-scm": "9.2.2"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.11.2"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.4.1,<9",
+            "pytest-randomly==4.1.0",
+            "pytest-run-parallel==0.9.1",
+            "pytest-xdist==3.8.0",
+            "pytest-cov==7.1.0",
+            "meson",
+            "ninja; sys_platform != \"emscripten\""
+          ],
+          "output": "--- end of build log ---\n.0.dev991+g0a3479739.d20260929) (2.0.2)\nCollecting interface-meta>=1.2.0\n  Downloading interface_meta-1.3.0-py3-none-any.whl (14 kB)\nRequirement already satisfied: typing-extensions>=4.2.0 in /usr/local/lib/python3.9/site-packages (from formulaic>=1.1.0->statsmodels==0.15.0.dev991+g0a3479739.d20260929) (4.16.0)\nCollecting wrapt>=1.0\n  Downloading wrapt-2.5.0-cp39-cp39-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (230 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 231.0/231.0 kB 223.9 MB/s eta 0:00:00\nCollecting narwhals>=1.17\n  Downloading narwhals-2.21.0-py3-none-any.whl (451 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 451.9/451.9 kB 211.0 MB/s eta 0:00:00\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/buggy/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev991+g0a3479739.d20260929) (2.9.0.post0)\nRequirement already satisfied: tzdata>=2022.7 in /usr/local/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev991+g0a3479739.d20260929) (2026.4)\nRequirement already satisfied: pytz>=2020.1 in /workspace/.venvs/buggy/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev991+g0a3479739.d20260929) (2026.4)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.9/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev991+g0a3479739.d20260929) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.0.dev991+g0a3479739.d20260929-cp39-cp39-linux_x86_64.whl size=12916258 sha256=08214bb0d202064e4858bdeb5be112ac09496f78be039eb81d4a69b03c89399f\n  Stored in directory: /tmp/pip-ephem-wheel-cache-jkhym2mp/wheels/af/59/8d/0bbd819162f7fc2bc4949215064695a6020b025da2e0f21c03\nSuccessfully built statsmodels\nInstalling collected packages: wrapt, patsy, narwhals, interface-meta, formulaic, statsmodels\nSuccessfully installed formulaic-1.2.2 interface-meta-1.3.0 narwhals-2.21.0 patsy-1.0.3 statsmodels-0.15.0.dev991+g0a3479739.d20260929 wrapt-2.5.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.0.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.9/site-packages/statsmodels/__init__.py",
+          "build_requires": [
+            "meson-python",
+            "cython>=3.0.13,<4",
+            "scipy>=1.13,<2",
+            "setuptools_scm>=9.2.0,<10"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.0.2",
+            "pandas": "2.3.3",
+            "matplotlib": "3.9.4",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.43.0",
+            "meson-python": "0.19.0",
+            "cython": "3.2.5",
+            "scipy": "1.13.1",
+            "setuptools-scm": "9.2.2"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.11.2"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.4.1,<9",
+            "pytest-randomly==4.1.0",
+            "pytest-run-parallel==0.9.1",
+            "pytest-xdist==3.8.0",
+            "pytest-cov==7.1.0",
+            "meson",
+            "ninja; sys_platform != \"emscripten\""
+          ],
+          "output": "--- end of build log ---\ny<3,>=1.22.3 in /usr/local/lib/python3.9/site-packages (from statsmodels==0.15.0.dev995+gc67d83dc9) (2.0.2)\nCollecting narwhals>=1.17\n  Downloading narwhals-2.21.0-py3-none-any.whl (451 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 451.9/451.9 kB 81.5 MB/s eta 0:00:00\nCollecting wrapt>=1.0\n  Downloading wrapt-2.5.0-cp39-cp39-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (230 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 231.0/231.0 kB 229.4 MB/s eta 0:00:00\nCollecting interface-meta>=1.2.0\n  Downloading interface_meta-1.3.0-py3-none-any.whl (14 kB)\nRequirement already satisfied: typing-extensions>=4.2.0 in /usr/local/lib/python3.9/site-packages (from formulaic>=1.1.0->statsmodels==0.15.0.dev995+gc67d83dc9) (4.16.0)\nRequirement already satisfied: tzdata>=2022.7 in /usr/local/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev995+gc67d83dc9) (2026.4)\nRequirement already satisfied: pytz>=2020.1 in /workspace/.venvs/fixed/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev995+gc67d83dc9) (2026.4)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/fixed/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev995+gc67d83dc9) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.9/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev995+gc67d83dc9) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.0.dev995+gc67d83dc9-cp39-cp39-linux_x86_64.whl size=12916142 sha256=8f2108ab90ebead3013919f95853a241b5784efd2face2689d42cf6d47bb610d\n  Stored in directory: /tmp/pip-ephem-wheel-cache-je8t3dm9/wheels/c8/8c/63/2a046f36555c1481521e72b76d461fc0c95a7d1e5f91387f47\nSuccessfully built statsmodels\nInstalling collected packages: wrapt, patsy, narwhals, interface-meta, formulaic, statsmodels\nSuccessfully installed formulaic-1.2.2 interface-meta-1.3.0 narwhals-2.21.0 patsy-1.0.3 statsmodels-0.15.0.dev995+gc67d83dc9 wrapt-2.5.0\n\n[notice] A new release of pip is available: 23.0.1 -> 26.0.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 6,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the UECM residuals bug where the buggy revision computes residuals from levels instead of differenced series, while the fixed revision corrects this computation.",
+          "milestones": [
+            "buggy_environment_ready [buggy] \u2014 Set up and build the buggy revision so it can be tested (2 steps, verify: steps_succeeded)",
+            "bug_observable_on_buggy [buggy] \u2014 Demonstrate that the test fails on the buggy revision with the residuals assertion error (1 steps, verify: test_ran, test_fails)",
+            "buggy_residuals_probe [buggy] \u2014 Capture the actual buggy residual values to show they differ from the expected computation (1 steps, verify: probe_ran, probe_shows_defect)",
+            "fixed_environment_ready [fixed] \u2014 Set up and build the fixed revision so it can be tested (2 steps, verify: steps_succeeded)",
+            "fix_verified_on_fixed [fixed] \u2014 Demonstrate that the test passes on the fixed revision (1 steps, verify: test_ran, test_passes)",
+            "fixed_residuals_probe [fixed] \u2014 Capture the fixed residual values and show they match the expected computation (1 steps, verify: probe_ran, probe_clean)",
+            "revisions_differ [buggy] \u2014 Verify that the two revisions produce different residual values, confirming the bug reproduction (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -m pip install -e . -v",
+        "purpose": "build",
+        "refused": "refused: buggy is ALREADY built and installed in buggy/.venv (the harness did it before you started), and this command would replace that install with an un-built source tree \u2014 the package then imports from nowhere and every test and probe fails on this revision only. Run tests and probes against the existing build instead; nothing needs building. Use `pip install` only for a MISSING third-party dependency, never for this package."
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c 'import statsmodels; print(statsmodels.__version__); from statsmodels.tsa.ardl.uecm import UECMResults; print(\"UECMResults imported successfully\")'",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 0.16
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_ready",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_shell_command(cd /workspace/buggy && python -m pip install -e . -v) \u2014 Build and install the buggy statsmodels package did not execute; `cd /workspace/buggy && python -c 'import statsmodels; print(statsmodels.__versio` exited 1: >\n  File \"/workspace/buggy/statsmodels/__init__.py\", line 1, in <module>\n    from statsmodels._version import __version__, __version_tuple__\nModuleNotFoundError: No module named 'statsmodels._version'"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the UECM residuals bug by capturing the actual residual values from the buggy and fixed revisions.",
+          "milestones": [
+            "buggy_environment_ready [buggy] \u2014 Verify that the buggy revision's built environment is ready and can import statsmodels (1 steps, verify: steps_succeeded)",
+            "bug_observable_on_buggy [buggy] \u2014 Capture the buggy residual values showing the defect (1 steps, verify: probe_ran, probe_shows_defect)",
+            "fixed_environment_ready [fixed] \u2014 Verify that the fixed revision's built environment is ready and can import statsmodels (1 steps, verify: steps_succeeded)",
+            "fix_verified_on_fixed [fixed] \u2014 Capture the fixed residual values showing the correct computation (1 steps, verify: probe_ran, probe_clean)",
+            "revisions_differ [buggy] \u2014 Verify that the two revisions produce different residual values, confirming the bug reproduction (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c 'import statsmodels; print(statsmodels.__version__)'",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 0.16
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_ready",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -c 'import statsmodels; print(statsmodels.__versio` exited 1: >\n  File \"/workspace/buggy/statsmodels/__init__.py\", line 1, in <module>\n    from statsmodels._version import __version__, __version_tuple__\nModuleNotFoundError: No module named 'statsmodels._version'"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "buggy_environment_ready",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 2,
+          "detail": [
+            "`cd /workspace/buggy && python -c 'import statsmodels; print(statsmodels.__versio` exited 1: >\n  File \"/workspace/buggy/statsmodels/__init__.py\", line 1, in <module>\n    from statsmodels._version import __version__, __version_tuple__\nModuleNotFoundError: No module named 'statsmodels._version'"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "buggy_residual_computation",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(buggy_residual_computation) \u2014 Capture the actual residual values on the buggy revision to show they come from levels not differences"
+      },
+      {
+        "verification": {
+          "milestone": "bug_observable_on_buggy",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the UECM residuals bug by capturing and comparing the actual residual values from buggy and fixed revisions.",
+          "milestones": [
+            "bug_observable_on_buggy [buggy] \u2014 Capture the actual residual values on the buggy revision showing the incorrect computation (1 steps, verify: probe_ran, probe_shows_defect)",
+            "fix_verified_on_fixed [fixed] \u2014 Capture the fixed residual values showing the correct computation (1 steps, verify: probe_ran, probe_clean)",
+            "revisions_differ [buggy] \u2014 Verify that the two revisions produce different residual values, confirming the bug reproduction (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "uecm_residual_values",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: TypeError: __init__() got an unexpected keyword argument 'maxlag'"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "bug_observable_on_buggy",
+          "verified": true,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'uecm_residual_values': probe raised: TypeError: __init__() got an unexpected keyword argument 'maxlag'"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "uecm_residual_values",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: TypeError: __init__() got an unexpected keyword argument 'maxlag'"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "fix_verified_on_fixed",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "probe 'uecm_residual_values' is not clean on fixed: probe raised: TypeError: __init__() got an unexpected keyword argument 'maxlag'"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the UECM residuals bug by running the test on both revisions and capturing the actual residual computation difference.",
+          "milestones": [
+            "test_run_on_buggy [buggy] \u2014 Run the actual test_uecm_resid test on the buggy revision to observe the failure (1 steps, verify: test_ran, test_fails)",
+            "test_run_on_fixed [fixed] \u2014 Run the actual test_uecm_resid test on the fixed revision to observe it passes (1 steps, verify: test_ran, test_passes)",
+            "capture_buggy_residuals [buggy] \u2014 Capture the actual residual values from the buggy revision using the test data (1 steps, verify: probe_ran)",
+            "capture_fixed_residuals [fixed] \u2014 Capture the same residual values from the fixed revision for comparison (1 steps, verify: probe_ran, probe_clean)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_uecm_resid -xvs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 13.76
+      },
+      {
+        "verification": {
+          "milestone": "test_run_on_buggy",
+          "verified": false,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": false,
+              "detail": "test pass on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_uecm_resid -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 4.29
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_uecm_resid -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 4.21
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_ardl_trend_ctt -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 4.68
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_ardl_trend_ctt -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 4.82
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_ardl_trend_ctt",
+          "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_ardl_trend_ctt -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "statsmodels",
+          "statuses": {
+            "buggy": "pass",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 0,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_uecm_resid",
+              "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_uecm_resid -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "pass",
+              "fixed": "pass"
+            },
+            {
+              "case": "test_ardl_trend_ctt",
+              "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_ardl_trend_ctt -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "pass",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 1,
+            "recorded": 1,
+            "error": null,
+            "could_not_evaluate": 0
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 1,
+            "recorded": 1,
+            "error": null,
+            "could_not_evaluate": 0
+          },
+          "preamble": "generated probe",
+          "observed": 1
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "described_examples": {
+          "n_described": 1,
+          "buggy": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "repaired": 1,
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "pass->pass",
+        "fail_to_pass": false,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "not_reproduced",
+        "examples": "0/1"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "NOT_REPRODUCED",
+        "rationale": "test passes on BOTH revisions (it does not expose the bug); the numerical probe still shows the defect on fixed"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "claude-haiku-4-5-20251001",
+      "calls": 8,
+      "input_tokens": 23628,
+      "output_tokens": 13393,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.090593
+    }
+  }
+]

@@ -1,0 +1,475 @@
+{
+  "input": "workspace/new-mine/numba__numba_candidates.json",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "n_strategies": 6,
+  "usage_totals": {
+    "input_tokens": 17755,
+    "output_tokens": 23186,
+    "cache_read_tokens": 768,
+    "cache_write_tokens": 0,
+    "cost_usd": 0.038428000000000004,
+    "llm_calls": 6,
+    "peak_calls": 0,
+    "n_costed": 6,
+    "n_strategies": 6,
+    "cost_usd_per_strategy": 0.006405
+  },
+  "strategies": [
+    {
+      "reference": "https://github.com/numba/numba/pull/10649",
+      "repo": "numba/numba",
+      "pr_number": 10649,
+      "buggy_commit": "c50e90decabe8522a9c78039a917ea778bde1a03",
+      "fixed_commit": "befa51f92d2b5c1521641783bd31cfae2e31f254",
+      "is_numerical_bug": true,
+      "bug_type": "accuracy",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the array_mean float32/complex64 precision bug (issue #10647, PR #10649) on buggy commit c50e90de by building Numba and running test_array_reductions::test_mean_count_rounding, which must fail because Numba divides by float32(a.size) (rounds 2**24+1 to 2**24) instead of dtype.type(c / a.size).",
+        "input_output_examples": [
+          {
+            "input": "n = 2**24 + 1; a = np.zeros(n, dtype=np.float32); a[0] = np.float32(2**24 - 1)",
+            "buggy_output": "nb_mean(a): 0.9999999403953552",
+            "expected_output": "a.mean(): 0.9999998807907104",
+            "source": "issue"
+          },
+          {
+            "input": "n = 2**24 + 1; for dtype in (np.float32, np.complex64): arr = np.zeros(n, dtype=dtype); arr[0] = dtype(2**24 - 1); run_comparative(array_mean, arr)",
+            "buggy_output": "Numba result differs from NumPy (float32 case: 0.9999999403953552)",
+            "expected_output": "assertPreciseEqual(npr, nbr) passes; Numba result equals NumPy (float32 case: 0.9999998807907104)",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Create and activate a conda environment using Miniconda (as in CI's conda-incubator/setup-miniconda v4.0.1); use Python 3.12 (CI value; setup.py allows >=3.10,<3.15).",
+          "Install runtime/build dependencies: numpy (>=1.11 build, >=1.22 run) and llvmlite >=0.49.0dev0,<0.50; llvmlite must match the Numba revision being tested.",
+          "Install a platform C toolchain compatible with the Python and LLVM/llvmlite versions: system compiler + OpenMP headers/runtime on Linux, clang_osx-arm64/clangxx_osx-arm64 on macOS M1, Visual Studio on Windows.",
+          "Leave NUMBA_DISABLE_OPENMP unset unless you intentionally want the non-OpenMP threading backend."
+        ],
+        "build_steps": [
+          "cd into the checked-out repository and confirm you are on c50e90decabe8522a9c78039a917ea778bde1a03 (buggy commit).",
+          "Verify numba/np/arraymath.py array_mean still ends with 'return c / dtype.type(a.size)' (the buggy divisor cast).",
+          "From the top level of the source tree run: python setup.py install (the CI build command from the evidence).",
+          "Optional in-place build for faster iteration: python setup.py build_ext --inplace."
+        ],
+        "reproduction_steps": [
+          "Run the new reproducer test only: python -m numba.runtests numba.tests.test_array_reductions::test_mean_count_rounding (or use the test file with -t test_mean_count_rounding if the selector syntax is unsupported by numba.runtests).",
+          "The test sets n = 2**24 + 1, then for dtype in (np.float32, np.complex64) allocates arr = np.zeros(n, dtype=dtype) and sets arr[0] = dtype(2**24 - 1).",
+          "The test calls npr, nbr = run_comparative(array_mean, arr) and then self.assertPreciseEqual(npr, nbr).",
+          "Observe the failure: Numba's array_mean returns 0.9999999403953552 for float32 while NumPy returns 0.9999998807907104, so assertPreciseEqual raises AssertionError.",
+          "Optional direct numerical confirmation: build the same arrays and compare numba.np.arraymath.array_mean(arr) against arr.mean() to see the same divergence."
+        ],
+        "test_command": "python -m numba.runtests numba.tests.test_array_reductions",
+        "test_selector": "numba.tests.test_array_reductions::test_mean_count_rounding",
+        "expected_buggy_behavior": "test_mean_count_rounding fails: for n = 2**24 + 1 float32/complex64 arrays, buggy array_mean divides by float32(a.size) (rounds 2**24+1 to 2**24), returning 0.9999999403953552 for float32 while NumPy returns 0.9999998807907104; assertPreciseEqual(npr, nbr) raises AssertionError.",
+        "expected_fixed_behavior": "test_mean_count_rounding passes: array_mean computes dtype.type(c / a.size) (divide by the exact integer count promoted to double, then cast once), so Numba matches NumPy bit-for-bit (float32 result 0.9999998807907104) and assertPreciseEqual(npr, nbr) passes for both float32 and complex64.",
+        "success_criterion": "On buggy commit c50e90de, running selector numba.tests.test_array_reductions::test_mean_count_rounding FAILS with the precision mismatch (Numba 0.9999999403953552 vs NumPy 0.9999998807907104 for float32); on fixed commit befa51f the same test PASSES.",
+        "risks_or_ambiguities": [
+          "The exact test invocation is not fully specified in the evidence; numba.runtests may require -t test_mean_count_rounding rather than the :: selector syntax.",
+          "llvmlite >=0.49.0dev0,<0.50 may not be readily installable from PyPI; CI downloads an llvmlite artifact, so a matching llvmlite build is needed.",
+          "The reproducer allocates arrays of 2**24+1 elements for float32 (~64 MB) and complex64 (~128 MB), requiring sufficient memory; this may be slow/heavy on constrained machines.",
+          "Platform/toolchain specifics (OpenMP headers/runtime, clang_osx-arm64, Visual Studio) matter for building Numba; missing OpenMP may alter behavior only if NUMBA_DISABLE_OPENMP is set.",
+          "The evidence notes no explicit developer test command; docs defer to developer documentation, so the runtests command is the best-supported choice."
+        ],
+        "confidence": 0.72
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3004,
+        "output_tokens": 3302,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.005682
+      }
+    },
+    {
+      "reference": "https://github.com/numba/numba/pull/10528",
+      "repo": "numba/numba",
+      "pr_number": 10528,
+      "buggy_commit": "0d0938a717dbe464dfda3448f3f8571d2c606978",
+      "fixed_commit": "43b83d9a0ea3c07108cb73484fcbcc5284615958",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce PR#10528's numerical bug: on Python 3.14+, Numba's compiled complex128 multiply/divide lacks CPython 3.14 NaN-recovery (_Py_c_prod/_Py_c_quot), so special-value products/quotients (infinities that IEEE754 yields as nan+nanj) and NaN payloads differ from CPython. Reproduce by checking out buggy commit 0d0938a, building Numba, grafting the PR's test-side hunks (mul_usecase, skip_unless_py314_or_later, TestComplexNaNRecovery), and running the selectors under Python 3.14+; they must fail against buggy numba/cpython/numbers.py.",
+        "input_output_examples": [
+          {
+            "input": "z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)",
+            "buggy_output": "real bits = 0xfff8000000000010 (negative NaN propagated)",
+            "expected_output": "real bits = 0x7ff8000000000000 (cpython_result z / w)",
+            "source": "pr"
+          },
+          {
+            "input": "mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)",
+            "buggy_output": "Numba result for inf-producing products is nan+nanj (no _Py_c_prod NaN recovery), differing from CPython on 3.14",
+            "expected_output": "Matches CPython 3.14+ _Py_c_prod() NaN-recovery result (recovered infinities, not nan+nanj)",
+            "source": "test"
+          },
+          {
+            "input": "div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)",
+            "buggy_output": "Numba result for inf-producing quotients is nan+nanj (no _Py_c_quot NaN recovery), differing from CPython on 3.14",
+            "expected_output": "Matches CPython 3.14+ _Py_c_quot() NaN-recovery result (recovered infinities, not nan+nanj)",
+            "source": "test"
+          },
+          {
+            "input": "cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)",
+            "buggy_output": "Evidence does not assert a specific buggy value; zero-division guard/ZeroDivisionError is what the fix adds",
+            "expected_output": "assertRaises(ZeroDivisionError)",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Python >= 3.14 (utils.PYVERSION >= (3, 14)) is REQUIRED: TestComplexNaNRecovery is gated by skip_unless_py314_or_later and CPython's NaN recovery only exists in 3.14+.",
+          "Python must be within setup.py's supported range: >=3.10,<3.15 (exclusive).",
+          "Install numpy (run >=1.22; build >=1.11) and a py3.14-compatible NumPy build.",
+          "Install llvmlite matching the vendored requirement: >=0.50.0dev0 (min) and <0.51 (max).",
+          "Install packaging (optional; falls back to setuptools._vendor.packaging) and a C toolchain / OpenMP runtime compatible with the platform (Linux: system gcc; Windows: matching Visual Studio; OSX: clang_osx-arm64 + llvm-openmp).",
+          "Set NUMBA_DISABLE_OPENMP if OpenMP is unavailable so the build does not fail on a missing libgomp/libomp runtime."
+        ],
+        "build_steps": [
+          "git checkout 0d0938a717dbe464dfda3448f3f8571d2c606978 (buggy revision; fix 43b83d9a0ea3c07108cb73484fcbcc5284615958 must NOT be applied).",
+          "Ensure the interpreter is Python 3.14+ and numpy/llvmlite versions above are importable (pip install 'numpy>=1.22' llvmlite; or conda).",
+          "Build/install the extension: python setup.py install (the only build command supported by the evidence).",
+          "Sanity check: python -c \"import numba, numba.cpython.numbers as n; import inspect; print(numba.__version__)\" and confirm numba.cpython.numbers has no NaN-recovery code (no 'Recover infinities' branch)."
+        ],
+        "reproduction_steps": [
+          "Confirm Python 3.14+: python -c \"from numba.misc import utils; print(utils.PYVERSION)\" must print (3, 14, ...) or later, otherwise the reproducing tests are skipped and cannot fail.",
+          "Graft the PR's TEST-ONLY changes onto the buggy checkout (the tests do not exist at 0d0938a): add 'def mul_usecase(x, y): return x * y' to numba/tests/complex_usecases.py.",
+          "In numba/tests/support.py, add skip_unless_py314_or_later = unittest.skipUnless(utils.PYVERSION >= (3, 14), 'needs Python 3.14+') (keep the old skip_if_py314 name defined too, so other test modules importing it do not ImportError).",
+          "In numba/tests/test_complex.py, import skip_unless_py314_or_later, add class TestComplexNaNRecovery(BaseComplexTest, TestCase) with special_values() = [complex(x, y) for x, y in itertools.product([-0.0, +0.0, 1, -1, 1e200, float('-inf'), float('+inf'), float('nan')], same)], and methods test_mul/test_div (run_binary over itertools.product of special_values, value_types=[(types.complex128, types.complex128)], flags=no_pyobj_flags) and test_div_zero (cfunc = jit((types.complex128, types.complex128), **flags)(div_usecase); for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)]: assertRaises(ZeroDivisionError) on cfunc(1+1j, denom)).",
+          "Also remove @skip_if_py314 from TestCMath.test_log_base_npm (diff at numba/tests/test_complex.py:239-244) so that test actually runs instead of being skipped.",
+          "Directly probe the reported case before running the suite: run the Numba jitted div_usecase on z=complex(float('-inf'), float('nan')), w=complex(-0.0, float('-inf')) and print struct.pack('<d', result.real) / np.asarray([result.real]).view(np.int64) to compare real-bit patterns against CPython's z/w.",
+          "Run the selectors with python -m numba.runtests and record the failures in TestComplexNaNRecovery.test_mul/test_div (and, if asserted, test_div_zero)."
+        ],
+        "test_command": "python -m numba.runtests numba.tests.test_complex.TestComplexNaNRecovery numba.tests.test_complex.TestCMath.test_log_base_npm",
+        "test_selector": "numba.tests.test_complex.TestComplexNaNRecovery; numba.tests.test_complex.TestCMath.test_log_base_npm",
+        "expected_buggy_behavior": "On Python 3.14+, with the PR's tests grafted in, TestComplexNaNRecovery.test_mul and test_div FAIL: compiled complex128 mul/div lacks CPython 3.14 NaN recovery, so results for special values (infinities producing nan+nanj, e.g. z/w real bits 0xfff8000000000010 instead of CPython's 0x7ff8000000000000) differ from the pure-Python/CPython reference. Before grafting, the selector errors because TestComplexNaNRecovery does not exist at 0d0938a, and test_log_base_npm is skipped by @skip_if_py314.",
+        "expected_fixed_behavior": "With the numbers.py NaN-recovery fix applied (_Py_c_prod/_Py_c_quot logic with isnan/isinf checks), TestComplexNaNRecovery.test_mul, test_div and test_div_zero PASS: compiled results match CPython 3.14 for all special-value pairs and division by zero complex denominators raises ZeroDivisionError; TestCMath.test_log_base_npm runs unskipped and passes.",
+        "success_criterion": "The reproducing tests FAIL at buggy commit 0d0938a717dbe464dfda3448f3f8571d2c606978 (on Python 3.14+, with only the PR's test files grafted): failures must be NaN-recovery mismatches between Numba-compiled complex128 mul/div and CPython 3.14 (e.g. bit pattern 0xfff8000000000010 vs 0x7ff8000000000000). The same selectors would pass once the numbers.py fix (43b83d9a) is applied; no source fix may be applied while reproducing.",
+        "risks_or_ambiguities": [
+          "Hard requirement of Python 3.14+: on 3.10-3.13 TestComplexNaNRecovery is skipped and CPython lacks the recovery semantics, so the bug cannot be reproduced at all.",
+          "At the buggy commit the reproducing test class does not exist (tests and fix are in the same PR), so the exact selector errors out; test files must be grafted from the fixed commit without touching numba/cpython/numbers.py.",
+          "TestCMath.test_log_base_npm is decorated @skip_if_py314 at the buggy commit, so it is SKIPPED (not failing) on 3.14; it is a weak signal and only fails/passes meaningfully once the decorator is removed.",
+          "test_div_zero's buggy behavior is not asserted in the evidence ('Not asserted as buggy'), so ZeroDivisionError may already hold pre-fix; it is a weaker reproduction signal than test_mul/test_div.",
+          "numpy/llvmlite versions validated for Python 3.14 are not stated; llvmlite min 0.50.0dev0/max 0.51 is a dev range and may be unavailable for py3.14, and llvmlite pins must exactly match the numba dev revision.",
+          "run_binary's comparison mode for NaN/Inf results is unspecified (ulps-based comparison may treat NaNs as equal or produce a different failure message than the bit-difference narrated in PR discussion).",
+          "Whether buggy Numba/LVVM lowering actually yields nan+nanj on every platform is uncertain; on some backends complex mul/div lowering may already match, weakening the reproduction on that platform.",
+          "Removing skip_if_py314 from support.py could break other test modules that still import it; keeping both names defined avoids spurious ImportErrors unrelated to the bug.",
+          "The upstream issues (10257, 10780) state complex tests 'failed on 3.14 and were skipped'; the exact historical failure traceback is not in the evidence, so the observed failure text may differ."
+        ],
+        "confidence": 0.5
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 4160,
+        "output_tokens": 4581,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.007879
+      }
+    },
+    {
+      "reference": "https://github.com/numba/numba/pull/10398",
+      "repo": "numba/numba",
+      "pr_number": 10398,
+      "buggy_commit": "2888b02baa5475ccb95a354c1523e6578ef3bd2e",
+      "fixed_commit": "16ba2431e4e4e08bdc766f245948a40a52e6ac32",
+      "is_numerical_bug": true,
+      "bug_type": "accuracy",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "On Python 3.11 numba compiles integer `x ** 2` in an @njit function by routing the result through a float64 and back to int64, so results above 2^53 lose precision (94906267 ** 2 returns 9007199515875288 instead of 9007199515875289). Reproduce by installing this buggy commit under Python 3.11 and running the PR's new test_pow_precision (or an equivalent inline njit script), observing the AssertionError.",
+        "input_output_examples": [
+          {
+            "input": "pow2(94906267) where `@njit def pow2(x): return x ** 2`",
+            "buggy_output": "9007199515875288 (x ** 2 rounded through float64 and back to int64)",
+            "expected_output": "9007199515875289 (== 94906267 * 94906267 == pow2.py_func(94906267))",
+            "source": "test"
+          },
+          {
+            "input": "x = 94906267; expected = x * x; result = pow2(x); assertEqual(result, expected)",
+            "buggy_output": "result == 9007199515875288, so self.assertEqual(result, expected) raises AssertionError",
+            "expected_output": "result == expected == 9007199515875289, and result == pow2.py_func(x)",
+            "source": "test"
+          },
+          {
+            "input": "@njit integer power x ** 2 with x = 94906267 (issue#9931)",
+            "buggy_output": "9007199515875288 (int64 result rounded through a double)",
+            "expected_output": "9007199515875289 (full-precision integer result > 2^53)",
+            "source": "issue"
+          }
+        ],
+        "environment_setup": [
+          "Create an environment explicitly on Python 3.11: `conda create -n numba-repro python=3.11` (bug is only observed on 3.11, not on 3.10 or 3.12) and activate it.",
+          "Install pinned runtime deps: numpy >= 1.22, llvmlite >= 0.47.0dev0,< 0.48 (llvmlite must match this numba revision's LLVM expectation).",
+          "Ensure a working C compiler for the LLVM toolchain (Linux: system gcc/clang; OSX M1: clang_osx-arm64 and clangxx_osx-arm64; Windows: Visual Studio matching the Python version).",
+          "Provide OpenMP C headers/runtime if building with the OpenMP threading backend, or export NUMBA_DISABLE_OPENMP=1 to build without it.",
+          "Checkout/confirm the buggy revision: `git checkout 2888b02baa5475ccb95a354c1523e6578ef3bd2e` (fix NOT applied)."
+        ],
+        "build_steps": [
+          "Confirm Python version: `python -V` must report 3.11.x (the failure mode does not appear on 3.10/3.12).",
+          "Install the pinned dependencies, e.g. `pip install \"numpy>=1.22\" \"llvmlite>=0.47.0dev0,<0.48\"` (a dev llvmlite build may be required if no wheel exists for py3.11).",
+          "Build/install numba from the checked-out buggy tree, e.g. `pip install -e .` or `python setup.py install` (README build command).",
+          "Verify the install: `python -c \"import numba, llvmlite; print(numba.__version__, llvmlite.__version__)\"`."
+        ],
+        "reproduction_steps": [
+          "Confirm the buggy source path is present: inspect `numba/cpython/numbers.py` (`int_power`) at commit 2888b02 \u2014 the float round-trip path for `x ** 2` is what triggers on Python 3.11.",
+          "Note that `test_pow_precision` is ADDED by PR #10398 and therefore does NOT exist at the buggy commit; add the PR test snippet into `numba/tests/test_operators.py` (class TestOperators, near test_truediv) or run the equivalent inline script.",
+          "Standalone check: `python -c \"from numba import njit;\n@njit\ndef pow2(x): return x ** 2\nx=94906267\nprint(pow2(x), x*x)\"` and observe the two values differ (9007199515875288 vs 9007199515875289).",
+          "Optionally inspect the generated LLVM/typed code (e.g. `pow2.inspect_llvm()` / `inspect_types()`) to confirm a floating-point `mul` is emitted for the integer power on Python 3.11.",
+          "Run the test with the PR's selector: `python -m numba.runtests numba.tests.test_operators.TestOperators.test_pow_precision` and observe the AssertionError from `self.assertEqual(result, expected)`."
+        ],
+        "test_command": "python -m numba.runtests numba.tests.test_operators.TestOperators.test_pow_precision",
+        "test_selector": "numba.tests.test_operators::test_pow_precision",
+        "expected_buggy_behavior": "Under Python 3.11, `pow2(94906267)` returns the float-rounded int64 9007199515875288 instead of 9007199515875289 (94906267 * 94906267), so test_pow_precision fails with AssertionError on `self.assertEqual(result, expected)` and on `self.assertEqual(result, pow2.py_func(x))`.",
+        "expected_fixed_behavior": "After the fix, integer power preserves full precision: `pow2(94906267) == 94906267 * 94906267 == 9007199515875289`, matching `pow2.py_func(x)`, and test_pow_precision passes.",
+        "success_criterion": "On the buggy commit 2888b02 under Python 3.11, test_pow_precision (or the equivalent njit script) FAILS: result 9007199515875288 != expected 9007199515875289; the same test passes on the fixed commit 16ba243.",
+        "risks_or_ambiguities": [
+          "The reproducing test test_pow_precision does not exist at the buggy commit (it is introduced by PR #10398), so it must be added manually or reproduced with an inline njit script; the given selector will otherwise error.",
+          "Bug is Python-version specific: it reproduces on 3.11 only, and the CI conda job uses Python 3.12, so reproducing may require manually pinning 3.11.",
+          "The exact wrong value 9007199515875288 is mined from the issue discussion/rationale (medium confidence 0.62), not asserted verbatim in the test diff; only the inequality result != x*x is guaranteed by the assertion.",
+          "llvmlite >=0.47.0dev0,<0.48 is a development version; a matching wheel for Python 3.11 may not exist, requiring an llvmlite source build against the pinned LLVM.",
+          "Selector format is ambiguous in the evidence: the reported test_selector uses '::' while the test_command uses dotted module.Class.method; both target the same test.",
+          "No explicit CI test command is shown in the mined evidence; the numba.runtests invocation comes from the test evidence only (confidence 0.6)."
+        ],
+        "confidence": 0.6
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2525,
+        "output_tokens": 3045,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.005132
+      }
+    },
+    {
+      "reference": "https://github.com/numba/numba/pull/10088",
+      "repo": "numba/numba",
+      "pr_number": 10088,
+      "buggy_commit": "934a8e4426ffa0029e8056d416442b29a3cdbcb0",
+      "fixed_commit": "30753de862637512baafb68d6b722c9d419c2fa3",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce PR#10088's special-value bug at buggy commit 934a8e4426ffa0029e8056d416442b29a3cdbcb0: Numba's np.unique overload (numba/np/arrayobj.py) does not collapse equal np.nan values because the equality/inequality test fails for NaN, so np.unique (and np.union1d, which propagates it) returns duplicated/extra values instead of a single nan. Build Numba in place, run the added case check(np.array([np.nan, np.nan])) in numba/tests/test_array_methods.py (~line 1777), and observe the AssertionError/shape mismatch (2,) vs (1,).",
+        "input_output_examples": [
+          {
+            "input": "np.unique(np.array([np.nan, np.nan]))",
+            "buggy_output": "array([ 1., nan]) with shape (2,) (PR#10088 discussion ACTUAL)",
+            "expected_output": "array([nan]) with shape (1,) (PR#10088 discussion DESIRED)",
+            "source": "pr"
+          },
+          {
+            "input": "np.union1d(np.array([np.nan]), np.array([np.nan])) (njit)",
+            "buggy_output": "njit output differs from NumPy's [nan]; issue report shows a truncated '[na'",
+            "expected_output": "[nan] / array([nan])",
+            "source": "issue"
+          },
+          {
+            "input": "check(np.array([np.nan, np.nan])) added in numba/tests/test_array_methods.py (~line 1777)",
+            "buggy_output": "duplicate NaNs not collapsed; PR discussion AssertionError: shapes (2,) and (1,) mismatch, ACTUAL array([ 1., nan])",
+            "expected_output": "np.unique result contains a single nan, array([nan])",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Use Python >=3.10,<3.14 (setup.py min_python_version 3.10, max 3.14 exclusive); contributing docs example pins python=3.10.",
+          "Create env: conda create -n numbaenv python=3.10 numba/label/dev::llvmlite numpy scipy jinja2 cffi, then conda activate numbaenv.",
+          "Ensure an llvmlite satisfying numba's requirement (>=0.45.0dev0,<0.46); numpy run requirement is >=1.24 (pip/conda install is fine).",
+          "Optional acceleration packages per contributing docs: tbb and/or llvm-openmp (not required for this test; test_array_dot is @needs_blas and is not the target)."
+        ],
+        "build_steps": [
+          "Confirm the working tree is at the buggy revision: git rev-parse HEAD -> 934a8e4426ffa0029e8056d416442b29a3cdbcb0 (fix 30753de862637512baafb68d6b722c9d419c2fa3 must NOT be applied).",
+          "Build the setuptools/versioneer C extensions in place from the repo root: python setup.py build_ext --inplace (equivalent: pip install -e . --no-build-isolation).",
+          "Sanity check the build imports and compiles: python -c \"import numba, numpy; from numba import njit; print(numba.__version__, numpy.__version__)\"."
+        ],
+        "reproduction_steps": [
+          "Manual check of the reported example: define @njit f(a): return np.unique(a); run print(f(np.array([np.nan, np.nan]))) and compare with print(np.unique(np.array([np.nan, np.nan]))). Buggy njit output has 2 elements, e.g. [ 1. nan]; NumPy gives [nan].",
+          "Manual union1d check for issue #10069: @njit g(a, b): return np.union1d(a, b); print(g(np.array([np.nan]), np.array([np.nan]))) and compare with np.union1d of the same inputs (expected array([nan])).",
+          "Run the modified test, which now includes check(np.array([np.nan, np.nan])) in the nested check(a) helper (~line 1777 of numba/tests/test_array_methods.py).",
+          "Confirm the observed failure is the NaN-collapse/shape assertion (shapes (2,) and (1,) mismatch / duplicate NaN), not an environment, import, or LLVM compilation error.",
+          "Do not modify numba/np/arrayobj.py; the goal is only to observe the failure at this revision."
+        ],
+        "test_command": "python -m numba.runtests -v numba.tests.test_array_methods.TestArrayMethods.test_np_unique",
+        "test_selector": "numba.tests.test_array_methods.TestArrayMethods.test_np_unique (the test method whose nested check(a) at ~line 1777 gains check(np.array([np.nan, np.nan]))); fallback: run the whole numba.tests.test_array_methods module",
+        "expected_buggy_behavior": "The added case fails: np.unique under Numba does not collapse duplicate NaNs because b[i] != x is True for NaN comparisons, so the result has 2 elements. PR#10088 discussion shows AssertionError 'Arrays are not equal', shapes (2,) and (1,) mismatch, ACTUAL: array([ 1., nan]), DESIRED: array([nan]); np.union1d on NaN inputs likewise differs from NumPy's array([nan]).",
+        "expected_fixed_behavior": "np.unique(np.array([np.nan, np.nan])) returns a single nan, array([nan]) (shape (1,)); the np.unique overload handles np.nan correctly and the fix propagates to np.union1d, whose NaN-input result then matches NumPy's array([nan]).",
+        "success_criterion": "With the fix not applied at commit 934a8e4426ffa0029e8056d416442b29a3cdbcb0, the test containing check(np.array([np.nan, np.nan])) FAILS (NaN values not deduplicated; e.g. shapes (2,) vs (1,) mismatch / non-[nan] result). The same test would PASS once the fixed commit 30753de862637512baafb68d6b722c9d419c2fa3 is applied.",
+        "risks_or_ambiguities": [
+          "Evidence provides test_selector and test_command as empty strings; the exact test method name is inferred from the hunk context ('def check(a):' at ~line 1774, followed by @needs_blas test_array_dot) and is not confirmed. If the name is wrong, run the whole numba.tests.test_array_methods module instead.",
+          "numba.runtests may not forward unittest's -k option; use the full dotted test path, or the module path as a safe fallback.",
+          "llvmlite requirement is a dev build (>=0.45.0dev0,<0.46) which may not be installable from default channels; a mismatch can cause import/compile errors that masquerade as test failures.",
+          "Docs/contributing pin python=3.10 while setup.py allows >=3.10,<3.14 (CI/context conflicts noted in mined evidence); build-time numpy (>=1.11) vs run-time numpy (>=1.24) also differ.",
+          "The issue #10069 union1d output is reported truncated ('[na'), so only the array([nan]) expectation is concrete; no test command/test case for union1d itself appears in the PR diff.",
+          "The buggy value array([ 1., nan]) comes from PR discussion output and may depend on the exact NumPy/sort behavior; the reliable signal is the shape/duplicate-count mismatch (2,) vs (1,)."
+        ],
+        "confidence": 0.6
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2897,
+        "output_tokens": 6616,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.01001
+      }
+    },
+    {
+      "reference": "https://github.com/numba/numba/pull/10052",
+      "repo": "numba/numba",
+      "pr_number": 10052,
+      "buggy_commit": "6c7444e7285b5de946b14ce9f9701cc6e6721949",
+      "fixed_commit": "7d941203df318867d7b5ede858a754651fb1ca4f",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce np.searchsorted returning wrong results for float32 arrays containing NaN (PR #10052). In numba/np/new_arraymath.py the _less_than_or_equal helper only tests `isinstance(b, float)`, so types.float32/types.float64 operands never reach the np.isnan(b) NaN branch and the comparison disagrees with NumPy. Reproduce by installing numpy/llvmlite, installing numba in-place from the buggy checkout 6c7444e, adding the PR's float32-NaN case to numba/tests/test_np_functions.py (test-only hunk), and running the searchsorted test; it must fail on this revision and pass once the guard is widened.",
+        "input_output_examples": [
+          {
+            "input": "a = np.array([9, np.nan], dtype=np.float32); v = np.array([np.nan], dtype=np.float32); check(a, v)  # i.e. numba-jitted np.searchsorted(a, v) compared against numpy's np.searchsorted(a, v)",
+            "buggy_output": "Not recorded verbatim in the evidence (Q2 buggy_output is empty). The reported wrong behaviour is that the numba result differs from NumPy's, so check()'s equality assertion fails at the buggy commit.",
+            "expected_output": "Not recorded verbatim in the evidence. Expected is that the numba result equals NumPy's np.searchsorted result for these float32 NaN inputs (NaN branch reached via np.isnan(b)), so check() passes.",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Python >=3.10,<3.14 (CI conda builder uses python-version 3.12); prefer 3.12.",
+          "Install numpy (build >=1.11, run >=1.24) and llvmlite >=0.45.0dev0,<0.46, matching this checkout.",
+          "A C/C++ compiler plus LLVM toolchain usable by llvmlite (system compiler on Linux ARM; clang_osx-arm64/clangxx_osx-arm64 on macOS M1; Visual Studio on Windows).",
+          "OpenMP headers/runtime if building with threading; NUMBA_DISABLE_OPENMP is the relevant env var if threading must be disabled.",
+          "Create and activate a fresh conda/venv environment so the local numba checkout is imported instead of any installed numba."
+        ],
+        "build_steps": [
+          "git checkout 6c7444e7285b5de946b14ce9f9701cc6e6721949 (confirm with `git rev-parse HEAD`); the fix commit 7d941203 is NOT applied.",
+          "Confirm llvmlite version compatibility (llvmlite >=0.45.0dev0,<0.46) is installed in the environment.",
+          "Build/install numba from this checkout, e.g. `python setup.py install` (per README/docs) or `pip install -e .`.",
+          "Sanity check the install: `python -c \"import numba, numpy; print(numba.__version__, numpy.__version__)\"`."
+        ],
+        "reproduction_steps": [
+          "In numba/tests/test_np_functions.py, apply ONLY the test hunk from the PR (insert before the '`v` is zero size' comment, around line 1511): `# `a` and `v` are float32` / `a = np.array([9, np.nan], dtype=np.float32)` / `v = np.array([np.nan], dtype=np.float32)` / `check(a, v)`. Do not apply any source fix.",
+          "Alternatively, run an equivalent standalone script: `import numpy as np; from numba import njit; f = njit(lambda a, v, : np.searchsorted(a, v))` with a = np.array([9, np.nan], dtype=np.float32), v = np.array([np.nan], dtype=np.float32), then compare f(a, v) to np.searchsorted(a, v).",
+          "Run the test (or script) and capture the AssertionError/implicit mismatch showing the numba result differs from NumPy.",
+          "Optionally confirm the plain-Python/NumPy result with `python -c \"import numpy as np; print(np.searchsorted(np.array([9,np.nan],dtype=np.float32), np.array([np.nan],dtype=np.float32)))\"` to see the value the jitted code must match.",
+          "Do not modify numba/np/new_arraymath.py or numba/np/old_arraymath.py; the failure must come from the unpatched `isinstance(b, float)` guard."
+        ],
+        "test_command": "python -m numba.runtests -v numba.tests.test_np_functions",
+        "test_selector": "numba.tests.test_np_functions.TestNPFunctions.test_searchsorted",
+        "expected_buggy_behavior": "The njit np.searchsorted call on float32 arrays containing NaN never enters the np.isnan(b) NaN branch because types.float32 is not an instance of Python float, so the comparison result (and hence the returned index) disagrees with NumPy; the new float32 NaN check() raises AssertionError and the searchsorted test fails at 6c7444e.",
+        "expected_fixed_behavior": "With the guard widened to isinstance(b, (float, types.float32, types.float64)), the NaN branch is taken for float32/float64 and the njit np.searchsorted output matches NumPy's, so check(a, v) passes and the searchsorted test succeeds.",
+        "success_criterion": "On the buggy commit 6c7444e (fix not applied) the reproducing searchsorted test fails, with the float32 NaN case (a = np.array([9, np.nan], dtype=np.float32); v = np.array([np.nan], dtype=np.float32)) disagreeing with NumPy; the same test passes once the fix commit 7d941203 is applied.",
+        "risks_or_ambiguities": [
+          "The concrete wrong/right numeric outputs are NOT stated in the evidence (Q2 buggy_output is empty; Q3 gives no values), so the exact indices returned by the buggy and correct code cannot be quoted verbatim.",
+          "The reproducing test lines are added by the PR, so they do not exist at the buggy commit; the test-only hunk must be applied manually (or an equivalent standalone script used) before running.",
+          "No test command or test selector is given in the evidence; `python -m numba.runtests ...` and the TestNPFunctions.test_searchsorted selector are inferred from numba conventions and must be confirmed.",
+          "Build instructions conflict (README `python setup.py install` vs CI manylinux/conda wheels); the exact command that works locally is unverified.",
+          "Whether the failing test hits the njit path only, or also a non-jitted fallback for float32, is not stated; the guard on types.float32 suggests the jitted path is required.",
+          "numpy version differences in NaN handling of searchsorted could change the expected value; pin numpy >=1.24 as the evidence states."
+        ],
+        "confidence": 0.5
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2320,
+        "output_tokens": 3334,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.005423
+      }
+    },
+    {
+      "reference": "https://github.com/numba/numba/pull/9747",
+      "repo": "numba/numba",
+      "pr_number": 9747,
+      "buggy_commit": "30c17f24486ccfb63c2f46c8c8b69db0c9afd889",
+      "fixed_commit": "670ea3e5950d16c808da7044dcc55077d62d9fa3",
+      "is_numerical_bug": true,
+      "bug_type": "correctness",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce PR #9747: Numba's Generator.binomial (random_binomial_btpe) diverges from NumPy. On np.random.default_rng(0), binomial(301, 0.1, 3) yields [33, 31, 23] instead of NumPy's [32, 31, 22], and binomial(700, 0.1, 100) hangs in an infinite loop. The added test test_binomial_specific_issues compares JIT output to foo.py_func(gen2) via assertPreciseEqual.",
+        "input_output_examples": [
+          {
+            "input": "gen = np.random.default_rng(0); @numba.jit def foo(gen): return gen.binomial(301, 0.1, 3); foo(gen)",
+            "buggy_output": "[33, 31, 23]",
+            "expected_output": "[32, 31, 22]",
+            "source": "issue"
+          },
+          {
+            "input": "gen1 = np.random.default_rng(0); gen2 = np.random.default_rng(0); @numba.jit def foo(gen): return gen.binomial(301, 0.1, 100); foo(gen1)",
+            "buggy_output": "incorrect values, unequal to foo.py_func(gen2) (assertPreciseEqual fails)",
+            "expected_output": "foo.py_func(gen2) result; assertPreciseEqual(got, expected) passes",
+            "source": "test"
+          },
+          {
+            "input": "gen1 = np.random.default_rng(0); gen2 = np.random.default_rng(0); @numba.jit def foo(gen): return gen.binomial(700, 0.1, 100); foo(gen1)",
+            "buggy_output": "infinite loop / hang, no output produced",
+            "expected_output": "foo.py_func(gen2) result; assertPreciseEqual(got, expected) passes",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Python >=3.10,<3.13 (CI towncrier job pins 3.10); NumPy runtime >=1.24 (build >=1.11); llvmlite >=0.44.0dev0,<0.45",
+          "Install a system C/C++ compiler and LLVM-compatible toolchain: Linux system compiler / gcc, macOS clang_osx-arm64 + clangxx_osx-arm64, or Visual Studio on Windows",
+          "Provide OpenMP headers and runtime (if NUMBA_DISABLE_OPENMP is unset); optionally set NUMBA_DISABLE_OPENMP=1 to avoid OpenMP build problems",
+          "Check out the buggy commit 30c17f24486ccfb63c2f46c8c8b69db0c9afd889 and install the project in development mode from that tree",
+          "Ensure test-only deps available: towncrier 23.6, importlib_resources<6, pytest"
+        ],
+        "build_steps": [
+          "python -m pip install --upgrade pip setuptools wheel",
+          "python -m pip install 'numpy>=1.24' 'llvmlite>=0.44.0dev0,<0.45' towncrier==23.6 'importlib_resources<6' pytest",
+          "python -m pip install -e . (or: python setup.py install) from the buggy checkout",
+          "python -c \"import numba, numpy; print(numba.__version__, numpy.__version__)\" to confirm the local numba imports from the checkout",
+          "Optional: export NUMBA_DISABLE_OPENMP=1 before building if OpenMP headers/runtime are unavailable"
+        ],
+        "reproduction_steps": [
+          "Confirm the buggy checkout: git rev-parse HEAD == 30c17f24486ccfb63c2f46c8c8b69db0c9afd889",
+          "Confirm the reproducing test is absent at this commit: grep -n test_binomial_specific_issues numba/tests/test_np_randomgen.py should return nothing (the test is introduced by PR #9747)",
+          "Apply only the test hunk from the PR diff (do not apply the numba/np/random/old_distributions.py fix): add def test_binomial_specific_issues to the generator test class in numba/tests/test_np_randomgen.py",
+          "Alternatively, write a standalone script with the same body: np.random.default_rng(0) for gen1/gen2, a @numba.jit foo(gen) returning gen.binomial(301, 0.1, 3), and compare foo(gen1) to foo.py_func(gen2)",
+          "Run the mid-range case first (it terminates) to observe the wrong values [33, 31, 23]; then run the n=700 case under a hard timeout to observe the hang",
+          "Optionally instrument the generator state or use a print/pdb to confirm execution enters random_binomial_btpe",
+          "Record the observed mismatch/hang as the buggy behavior at this revision"
+        ],
+        "test_command": "timeout 300 python -m pytest numba/tests/test_np_randomgen.py::test_binomial_specific_issues",
+        "test_selector": "numba/tests/test_np_randomgen.py::test_binomial_specific_issues",
+        "expected_buggy_behavior": "Without the fix, subtest \"infinite loop issue #9493\" hangs on gen.binomial(700, 0.1, 100) (times out, no output), and subtest \"issue with midrange value branch #9493/#9734\" produces values for gen.binomial(301, 0.1, 100) that differ from foo.py_func(gen2), so assertPreciseEqual raises AssertionError. The issue-level example binomial(301, 0.1, 3) gives [33, 31, 23] instead of [32, 31, 22].",
+        "expected_fixed_behavior": "With the fix (random_binomial_btpe initialized with NumPy's float expression and the missing fall-through branch restored), Numba's Generator.binomial matches NumPy: foo(gen1) equals foo.py_func(gen2) for both binomial(301, 0.1, 100) and binomial(700, 0.1, 100), assertPreciseEqual passes, and no infinite loop occurs.",
+        "success_criterion": "At buggy commit 30c17f24486ccfb63c2f46c8c8b69db0c9afd889, running the reproducing test fails: the mid-range case raises an AssertionError from assertPreciseEqual (or the standalone script prints [33, 31, 23] vs expected [32, 31, 22]) and the n=700 case hangs / is killed by the timeout; the same test passes after applying the PR #9747 fix.",
+        "risks_or_ambiguities": [
+          "The reproducing test does not exist at the buggy commit (it is introduced by PR #9747), so the test hunk must be applied or the assertions scripted manually; otherwise pytest errors with 'no tests ran'/collection error rather than showing the bug.",
+          "The n=700 case is an infinite loop, so the test may hang indefinitely and never emit a pytest failure; a hard timeout (or running subtests separately) is required to register the failure.",
+          "No exact buggy values are given for binomial(301, 0.1, 100) or binomial(700, 0.1, 100); those outputs are only described as 'unequal to foo.py_func(gen2)' / a hang, so they cannot be quoted as concrete numbers.",
+          "Build/test commands are weakly evidenced (Q4 confidence 0.25): only 'python setup.py install' appears in evidence; pip install -e . and pytest invocation are reasonable but not verbatim from mined evidence.",
+          "Exact ffm/Docker llvmlite version 0.44.0dev0 is a development pin and may be hard to obtain; a compatible llvmlite release may alter results only if the random algorithm changes (unlikely).",
+          "NumPy version at runtime affects the reference values produced by foo.py_func(gen2); the PR results assume a NumPy whose default_rng/binomial matches the recorded outputs."
+        ],
+        "confidence": 0.7
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2849,
+        "output_tokens": 2308,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.004302
+      }
+    }
+  ]
+}

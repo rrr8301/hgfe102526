@@ -1,0 +1,114 @@
+{
+  "input": "pipeline_no_historic/numpy_29230/mined/numpy__numpy_29230.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 14203,
+    "output_tokens": 4957,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "numpy/numpy",
+      "pr_number": 29230,
+      "reference": "https://github.com/numpy/numpy/pull/29230",
+      "buggy_commit": "f15a116ee12ec539c7ed1fafb3a0abfb82005e0f",
+      "fixed_commit": "7a74e12558789ecf0252dad56a77560db7411d13",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6170,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce numpy/numpy#29230 by building NumPy from source at the buggy commit f15a116ee12e, then running the project's own test_unsigned_resize in numpy/_core/tests/test_numeric.py. On the buggy revision, np.resize(arr, np.uint32(1)) and np.uint64(1) raise instead of matching the signed result, so the test errors. On the fixed revision the same test passes. The transition is the success criterion; no printed values are checked.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "pytest",
+            "hypothesis",
+            "meson-python",
+            "ninja",
+            "Cython"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain (gcc or clang)",
+            "git"
+          ],
+          "build_commands": [
+            "git clone https://github.com/numpy/numpy.git && cd numpy && git checkout f15a116ee12e && git submodule update --init",
+            "pip install -r requirements/build_requirements.txt (or pip install meson-python ninja Cython) inside a Python 3.12 venv",
+            "python -m pip install -e . --no-build-isolation (or spin build) so the compiled _core extension matches the checked-out source",
+            "pip install pytest hypothesis"
+          ],
+          "pinned_because": [
+            "No documented NumPy version constraint exists in the evidence; numpy is built from the buggy commit itself, so no released numpy version should be installed or used as the system under test.",
+            "Python 3.12 is taken from the environment record; the build uses whatever numpy build requirements the checked-out tree declares, since none are quoted in the evidence."
+          ]
+        },
+        "test_command": "python -m pytest numpy/_core/tests/test_numeric.py -k test_unsigned_resize -x -q",
+        "reproducing_test": "def test_unsigned_resize(self): for dt_pair in [(np.int32, np.uint32), (np.int64, np.uint64)]: arr = np.array([[23, 95], [66, 37]]); assert_array_equal(np.resize(arr, dt_pair[0](1)), np.resize(arr, dt_pair[1](1)))",
+        "success_criterion": "Transition: on buggy f15a116ee12e the test ERRORS (np.resize with np.uint32(1) raises SystemError and np.uint64(1) raises OverflowError, after a RuntimeWarning about negating an unsigned scalar), so the test does not pass. On the fixed revision (repeats = (new_size + a.size - 1) // a.size) the test PASSES, because both unsigned calls return the same array as the signed int32/int64 calls.",
+        "numerical_probe": "np.resize(np.array([[23, 95], [66, 37]]), np.uint32(1)) compared against np.resize(..., np.int32(1)); also the uint64 counterpart against int64.",
+        "input_output_examples": [
+          {
+            "input": "np.resize(np.array([[23, 95], [66, 37]]), np.int32(1))",
+            "buggy_output": "",
+            "expected_output": "[23]"
+          },
+          {
+            "input": "np.resize(np.array([[23, 95], [66, 37]]), np.uint32(1))",
+            "buggy_output": "RuntimeWarning: overflow encountered in scalar negative; SystemError: <built-in function concatenate> returned NULL without setting an exception",
+            "expected_output": "[23]"
+          },
+          {
+            "input": "np.resize(np.array([[23, 95], [66, 37]]), np.uint64(1))",
+            "buggy_output": "OverflowError: cannot fit 'numpy.uint64' into an index-sized integer",
+            "expected_output": "[23]"
+          }
+        ],
+        "risks": [
+          "The environment's test_commands entry (python -c with numpy.test()) does not select the bug's test and is not used; the pytest node selector above is the actual test command.",
+          "The failure is a wraparound of unsigned negation, so it only fires with unsigned scalar types (np.uint32/np.uint64). Python ints will not reproduce it.",
+          "The buggy path can request a very large repeats allocation; on machines with little memory it may end in MemoryError or heavy swapping instead of the clean SystemError/OverflowError, which can make the run slow or unstable.",
+          "The SystemError vs OverflowError split is observed on 64-bit Linux with Python 3.12; other platforms, 32-bit builds, or other Python versions may change the exception type, but the test should still fail because the unsigned call does not return [23].",
+          "If the pytest configuration turns RuntimeWarning into an error, the buggy run fails earlier with that warning; this still counts as a failure and does not change the transition.",
+          "Build-tool versions are not pinned by evidence (none documented or era-inferred for numpy, pytest, or hypothesis); the build_requirements file at the checked-out commit should be authoritative.",
+          "No platform, sanitiser, or threading requirement is stated in the evidence, so none is assumed; the reproduction is expected to work on a standard 64-bit Linux build.",
+          "Issue reports only cite NumPy 2.x tested on v2.3.0 and v2.2.5; the buggy commit is a development tree, so exact release-version behaviour is not guaranteed to match."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "Signed-type result np.resize(arr, np.int32(1)) and np.resize(arr, np.int64(1)) in the same test, compared with assert_array_equal; issue reproducer prints [23] for the int32 case.",
+          "why": "The test asserts exact array equality between signed and unsigned size arguments, so no numerical tolerance applies."
+        },
+        "fails_on_buggy": "On f15a116ee12e, np.resize(arr, np.uint32(1)) raises SystemError (after a RuntimeWarning about negating an unsigned value) before the assertion runs, so the test errors. The u64 path raises OverflowError instead. Both come from repeats = -(-new_size // a.size) wrapping to a huge positive value.",
+        "passes_on_fixed": "On the fixed revision, repeats = (new_size + a.size - 1) // a.size = (1 + 4 - 1) // 4 = 1 for the 2x2 array, so both unsigned calls return the same [23] result as the signed calls and assert_array_equal succeeds."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4635,
+        "output_tokens": 2837,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 9568,
+        "output_tokens": 2120,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

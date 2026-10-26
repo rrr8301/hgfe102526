@@ -1,0 +1,106 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/astropy_20240_claude-haiku-5-5/mined/astropy__astropy_20240.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 23734,
+    "output_tokens": 6208,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "astropy/astropy",
+      "pr_number": 20240,
+      "reference": "https://github.com/astropy/astropy/pull/20240",
+      "buggy_commit": "e7821563dc267b7e9f53eb4f5e3d066b257e2a92",
+      "fixed_commit": "cb3c511e2e6eae23618ca7f38ae1b55f1cf1a615",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7737,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce gh-14442 / PR #20240: masked int64 values above 2**53 are round-tripped through a float64 intermediate when exported to pandas nullable Int64, so 2**62+1 comes back as 2**62. Use the developer's new parametrized test test_nullable_int_no_float_intermediate in astropy/table/tests/test_df.py at the buggy commit e7821563dc26 (fails on the pandas-like backends), then at the fixed revision (passes). Polars and pyarrow are expected to pass on both revisions and serve as controls.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "pytest",
+            "pandas",
+            "narwhals",
+            "numpy",
+            "polars",
+            "pyarrow",
+            "pyerfa",
+            "pyyaml",
+            "packaging"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "git checkout e7821563dc26",
+            "pip install -e .",
+            "pip install pytest pandas narwhals numpy polars pyarrow"
+          ],
+          "pinned_because": [
+            "No version constraint is documented for pandas, narwhals, numpy, polars, pyarrow or astropy in the evidence (all constraint null, era_ceiling null), so no pin is grounded. Versions are era-inferred: use current stable releases compatible with the buggy commit's setup.cfg/pyproject requirements, and record the exact versions used in the run.",
+            "Editable install is needed because astropy has compiled extensions that must be built from the checked-out buggy source; a plain pip install astropy would test a released wheel, not the buggy revision."
+          ]
+        },
+        "test_command": "pytest astropy/table/tests/test_df.py -k test_nullable_int_no_float_intermediate -v -p no:cacheprovider",
+        "reproducing_test": "astropy/table/tests/test_df.py::TestDataFrame::test_nullable_int_no_float_intermediate (parametrized over backend, use_legacy_pandas_api, unsigned in ['u', ''])",
+        "success_criterion": "On buggy commit e7821563dc26, the pandas-backed parametrizations of test_nullable_int_no_float_intermediate FAIL: values [iinfo(int64).max, 2**62+1, 3] with mask [False, False, True] do not round-trip exactly (the 2**62+1 entry comes back as 2**62 through the float64 intermediate, and/or dtype differs), so assert_array_equal(t2['col0'][:2], values[:2]) fails. On the fixed revision the same parametrizations PASS because the masked int64 data is passed directly to pandas IntegerArray. Polars and pyarrow parametrizations should pass on both revisions as controls. The transition is FAIL-to-PASS for the pandas-like backends.",
+        "numerical_probe": "python -c \"import numpy as np; v=np.array([2**62+1],dtype='int64'); print(int(v.astype('float64')[0]) == 2**62+1)\"  (expected False, confirming float64 cannot hold the value exactly)",
+        "input_output_examples": [
+          {
+            "input": "big = 2**62 + 1; ma = np.ma.MaskedArray([big, 123], mask=[False, True]); pd.Series(ma, dtype=\"Int64\")[0]",
+            "buggy_output": "4611686018427387904",
+            "expected_output": "4611686018427387905"
+          },
+          {
+            "input": "t.to_pandas()[\"source_id\"][0] for a masked int column containing Gaia source id 4611686018427387905",
+            "buggy_output": "4611686018427387904",
+            "expected_output": "4611686018427387905"
+          }
+        ],
+        "risks": [
+          "The backend fixture determines whether the pandas path is exercised; if the pandas-like parametrizations are skipped in the environment (pandas or narwhals missing), the test will show no transition. Confirm the parametrized ids in the run output.",
+          "The buggy versions of pandas, narwhals and numpy are not stated in the evidence, so the exact buggy behaviour is not version-grounded. A newer pandas may handle masked int conversion differently, so the FAIL on buggy may not reproduce with the latest versions; if it passes on buggy, pin pandas to the era of the commit (pandas 2.x) and record it.",
+          "use_legacy_pandas_api parametrization may require a specific pandas or narwhals code path; if the legacy path is absent or raises, the failure may be an error rather than a value mismatch, which is not the intended transition.",
+          "No platform or sanitizer dependence is evidenced: int64 and float64 behave the same on common 64-bit Linux, macOS and Windows, so this should not need a special architecture. However, this is not verified by the evidence, and a 32-bit or exotic platform was not checked.",
+          "The 1-ULP tolerance concern cannot be checked against the passages; the test uses exact equality and no tolerance applies."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "Test assertions comparing round-tripped values against the original Python/numpy integers in values",
+          "why": "Values above 2**53 cannot be represented exactly in float64, so only exact integer equality distinguishes the buggy float64 path from the fixed path."
+        },
+        "fails_on_buggy": "On the buggy revision, the pandas-backed parametrizations convert the masked int64 column through float64. 2**62+1 is rounded to 2**62 (and iinfo(int64).max is also rounded), so the round-tripped column t2['col0'] no longer equals values[:2] under assert_array_equal, raising AssertionError; the dtype check may also fail if the result is float64.",
+        "passes_on_fixed": "On the fixed revision, _pandas_nullable_int_array builds a pandas IntegerArray directly from the integer data and mask, so the values round-trip exactly, the dtype equals np_dtype, the mask is [False, False, True], and assert_array_equal passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5538,
+        "output_tokens": 3126,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 18196,
+        "output_tokens": 3082,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

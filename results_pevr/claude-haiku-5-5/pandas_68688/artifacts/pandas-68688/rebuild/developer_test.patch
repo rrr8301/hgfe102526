@@ -1,0 +1,109 @@
+diff --git a/pandas/tests/frame/methods/test_astype.py b/pandas/tests/frame/methods/test_astype.py
+index a548dc7a34a29..01dba280ac171 100644
+--- a/pandas/tests/frame/methods/test_astype.py
++++ b/pandas/tests/frame/methods/test_astype.py
+@@ -409,13 +409,8 @@ def test_astype_from_object_to_timedelta_unit(self, unit):
+             ["4 Days", "5 Days", "6 Days"],
+         ]
+         df = pd.DataFrame(vals, dtype=object)
+-        msg = (
+-            r"Cannot convert from timedelta64\[us\] to timedelta64\[.*\]. "
+-            "Supported resolutions are 's', 'ms', 'us', 'ns'"
+-        )
++        msg = "Supported timedelta64 resolutions are 's', 'ms', 'us', 'ns'"
+         with pytest.raises(ValueError, match=msg):
+-            # TODO: this is ValueError while for DatetimeArray it is TypeError;
+-            #  get these consistent
+             df.astype(f"m8[{unit}]")
+ 
+     @pytest.mark.parametrize("dtype", ["M8", "m8"])
+@@ -906,3 +901,26 @@ def test_astype_to_string_dtype_not_modifying_input(any_string_dtype, val):
+     expected = df.copy()
+     df.astype(any_string_dtype)
+     tm.assert_frame_equal(df, expected)
++
++
++def test_astype_object_numeric_to_timedelta64_unit_2d():
++    # GH#68688 a whole object block reaches the conversion as one 2D array; a
++    #  single-column block takes a different path than a wider one
++    df = pd.DataFrame({"a": [2, 3], "b": [4, 5]}, dtype=object)
++    expected = pd.DataFrame({"a": [2, 3], "b": [4, 5]}, dtype="m8[s]")
++
++    tm.assert_frame_equal(df.astype("m8[s]"), expected)
++    tm.assert_frame_equal(df[["a"]].astype("m8[s]"), expected[["a"]])
++
++
++def test_astype_object_numeric_to_timedelta64_unit_2d_mixed():
++    # GH#68688 whether the unit applies is decided per column, so the string
++    #  column sharing "a"'s block must not change how "a" is read
++    df = pd.DataFrame({"a": [2, 3], "b": ["1 sec", "2 sec"]}, dtype=object)
++    assert len(df._mgr.blocks) == 1
++
++    result = df.astype("m8[s]")
++
++    expected = pd.DataFrame({"a": [2, 3], "b": ["1 sec", "2 sec"]}, dtype="m8[s]")
++    tm.assert_frame_equal(result, expected)
++    tm.assert_series_equal(result["a"], df["a"].astype("m8[s]"))
+diff --git a/pandas/tests/reshape/merge/test_merge.py b/pandas/tests/reshape/merge/test_merge.py
+index 114dc9f37120f..9624e002782ec 100644
+--- a/pandas/tests/reshape/merge/test_merge.py
++++ b/pandas/tests/reshape/merge/test_merge.py
+@@ -766,7 +766,7 @@ def test_other_timedelta_unit(self, unit):
+         dtype = f"m8[{unit}]"
+         if unit in ["D", "h", "m"]:
+             # We cannot astype, instead do nearest supported unit, i.e. "s"
+-            msg = "Supported resolutions are 's', 'ms', 'us', 'ns'"
++            msg = "Supported timedelta64 resolutions are 's', 'ms', 'us', 'ns'"
+             with pytest.raises(ValueError, match=msg):
+                 ser.astype(dtype)
+ 
+diff --git a/pandas/tests/series/methods/test_astype.py b/pandas/tests/series/methods/test_astype.py
+index 4aee025bf98ce..f74a327dfb407 100644
+--- a/pandas/tests/series/methods/test_astype.py
++++ b/pandas/tests/series/methods/test_astype.py
+@@ -736,3 +736,45 @@ def test_astype_object_to_datetimelike_bigendian(kind):
+     assert result.dtype.byteorder != ">"
+     tm.assert_series_equal(result, expected)
+     tm.assert_numpy_array_equal(result.to_numpy(), expected.to_numpy())
++
++
++@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
++def test_astype_object_numeric_to_timedelta64_unit(unit):
++    # GH#68688 the numbers were read as nanoseconds whatever unit was asked
++    #  for, so m8[s] came back all zeros
++    dtype = f"m8[{unit}]"
++    expected = pd.Series([2, 3], dtype=dtype)
++    ser = pd.Series([2, 3], dtype=object)
++
++    tm.assert_series_equal(ser.astype(dtype), expected)
++    tm.assert_series_equal(pd.Series(ser, dtype=dtype), expected)
++    tm.assert_series_equal(pd.Series(pd.Index(ser), dtype=dtype), expected)
++    tm.assert_index_equal(pd.Index(ser).astype(dtype), pd.Index(expected))
++
++
++@pytest.mark.parametrize(
++    "values",
++    [
++        [pd.Timedelta(1, "s"), "2 sec", np.timedelta64(3, "s")],
++        [4, pd.Timedelta(5, "s")],
++        ["6 sec", 7],
++    ],
++)
++def test_astype_object_to_timedelta64_unit_numeric_only(values):
++    # GH#68688 the dtype's unit applies only when every non-null entry is a bare
++    #  number; either way astype has to agree with the constructor
++    ser = pd.Series(values, dtype=object)
++
++    result = ser.astype("m8[ms]")
++
++    tm.assert_series_equal(result, pd.Series(values, dtype="m8[ms]"))
++
++
++@pytest.mark.parametrize("dtype", ["m8", "M8"])
++def test_astype_object_to_datetimelike_no_unit(dtype):
++    # GH#68688 object input is converted by the array constructors, so it gets
++    #  their message rather than the one further down _astype_nansafe
++    ser = pd.Series([2, 3], dtype=object)
++
++    with pytest.raises(ValueError, match="dtype with no precision is not allowed"):
++        ser.astype(dtype)

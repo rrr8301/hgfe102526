@@ -1,0 +1,117 @@
+{
+  "input": "pipeline-gpt-5.4-nano/scipy_20168_gpt-5.4-nano/mined/scipy__scipy_20168.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 18978,
+    "output_tokens": 3692,
+    "cost_usd": 0.00841,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 20168,
+      "reference": "https://github.com/scipy/scipy/pull/20168",
+      "buggy_commit": "ecbd58a7ad953f48d3aa4808bb30bc9f3ed398f4",
+      "fixed_commit": "ed00eb8d03e9e13a71d1933a0074a38ec512b0e9",
+      "bug_type": "convergence",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 9552,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce SciPy convergence bug in scipy.optimize._nnls.nnls (gh-20168 / PR#20168) by running SciPy\u2019s added regression tests for NNLS inner-loop cases under the same runtime stack: Python 3.12, SciPy 1.12.0, NumPy 1.26.4, and OpenBLAS (USE_64BITINT) on an x86_64 CPU where the erroneous convergence/infinite-loop condition can be triggered. The reproducing test is the new test_nnls_inner_loop_case1 from scipy/optimize/tests/test_nnls.py; it should fail on the buggy revision by raising RuntimeError: Maximum number of iterations reached, and pass on the fixed revision (i.e., avoid the exception and match expected coefficients via the assert_allclose that the test performs).",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "numpy==1.26.4",
+            "cython==3.0.8",
+            "pythran==0.15.0",
+            "pytest",
+            "pybind11"
+          ],
+          "system_packages": [
+            "gfortran",
+            "ld.bfd"
+          ],
+          "build_commands": [
+            "python -m pip install --upgrade pip setuptools wheel",
+            "python -m pip install numpy==1.26.4 cython==3.0.8 pythran==0.15.0 pytest",
+            "export FC=gfortran",
+            "export CC=gcc",
+            "export CXX=g++",
+            "python -m pip install -v \"scipy==1.12.0\" --no-binary=:none:  # optional if you prefer to build from source; otherwise use pip for exact scipy baseline",
+            "git clone https://github.com/scipy/scipy.git",
+            "cd scipy",
+            "git checkout ecbd58a7ad95",
+            "python -m pip install -r requirements-dev.txt",
+            "# Build SciPy from source with OpenBLAS (and 64-bit integer interface) to match the evidence dependency constraint",
+            "# Example options (adapt to your build image):",
+            "python -m pip install -v . --no-build-isolation --config-settings=\"--build-option=--with-openblas\"  --config-settings=\"--build-option=--with-blas=openblas\""
+          ],
+          "pinned_because": [
+            "SciPy version explicitly required by the evidence: SciPy 1.12.0.",
+            "NumPy version explicitly required by the evidence log: 1.26.4.",
+            "Cython and Pythran versions are listed in the issue build info (not documented constraints) and are included to match the observed compiled extension environment where possible.",
+            "OpenBLAS with USE_64BITINT is explicitly indicated by the evidence build dependency configuration; this is included as a build requirement rather than assumed at runtime.",
+            "gfortran is explicitly listed in the evidence build info; required to build SciPy extensions if building from source."
+          ]
+        },
+        "test_command": "python -m pytest -q scipy/optimize/tests/test_nnls.py -k \"test_nnls_inner_loop_case1\"",
+        "reproducing_test": "scipy/optimize/tests/test_nnls.py::TestNNLS::test_nnls_inner_loop_case1",
+        "success_criterion": "On the buggy SciPy revision (commit ecbd58a7ad95), running test_nnls_inner_loop_case1 should FAIL during the call dact, _ = nnls(W @ A, W @ k) by raising RuntimeError(\"Maximum number of iterations reached.\"). On the fixed revision, the same test should PASS (no RuntimeError from nnls, and the subsequent assert_allclose(dact, d, rtol=0., atol=1e-10) should succeed).",
+        "numerical_probe": "The test is considered failing if nnls does not converge and raises RuntimeError('Maximum number of iterations reached.'). No separate numeric inspection is used; the test\u2019s own assert_allclose is the oracle after convergence.",
+        "input_output_examples": [
+          {
+            "input": "Run: dact, _ = nnls(W @ A, W @ k) inside test_nnls_inner_loop_case1 (with the provided hard-coded n, k, d, and constructed A, W)",
+            "buggy_output": "RuntimeError: Maximum number of iterations reached.",
+            "expected_output": "No exception; test passes (assert_allclose succeeds)."
+          },
+          {
+            "input": "Uncomment the line k = k + 1e-10 * np.random.normal(size=N) in test_nnls_inner_loop_case1",
+            "buggy_output": "Test fails reproducibly on the buggy revision when left uncommented; perturbation makes the test pass (per issue text).",
+            "expected_output": "With this perturbation enabled, the test passes on the buggy revision in environments where the original failure is triggered."
+          }
+        ],
+        "risks": [
+          "Platform/toolchain sensitivity: evidence says the failure is specifically tied to MKL-flavoured BLAS/LAPACK and also mentions AVX512 presence. This strategy relies on matching the evidence\u2019s *OpenBLAS* build, but if your actual CPU/kernel/compiler combo does not trigger the problematic inner-loop condition, you may not see the exception. If you cannot reproduce with OpenBLAS, rerun with an MKL build (gh-20470 cross-reference: failure only happens with the MKL-flavour).",
+          "Compiler/flags: the evidence specifies gfortran 10.3.0 but does not specify CPU flags. SIMD/AVX512 availability can change whether the buggy convergence check manifests.",
+          "Build reproducibility: building SciPy from source is required to transition between buggy and fixed commits. If your SciPy build uses different BLAS/LAPACK than intended (or does not actually enable USE_64BITINT), the failure may not reproduce.",
+          "Randomness: the test case as provided does not perturb k (the perturbation line is commented). The issue states that perturbing k makes the failure disappear; do not enable perturbation unless you\u2019re debugging why convergence fails due to machine-specific floating behavior."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": null,
+          "why": "The regression test\u2019s oracle is the test\u2019s own behavior: success requires that nnls converges (no RuntimeError) and that the computed dact matches the hard-coded expected vector via assert_allclose(dact, d, rtol=0., atol=1e-10). The evidence does not specify the exact numeric values beyond those embedded in the test code, so the oracle is behavioral+internal numeric compare rather than an externally stated tolerance."
+        },
+        "fails_on_buggy": "Expected assertion failure mode: the call nnls(W @ A, W @ k) raises RuntimeError('Maximum number of iterations reached.'). The test then fails before reaching assert_allclose.",
+        "passes_on_fixed": "On the fixed revision corresponding to PR#20168, the same test should run nnls to completion and satisfy assert_allclose(dact, d, rtol=0., atol=1e-10) without raising the max-iterations RuntimeError."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 8305,
+        "output_tokens": 1429,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.003447
+      },
+      "miner_usage": {
+        "input_tokens": 10673,
+        "output_tokens": 2263,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.004963,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

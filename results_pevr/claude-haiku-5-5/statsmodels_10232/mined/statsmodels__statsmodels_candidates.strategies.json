@@ -1,0 +1,108 @@
+{
+  "input": "pipeline_no_historic/statsmodels_10232/mined/statsmodels__statsmodels_10232.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 11689,
+    "output_tokens": 6802,
+    "cost_usd": 0,
+    "llm_calls": 3
+  },
+  "strategies": [
+    {
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10232,
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10232",
+      "buggy_commit": "e7f76fec5421daa85e697bb2afbbe1cd220fd65f",
+      "fixed_commit": "3beaeeb147df215616297de655a57f2508df19af",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 4104,
+      "withheld": [],
+      "strategy": {
+        "summary": "Build the statsmodels C extension at the buggy commit e7f76fec5421 on Linux (glibc, x86_64), then run the two new tests from PR 10232 in test_kde.py. On the buggy build, fast_linbin mis-bins the boundary observations, so the counts assertion and the KDE integral assertion fail (or the process aborts from heap corruption). On the fixed build, both tests pass. The extension must be rebuilt after each checkout, because a stale .so would make the transition meaningless.",
+        "needs_build": true,
+        "language": "python (with C extension statsmodels/nonparametric/linbin)",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "scipy",
+            "pandas",
+            "patsy",
+            "pytest",
+            "cython"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "git checkout e7f76fec5421",
+            "python setup.py build_ext --inplace",
+            "git checkout <fixed-commit-of-PR-10232> && python setup.py build_ext --inplace"
+          ],
+          "pinned_because": []
+        },
+        "test_command": "python -m pytest statsmodels/nonparametric/tests/test_kde.py::test_fast_linbin_boundary_observations statsmodels/nonparametric/tests/test_kde.py::test_kde_fft_cut_zero -p no:cacheprovider -v",
+        "reproducing_test": "test_fast_linbin_boundary_observations (direct fast_linbin calls on x=[0,0.3,1.0], a=0, b=1, M=5, then a 200-point normal case with M=512 checking counts.sum()==200 and counts@grid==x.sum(), then out-of-range points with and without trunc=0); test_kde_fft_cut_zero (KDEUnivariate-style KDE(x).fit(fft=True, cut=0) on x=[24.0,43.0,27.0,15.0,37.0,8.82], trapezoid integral of density within atol 0.01 of 1)",
+        "success_criterion": "On the buggy revision: test_fast_linbin_boundary_observations FAILS at the first assert_allclose because fast_linbin returns [0,0,0,0,1] instead of [1,0.8,0.2,0,1]; test_kde_fft_cut_zero FAILS either by an assertion (integral about 0.8317, outside 1 +/- 0.01) or by the process aborting from malloc corruption on the gcnts[M] write. On the fixed revision: both tests PASS, with counts matching [1,0.8,0.2,0,1], sum equal to nobs, the first moment preserved, and the density integral within 0.01 of 1. The transition is pass-to-fail in the buggy-to-fixed direction.",
+        "numerical_probe": "x=[0,0.3,1.0] with a=0,b=1,M=5 should give bin counts [1,0.8,0.2,0,1] (buggy gives [0,0,0,0,1]); x=[24.0,43.0,27.0,15.0,37.0,8.82] with cut=0 gives lxi[1]=511.00000000000006 and rem about 5.7e-14 in the buggy build",
+        "input_output_examples": [
+          {
+            "input": "x = [24.0, 43.0, 27.0, 15.0, 37.0, 8.82]; kde = sm.nonparametric.KDEUnivariate(x); kde.fit(fft=True, cut=0)",
+            "buggy_output": "malloc: Incorrect checksum for freed object; Corrupt value: 0x3d30000000000000; process abort",
+            "expected_output": "fit runs without crashing"
+          },
+          {
+            "input": "bin counts for issue#9556 data, KDEUnivariate fit(fft=True, cut=0)",
+            "buggy_output": "counts sum to 4.99999999999994; FFT density integrates to 0.8317",
+            "expected_output": "counts sum to 6; density integrates to 0.9979"
+          },
+          {
+            "input": "x = [0, 0.3, 1.0], a=0, b=1, M=5",
+            "buggy_output": "[0, 0, 0, 0, 1]",
+            "expected_output": "[1, 0.8, 0.2, 0, 1]"
+          }
+        ],
+        "risks": [
+          "The heap overflow only becomes a visible abort under glibc malloc checks on Linux. On macOS or Windows the write may be silent, and the KDE test would fail only by its integral assertion. The fast_linbin boundary test should still fail deterministically on any platform because its counts are wrong.",
+          "If the build does not produce a fresh linbin extension (stale .so from the other commit), both revisions will behave the same and the transition will not occur. Always rebuild after git checkout.",
+          "The 8.82 versus 8.8 trigger depends on floating-point evaluation order of (x - a) / ((b - a) / 511). Compiler flags such as -ffast-math, FMA contraction, or x87 extended precision can change lxi[1] and remove the li == M-1 case, so the KDE test may pass on the buggy build under a different toolchain.",
+          "The compiler is not stated in the evidence. A standard gcc or clang build with default -O2 is assumed. Sanitizers (ASan/UBSan) are not required and are not assumed; ASan would make the overflow deterministic but was not part of the reported failure.",
+          "If the C extension fails to compile or import, the test module import of fast_linbin fails at collection on both revisions, which is not a valid transition. Confirm the import succeeds on the buggy build before trusting the result.",
+          "The KernSmooth reference comparison (1.1e-13 over 200 random cases) is not in the reproducing test and is not available to rely on; do not depend on it.",
+          "Running both tests in one pytest process may let a heap abort in test_kde_fft_cut_zero kill the run before test_fast_linbin_boundary_observations reports; run them separately if the abort masks results.",
+          "No dependency pins are documented in the evidence, so numpy and scipy versions are unconstrained; the era-inferred version of the build environment is not confirmed."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "assert_allclose default rtol=1e-7 for bin counts; atol=0.01 on the density integral",
+          "reference_source": "the developer's tests in statsmodels/nonparametric/tests/test_kde.py (PR 10232 diff)",
+          "why": "Bin counts are exact small rationals (0.8, 0.2) so a default relative tolerance is ample; the density integral is checked only to 0.01 because the trapezoid rule on the FFT grid is approximate."
+        },
+        "fails_on_buggy": "On the buggy build, test_fast_linbin_boundary_observations sees fast_linbin return [0,0,0,0,1] at the first assert_allclose against [1,0.8,0.2,0,1], so it fails; test_kde_fft_cut_zero sees the integral near 0.8317 (outside 1 +/- 0.01) or aborts from the gcnts[M] write under malloc checks.",
+        "passes_on_fixed": "On the fixed build, the counts match [1,0.8,0.2,0,1], the 200-point counts sum to 200 with the first moment preserved, the trunc=0 endpoint behaviour matches, and the KDE density integrates to within 0.01 of 1; both tests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4675,
+        "output_tokens": 4454,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 7014,
+        "output_tokens": 2348,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 2
+      }
+    }
+  ]
+}

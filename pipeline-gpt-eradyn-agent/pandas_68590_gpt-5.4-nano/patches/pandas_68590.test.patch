@@ -1,0 +1,82 @@
+diff --git a/pandas/tests/arrays/sparse/test_array.py b/pandas/tests/arrays/sparse/test_array.py
+index c33e840f5b542..127d4dd53d5f5 100644
+--- a/pandas/tests/arrays/sparse/test_array.py
++++ b/pandas/tests/arrays/sparse/test_array.py
+@@ -648,6 +648,55 @@ def test_array_object_datetimelike(kind, unit):
+     tm.assert_numpy_array_equal(np.asarray(no_gaps, dtype=object), expected[::2])
+ 
+ 
++@pytest.mark.parametrize("kind", ["M8", "m8"])
++@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
++@pytest.mark.parametrize("na_fill", [True, False])
++def test_to_dense_datetimelike_non_numpy_fill(kind, unit, na_fill):
++    # GH#68590 a fill value numpy cannot promote against the subtype made the
++    #  dense result object dtype, with the stored values rendered as ints or
++    #  datetime.datetime beside the fill; to_dense truncated a ns fill to us
++    values = np.array([1, 2, 3], dtype="i8").astype(f"{kind}[{unit}]")
++    if na_fill:
++        values[1] = "NaT"
++        fill_value = np.nan
++    else:
++        fill_value = (pd.Timestamp if kind == "M8" else pd.Timedelta)(values[1])
++
++    arr = SparseArray(values, fill_value=fill_value)
++    assert arr.sp_index.ngaps == 1
++
++    tm.assert_numpy_array_equal(arr.to_dense(), values)
++    expected = pd.array(values).astype(object)
++    tm.assert_numpy_array_equal(np.asarray(arr, dtype=object), expected)
++    tm.assert_numpy_array_equal(arr.astype(object), expected)
++
++    # an explicit numeric dtype casts the gap the way numpy casts the dense
++    #  values, so a missing fill value gives iNaT rather than 0
++    tm.assert_numpy_array_equal(
++        np.asarray(arr, dtype="i8"), np.asarray(values, dtype="i8")
++    )
++
++
++@pytest.mark.parametrize("kind", ["M8", "m8"])
++@pytest.mark.parametrize("unit", ["s", "ms", "us"])
++@pytest.mark.parametrize("boxed", [True, False])
++def test_to_dense_datetimelike_fill_other_unit(kind, unit, boxed):
++    # GH#68590 a fill value whose unit differs from the subtype -- the us a
++    #  string-parsed Timestamp carries -- densified in the fill's own unit, so
++    #  a numeric cast read it as a raw integer
++    values = np.array([1, 2, 3], dtype="i8").astype(f"{kind}[{unit}]")
++    box = pd.Timestamp if kind == "M8" else pd.Timedelta
++    fill_value = box(values[1]).as_unit("ns")
++
++    arr = SparseArray(values, fill_value=fill_value if boxed else fill_value.asm8)
++    assert arr.sp_index.ngaps == 1
++
++    tm.assert_numpy_array_equal(arr.to_dense(), values)
++    tm.assert_numpy_array_equal(
++        np.asarray(arr, dtype="i8"), np.asarray(values, dtype="i8")
++    )
++
++
+ @pytest.mark.parametrize("kind", ["M8", "m8"])
+ @pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+ def test_datetimelike_nat_fill_value_normalized(kind, unit):
+diff --git a/pandas/tests/arrays/sparse/test_indexing.py b/pandas/tests/arrays/sparse/test_indexing.py
+index ad77c11656ba7..7fe14e494064b 100644
+--- a/pandas/tests/arrays/sparse/test_indexing.py
++++ b/pandas/tests/arrays/sparse/test_indexing.py
+@@ -275,6 +275,17 @@ def test_take_fill_datetimelike_subtype(self, unit):
+         result = sparse.take(np.array([0, 1, 2]), allow_fill=True)
+         tm.assert_sp_array_equal(result, sparse)
+ 
++    @pytest.mark.parametrize("unit", ["M8[s]", "m8[s]"])
++    def test_take_fill_datetimelike_string(self, unit):
++        # GH#68590 a string fill value was parsed for a datetime64 subtype but
++        #  raised for timedelta64; both go through the same conversion now
++        data = np.array([1, 3, 5], dtype=unit)
++        fill = "1970-01-02" if unit[0] == "M" else "1 days"
++        result = SparseArray(data).take(
++            np.array([0, -1]), allow_fill=True, fill_value=fill
++        )
++        tm.assert_numpy_array_equal(result.to_dense(), np.array([1, 86400], dtype=unit))
++
+     @pytest.mark.parametrize("unit", ["M8[s]", "M8[ns]", "m8[s]", "m8[ns]"])
+     def test_take_fill_datetimelike_new_fill_is_nat(self, unit):
+         # GH#68469 a new fill position takes NaT in the subtype, as dense

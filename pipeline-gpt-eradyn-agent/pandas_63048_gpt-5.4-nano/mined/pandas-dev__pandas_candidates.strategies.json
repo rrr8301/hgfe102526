@@ -1,0 +1,106 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_63048_gpt-5.4-nano/mined/pandas-dev__pandas_63048.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 16962,
+    "output_tokens": 3772,
+    "cost_usd": 0.008109,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 63048,
+      "reference": "https://github.com/pandas-dev/pandas/pull/63048",
+      "buggy_commit": "446d8098f4f2dab87d043eea993a85cc2b95cd35",
+      "fixed_commit": "1bb253969ec1a3d1b122cb0e69adbf0abc6be69f",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 7452,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the rolling variance/std numerical accuracy failure in pandas on the buggy revision by building pandas (with compiled C extensions) under the same Python/Cython/NumPy-era constraints, then running the specific rolling test that asserts elementwise equality of rolling(2) var/std results against a Series([np.nan] + expected_values) constructed from hard-coded problematic float inputs.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.7.9",
+          "pip_packages": [
+            "numpy",
+            "cython",
+            "python-dateutil",
+            "tzdata"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python3.7 -m venv venv",
+            "source venv/bin/activate",
+            "python -m pip install --upgrade pip",
+            "python -m pip install numpy cython python-dateutil tzdata",
+            "git clone https://github.com/pandas-dev/pandas.git",
+            "cd pandas",
+            "git checkout 446d8098f4f2",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy is documented as a numerical dependency but has no version constraint in the provided evidence; pick the latest NumPy that still supports Python 3.7 in order to keep a consistent binary float64/ufunc environment across runs.",
+            "Cython is required to build from sources per the evidence; no version constraint is provided, so install a Cython version compatible with Python 3.7 and the pandas checkout.",
+            "python-dateutil/tzdata are documented dependencies with no version constraints; install compatible versions to satisfy build/runtime requirements."
+          ]
+        },
+        "test_command": "pytest pandas/tests/window/test_rolling.py::test_rolling_var_numerical_issues",
+        "reproducing_test": "pandas/tests/window/test_rolling.py::test_rolling_var_numerical_issues (as it existed/was named for the failing behavior on the buggy revision); after the PR refactor, the equivalent test is pandas/tests/window/test_rolling.py::test_rolling_var_correctness with the parameter set where func='std', window=2, ddof=1, and values=[99999999999999999, 1, 1, 2, 3, 1, 1].",
+        "success_criterion": "On the buggy revision 446d8098f4f2, the rolling variance/std test fails because tm.assert_series_equal detects elementwise mismatches between result and expected (not just tolerance differences). On the fixed revision (the PR that contains the fix for GH 63048), the same test passes (tm.assert_series_equal succeeds for the same parameter cases).",
+        "numerical_probe": "Rolling window of size 2 applied to float64 values including 99999999999999999 to trigger catastrophic cancellation in rolling variance/std; checks for correctness of rolling 'std' (and 'var') outputs against hard-coded expected values.",
+        "input_output_examples": [
+          {
+            "input": "ts = Series([99999999999999999, 1, 1, 2, 3, 1, 1]); result = getattr(ts.rolling(window=2), 'std')(ddof=1)",
+            "buggy_output": "[nan, 7.071067811865475e+16, 0.0, 0.0, 0.0, 0.0, 0.0]",
+            "expected_output": "[nan, 7.071068e+16, 0.7071068, 0.0, 0.7071068, 1.414214, 0.0]"
+          },
+          {
+            "input": "ts = Series([99999999999999999, 1, 1, 2, 3, 1, 1]); result = getattr(ts.rolling(window=2), 'std')(ddof=1)",
+            "buggy_output": "[nan, 5e+33, -2.7212384506478592e+17, -2.7212384506478592e+17, -2.7212384506478592e+17, -2.7212384506478592e+17, -2.7212384506478592e+17]",
+            "expected_output": "[nan, 5e+33, 0.0, 0.5, 0.5, 2.0, 0.0]"
+          }
+        ],
+        "risks": [
+          "The exact failing behavior may depend on the installed NumPy build/version (no constraints are provided in evidence). Different BLAS/LAPACK or NumPy versions can change floating rounding and may cause the test to pass or fail differently.",
+          "The failure may be architecture/toolchain specific (e.g., if float semantics differ). The evidence does not provide the platform(s) where the bug reproduces besides noting prior xfails on ARM/Power/RISC-V for a different GH issue; the strategy does not assume those flags for this bug.",
+          "This plan relies on building pandas C extensions (pandas/_libs/window/aggregations.pyx is implicated). If building falls back to pure python (or extensions fail to compile), the numerical result may not match the buggy C-extension behavior.",
+          "The evidence shows the test was renamed/refactored in the diff; ensure you run the correct test target on the buggy checkout. The provided test command uses the historical name `test_rolling_var_numerical_issues`; if it no longer exists on 446d8098f4f2, run the equivalent `test_rolling_var_correctness` and select the matching parameter case."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "The test constructs expected as Series(expected_values) (with a leading NaN implied by expected_values) and compares with tm.assert_series_equal (on the provided refactor: atol=1e-55). The buggy output is elementwise mismatched, including sign and magnitude.",
+          "why": "The failure mode described is wrong finite values rather than an acceptable floating tolerance error; the test uses tm.assert_series_equal with an extremely small atol on the refactor, and the evidence indicates direct mismatch of array elements."
+        },
+        "fails_on_buggy": "The assertion tm.assert_series_equal(result, expected) fails on 446d8098f4f2 because rolling(window=2, ddof=1) std/var values for Series([99999999999999999, 1, 1, 2, 3, 1, 1]) (and related parameter tuples) differ elementwise from the expected Series([np.nan] + expected_values), e.g., producing zeros/incorrect large magnitudes where expected values include ~0.7071068, 1.414214, or 0.5.",
+        "passes_on_fixed": null
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 4218,
+        "output_tokens": 1388,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002579
+      },
+      "miner_usage": {
+        "input_tokens": 12744,
+        "output_tokens": 2384,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.00553,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

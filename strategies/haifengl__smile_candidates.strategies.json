@@ -1,0 +1,396 @@
+{
+  "input": "workspace/new-mine/haifengl__smile_candidates.json",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "n_strategies": 4,
+  "usage_totals": {
+    "input_tokens": 16495,
+    "output_tokens": 17213,
+    "cache_read_tokens": 512,
+    "cache_write_tokens": 0,
+    "cost_usd": 0.029987,
+    "llm_calls": 4,
+    "peak_calls": 0,
+    "n_costed": 4,
+    "n_strategies": 4,
+    "cost_usd_per_strategy": 0.007497
+  },
+  "strategies": [
+    {
+      "reference": "https://github.com/haifengl/smile/pull/880",
+      "repo": "haifengl/smile",
+      "pr_number": 880,
+      "buggy_commit": "05051592602e887028cb144e11fb4d357eee1fcd",
+      "fixed_commit": "8db00453e68dc892db6ad5beba5f5380bef9e783",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce PR#880 integer-overflow bug in smile.stat.hypothesis.CorTest at buggy commit 05051592602e887028cb144e11fb4d357eee1fcd. CorTest.spearman computes en3n = n*n*n - n in 32-bit int (overflows for n>=1291, corrupting rho outside [-1,1]); CorTest.kendall uses int pair counters is/n1/n2 that overflow at n>=65537, making tau = is/(sqrt(n1)*sqrt(n2)) return NaN. The PR adds testSpearmanLargeSample and testKendallLargeSample to CorTestTest, which FAIL at this commit and PASS after widening to double/long. Reproduce by running the new tests on the buggy checkout and observing the out-of-range rho and NaN tau; do NOT apply the fix.",
+        "input_output_examples": [
+          {
+            "input": "CorTest.spearman(x,y).cor() with n=1291, x[i]=i, y[i]=1290-i for i=0..1290 (strictly anti-correlated ranks)",
+            "buggy_output": "rho ~ 3.0078 (outside [-1,1]; en3n=n*n*n overflows int)",
+            "expected_output": "-1.0 (within 1E-10)",
+            "source": "pr"
+          },
+          {
+            "input": "CorTest.spearman(x,y).cor() with n=2000, x[i]=i, y[i]=1999-i for i=0..1999 (strictly anti-correlated ranks)",
+            "buggy_output": "rho ~ 28.12 (far outside [-1,1])",
+            "expected_output": "-1.0 (within 1E-10)",
+            "source": "pr"
+          },
+          {
+            "input": "CorTest.kendall(x,y).cor() with n=65537, x[i]=i, y[i]=i for i=0..65536 (perfectly concordant ranks)",
+            "buggy_output": "tau = NaN (int counter is overflows negative, sqrt of negative count)",
+            "expected_output": "1.0 (within 1E-10)",
+            "source": "test"
+          },
+          {
+            "input": "CorTest.spearman(x,y).cor() with n=1290, x[i]=i, y[i]=n-1-i (control case just below overflow threshold)",
+            "buggy_output": "-1.0 (correct at n=1290; serves as in-range control that must still pass)",
+            "expected_output": "-1.0 (within 1E-10)",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Install Temurin JDK (project CI uses Java 25) and ensure JAVA_HOME points to it.",
+          "Install native deps used by CI: sudo apt-get update && sudo apt-get install -y libopenblas-dev libarpack2-dev xvfb",
+          "Ensure gradlew wrapper is executable: chmod +x gradlew",
+          "Check out the buggy revision 05051592602e887028cb144e11fb4d357eee1fcd (git checkout 05051592602e887028cb144e11fb4d357eee1fcd) and confirm git status is clean.",
+          "Note: only the base module is needed for this reproduction; onnxruntime/node/LibTorch are not required for CorTestTest."
+        ],
+        "build_steps": [
+          "From repo root, compile the base module and its tests without running them: ./gradlew :base:testClasses",
+          "If the Gradle distribution must be pinned, follow the wrapper (gradle/wrapper/gradle-wrapper.properties); release notes mention Gradle 9.5.1.",
+          "Wait for the base module to compile successfully before running tests."
+        ],
+        "reproduction_steps": [
+          "Verify the buggy source line is present: grep -n 'double en3n = n \\* n \\* n - n;' base/src/main/java/smile/stat/hypothesis/CorTest.java and grep -n 'int is = 0, n2 = 0, n1 = 0' base/src/main/java/smile/stat/hypothesis/CorTest.java (confirms unfixed int arithmetic).",
+          "Confirm the new tests exist in the buggy checkout's test file (they are added by the PR diff): inspect base/src/test/java/smile/stat/hypothesis/CorTestTest.java for testSpearmanLargeSample and testKendallLargeSample.",
+          "Run the reproducing tests: ./gradlew :base:test --tests 'smile.stat.hypothesis.CorTestTest'.",
+          "For a faster focused run on just the failing methods, use --tests 'smile.stat.hypothesis.CorTestTest.testSpearmanLargeSample' --tests 'smile.stat.hypothesis.CorTestTest.testKendallLargeSample'.",
+          "Inspect the HTML/XML report under base/build/reports/tests/test and base/build/test-results/test to read the assertion messages ('rho out of range at n=1291/2000' and 'tau out of range: NaN').",
+          "Optionally reproduce standalone via jshell/a small main to print CorTest.spearman(antiCorrelated(n)).cor() for n=1291,2000 and CorTest.kendall(concordant(65537)).cor(), observing ~3.0078, ~28.12, and NaN."
+        ],
+        "test_command": "./gradlew :base:test --tests 'smile.stat.hypothesis.CorTestTest'",
+        "test_selector": "smile.stat.hypothesis.CorTestTest#testSpearmanLargeSample, smile.stat.hypothesis.CorTestTest#testKendallLargeSample",
+        "expected_buggy_behavior": "On the buggy commit, testSpearmanLargeSample fails: for n=1291 and n=2000 the assertion rho>=-1.0 && rho<=1.0 fails because en3n = n*n*n - n evaluates in int, overflows, wraps negative, and CorTest.spearman returns ~3.0078 (n=1291) and ~28.12 (n=2000) instead of -1.0. testKendallLargeSample fails: the int counters is/n1/n2 overflow at n=65537, tau = is/(sqrt(n1)*sqrt(n2)) takes the square root of a wrapped-negative count and returns NaN, failing both the range check and assertEquals(1.0, tau, 1E-10).",
+        "expected_fixed_behavior": "After widening to double/long (en3n = (double) n * n * n - n; long is, n2, n1), spearman returns rho = -1.0 within 1E-10 for n=1290, 1291, 2000 and kendall returns tau = 1.0 within 1E-10 for n=65537, both inside [-1,1], so both tests pass.",
+        "success_criterion": "Running ./gradlew :base:test --tests 'smile.stat.hypothesis.CorTestTest' on buggy commit 05051592602e887028cb144e11fb4d357eee1fcd yields a FAILED build in which testSpearmanLargeSample fails with an out-of-range rho (e.g. ~3.0078 at n=1291, ~28.12 at n=2000) and testKendallLargeSample fails with tau = NaN; no source fix is applied. (If the new tests are absent from the buggy checkout, the equivalent standalone print of spearman rho ~3.0078 / ~28.12 and kendall tau = NaN is the observed failing behavior.)",
+        "risks_or_ambiguities": [
+          "The mined build evidence lists NO explicit test command (test_commands empty; test_selector empty), so ./gradlew :base:test --tests 'smile.stat.hypothesis.CorTestTest' is inferred from standard Gradle conventions and may need adjusting to the repo's actual module/test task names.",
+          "The PR diff adds the two tests; if the buggy checkout does NOT contain them, they must be added verbatim from the PR test diff before running (they are new tests, not modified).",
+          "JDK/Gradle versions conflict in evidence: README says run bin/setup, CI uses ./gradlew with JDK 25, release notes mention Gradle 9.5.1, and the CI snippet shows no explicit test invocation; the exact toolchain for the base module is uncertain.",
+          "testKendallLargeSample uses n=65537, so CorTest.kendall performs ~2.1e9 pair comparisons (O(n^2)); the test may be slow and/or time out, and default Gradle test timeouts may need raising.",
+          "Native libraries (libopenblas/libarpack) are listed for the full build but are likely irrelevant to CorTest (pure Java); missing native deps could still fail unrelated base tests if the whole module is compiled.",
+          "The exact buggy numeric values (rho ~3.0078 at n=1291, ~28.12 at n=2000) come from the PR body, not from an assertion; the test itself only asserts the [-1,1] range and equality to -1.0, so the precise wrapped value may differ slightly by JVM/compiler."
+        ],
+        "confidence": 0.72
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3490,
+        "output_tokens": 2695,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.005095
+      }
+    },
+    {
+      "reference": "https://github.com/haifengl/smile/pull/879",
+      "repo": "haifengl/smile",
+      "pr_number": 879,
+      "buggy_commit": "2af97f7de468edc325970b4dee6316ec29aafd2f",
+      "fixed_commit": "01904c4007cf1aaa29656384c88197dd0aca0156",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce PR #879's MatthewsCorrelation numerical defects at buggy commit 2af97f7de468edc325970b4dee6316ec29aafd2f by adding the three new tests from the PR test diff to core/src/test/java/smile/validation/metric/MatthewsCorrelationTest.java and running the core module test via Gradle. On the buggy code the numerator is computed in int (tp*tn overflows) and a zero denominator yields NaN, so the new tests fail.",
+        "input_output_examples": [
+          {
+            "input": "MatthewsCorrelation.of(truth, prediction) on arrays built by confusion(50000,50000,5000,5000) (110000 samples)",
+            "buggy_output": "-0.6016 (sign flipped by int overflow of tp*tn = 2.5e9)",
+            "expected_output": "0.8181818181818182 (sklearn.metrics.matthews_corrcoef reports 9/11), tolerance 1E-9",
+            "source": "test"
+          },
+          {
+            "input": "MatthewsCorrelation.of({1,1,0,0,1,0}, {0,0,0,0,0,0}) (constant predictor, zero confusion marginal)",
+            "buggy_output": "NaN (0/0 division since denominator == 0.0)",
+            "expected_output": "0.0 (sklearn convention), tolerance 1E-10",
+            "source": "test"
+          },
+          {
+            "input": "confusion cases {(30,60,5,5),(90,5,3,2),(2,2,2,2),(50000,50000,5000,5000),(1,100,100,1),(0,4,0,2)} passed to MatthewsCorrelation.of",
+            "buggy_output": "Out-of-range MCC for the (50000,50000,5000,5000) case due to int overflow (and possible NaN from a zero denominator)",
+            "expected_output": "Every MCC value must satisfy -1.0 <= mcc <= 1.0",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Temurin JDK (evidence cites JDK 25; a JDK capable of running the Gradle wrapper is sufficient \u2014 verify gradlew works before proceeding).",
+          "Install native deps used by the project build: sudo apt-get update && sudo apt-get install -y libopenblas-dev libarpack2-dev xvfb (MatthewsCorrelation itself is pure Java).",
+          "Node.js 24 only if the serve module is built; not needed for the core module test.",
+          "Ensure network access to Maven Central for Gradle dependency resolution; export NEXUS_USERNAME/NEXUS_PASSWORD only if a Nexus-backed repository is configured.",
+          "chmod +x gradlew in the repository root."
+        ],
+        "build_steps": [
+          "cd <repo root> (checked out at 2af97f7de468edc325970b4dee6316ec29aafd2f).",
+          "Verify the buggy code is present: grep the numerator line in core/src/main/java/smile/validation/metric/MatthewsCorrelation.java and confirm it is computed as int (int numerator = (tp * tn - fp * fn)).",
+          "./gradlew :core:compileJava to confirm the core module compiles before testing.",
+          "./gradlew :core:testClasses to compile the test sources after the new tests are added."
+        ],
+        "reproduction_steps": [
+          "Confirm the checkout is at buggy commit 2af97f7de468edc325970b4dee6316ec29aafd2f and that no fix is applied to MatthewsCorrelation.java.",
+          "Note that at the buggy commit the test file core/src/test/java/smile/validation/metric/MatthewsCorrelationTest.java exists but does NOT contain the three new tests; they are introduced by the PR.",
+          "Apply the PR test diff: append the private static int[][] confusion(int tp,int tn,int fp,int fn) helper and the three @Test methods (givenLargeSample_whenMCCComputed_thenNoIntOverflow, givenConstantPredictor_whenMCCComputed_thenReturnsZero, givenVariousConfusions_whenMCCComputed_thenInUnitInterval) before the closing brace of the test class.",
+          "Ensure the required JUnit imports (org.junit.Test, org.junit.Assert.assertEquals, org.junit.Assert.assertTrue) are present in the test file.",
+          "Run the core module test filtered to the reproducing class and observe the failures described below."
+        ],
+        "test_command": "./gradlew :core:test --tests \"smile.validation.metric.MatthewsCorrelationTest\"",
+        "test_selector": "smile.validation.metric.MatthewsCorrelationTest",
+        "expected_buggy_behavior": "givenLargeSample_whenMCCComputed_thenNoIntOverflow fails: expected 0.8181818181818182 but actual is about -0.6016 because tp*tn = 2.5e9 overflows int and flips the sign. givenConstantPredictor_whenMCCComputed_thenReturnsZero fails: expected 0.0 but actual is NaN from 0/0. givenVariousConfusions_whenMCCComputed_thenInUnitInterval fails on the (50000,50000,5000,5000) case with 'MCC out of [-1,1]'.",
+        "expected_fixed_behavior": "With the long numerator ((long) tp * tn - (long) fp * fn) and a guard returning 0.0 when denominator == 0.0, all three tests pass: the 110k-sample case returns 0.8181818181818182 (within 1E-9), the constant predictor returns 0.0 (within 1E-10), and every confusion case yields MCC within [-1, 1].",
+        "success_criterion": "At the buggy commit, running the MatthewsCorrelationTest class reproduces the numerical failures: the large-sample test asserts 0.8181818181818182 but receives the overflowed negative value (~-0.6016), and/or the constant-predictor test asserts 0.0 but receives NaN. The tests must FAIL here and PASS only after the fix, confirming reproduction.",
+        "risks_or_ambiguities": [
+          "The three tests are INTRODUCED by the PR; they do not exist at the buggy commit, so the test diff must be applied (or the tests hand-added) before any failure can be observed.",
+          "Mined evidence provides empty test_command and test_selector; the Gradle commands here are inferred from the gradlew/Gradle build system and are not directly confirmed by the evidence.",
+          "The exact numeric value -0.6016 comes only from the PR narrative and was not independently verified against the buggy source.",
+          "JDK version is inconsistent in the evidence (Java 25 / Gradle 9.5.1 vs README); the wrapper's required Gradle/JDK pairing must be confirmed.",
+          "Core module tests may pull native BLAS/ARPACK dependencies; MatthewsCorrelation is pure Java, but a full :core:test run could fail for unrelated native reasons, so filter to the single class.",
+          "Network access to Maven Central (and Nexus credentials) may be required for dependency resolution; offline environments could block the build."
+        ],
+        "confidence": 0.72
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3394,
+        "output_tokens": 2973,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.00542
+      }
+    },
+    {
+      "reference": "https://github.com/haifengl/smile/pull/878",
+      "repo": "haifengl/smile",
+      "pr_number": 878,
+      "buggy_commit": "79cbcdab3781ee788872b29ce096b4cfacf96cd4",
+      "fixed_commit": "2af97f7de468edc325970b4dee6316ec29aafd2f",
+      "is_numerical_bug": true,
+      "bug_type": "accuracy",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "At buggy commit 79cbcdab, smile's Gamma.regularizedUpperIncompleteGamma performs a catastrophic-cancellation round trip (1 - (1 - Q)) that quantises tiny upper-tail values to exactly 0.0, and GLM.ztest computes two-sided p-values as 2 - erfc(...) which also floors at 0.0; NegativeBinomialDistribution.p(k) additionally overflows to non-finite values for k > 161. Reproduce by checking out the buggy commit, porting only the PR's new test methods (they are introduced by the PR and absent at the buggy revision), running them with Gradle, and observing the far-tail assertions fail while ordinary-value assertions pass.",
+        "input_output_examples": [
+          {
+            "input": "Gamma.regularizedUpperIncompleteGamma(1.0, 50.0)",
+            "buggy_output": "0.0",
+            "expected_output": "1.9287498479639178E-22",
+            "source": "test"
+          },
+          {
+            "input": "Gamma.regularizedUpperIncompleteGamma(0.5, 500.0)",
+            "buggy_output": "0.0",
+            "expected_output": "1.7958327848007262E-219",
+            "source": "test"
+          },
+          {
+            "input": "Gamma.regularizedUpperIncompleteGamma(0.5, 35.0)",
+            "buggy_output": "0.0",
+            "expected_output": "5.930445850082487E-17",
+            "source": "test"
+          },
+          {
+            "input": "PoissonDistribution(500).cdf(300)",
+            "buggy_output": "0.0",
+            "expected_output": "2.8361496727739246E-22",
+            "source": "test"
+          },
+          {
+            "input": "PoissonDistribution(500).cdf(340)",
+            "buggy_output": "0.0",
+            "expected_output": "1.9241648854434787E-14",
+            "source": "test"
+          },
+          {
+            "input": "ChiSqTest.test(new int[]{150,50,150,50}, new double[]{0.25,0.25,0.25,0.25}).pvalue() (chisq=100, df=3)",
+            "buggy_output": "0.0",
+            "expected_output": "1.554159431389605E-21",
+            "source": "test"
+          },
+          {
+            "input": "NegativeBinomialDistribution(10, 0.1).p(161)",
+            "buggy_output": "non-finite/Infinity (overflow)",
+            "expected_output": "0.0011318291241213503",
+            "source": "test"
+          },
+          {
+            "input": "NegativeBinomialDistribution(10, 0.1).p(300)",
+            "buggy_output": "non-finite/Infinity (overflow)",
+            "expected_output": "1.1790936128864348E-7",
+            "source": "test"
+          },
+          {
+            "input": "GLM two-sided z-test p-value model.ztest()[0][3]",
+            "buggy_output": "0.0 (prints as 0.00000)",
+            "expected_output": "4.995317351262854E-108",
+            "source": "test"
+          },
+          {
+            "input": "GLM two-sided z-test p-value model.ztest()[2][3]",
+            "buggy_output": "0.0 (prints as 0.00000)",
+            "expected_output": "4.331279226426007E-135",
+            "source": "test"
+          },
+          {
+            "input": "BoxTest.ljung(squared bitcoin log returns, 5) (q=299.6)",
+            "buggy_output": "pvalue = 0.0",
+            "expected_output": "pvalue = 1.217e-62",
+            "source": "pr"
+          }
+        ],
+        "environment_setup": [
+          "git checkout 79cbcdab3781ee788872b29ce096b4cfacf96cd4 (confirm with `git rev-parse HEAD`).",
+          "Install OpenJDK 25 (Temurin) and set JAVA_HOME; verify `java -version` reports 25.",
+          "Install CI native dependencies: sudo apt-get install -y libopenblas-dev libarpack2-dev xvfb.",
+          "Set env vars TORCH_VERSION=2.12.0 and LD_LIBRARY_PATH if native/LibTorch-backed modules are exercised; not required for :base and :core unit tests.",
+          "Gradle wrapper 9.5.1 ships with the repo: chmod +x gradlew; use ./gradlew (do not use a system Gradle).",
+          "Node.js 24 plus `cd serve/src/main/webui && npm install` are only needed for :serve:build, not for the unit tests targeted here."
+        ],
+        "build_steps": [
+          "chmod +x gradlew",
+          "Bring in the reproducing tests from the fixed commit (they are added by PR #878 and do not exist at the buggy commit): git checkout 2af97f7de468edc325970b4dee6316ec29aafd2f -- base/src/test/java/smile/math/special/GammaTest.java base/src/test/java/smile/stat/distribution/NegativeBinomialDistributionTest.java base/src/test/java/smile/stat/distribution/PoissonDistributionTest.java base/src/test/java/smile/stat/hypothesis/ChiSqTestTest.java core/src/test/java/smile/regression/GLMTest.java core/src/test/java/smile/timeseries/BoxTestTest.java",
+          "Alternatively hand-add only the new methods (GammaTest.testUpperIncompleteGammaFarTail, testUpperIncompleteGammaStrictlyDecreasing; NegativeBinomialDistributionTest.testPmfLargeK; PoissonDistributionTest.testCdfFarTail; ChiSqTestTest.testFarTailPValue; plus the GLM/BoxTest updates) to keep the buggy main sources untouched.",
+          "Compile: ./gradlew :base:compileTestJava :core:compileTestJava (add --offline if the network is restricted).",
+          "Sanity-compile the full modules if needed: ./gradlew :base:build -x test (do NOT build :serve, which needs npm/Torch)."
+        ],
+        "reproduction_steps": [
+          "Confirm the buggy source is present: grep for '1.0 - exp(-x + a*log(x) - loggamma)' in base/src/main/java/smile/math/special/Gamma.java and for '2.0 - Erf.erfc' in core/src/main/java/smile/regression/GLM.java.",
+          "Apply only the test-side files/methods from the fixed commit as in build_steps; verify the new test methods exist with `grep -n testUpperIncompleteGammaFarTail base/src/test/java/smile/math/special/GammaTest.java`.",
+          "Run the base-module far-tail tests: ./gradlew :base:test --tests 'smile.math.special.GammaTest' --tests 'smile.stat.distribution.PoissonDistributionTest' --tests 'smile.stat.distribution.NegativeBinomialDistributionTest' --tests 'smile.stat.hypothesis.ChiSqTestTest'.",
+          "Run the core-module tests: ./gradlew :core:test --tests 'smile.regression.GLMTest' --tests 'smile.timeseries.BoxTestTest'.",
+          "Observe failures: GammaTest.testUpperIncompleteGammaFarTail reports Q values of 0.0 instead of e.g. 1.9287498479639178E-22 for Q(1.0,50.0); testUpperIncompleteGammaStrictlyDecreasing hits q == 0.0; testCdfFarTail reports 0.0 instead of 2.8361496727739246E-22; testFarTailPValue reports pvalue 0.0 instead of 1.554159431389605E-21.",
+          "Observe NegativeBinomialDistributionTest.testPmfLargeK failing because p(161)/p(162)/p(169)/p(300) are non-finite instead of 0.0011318291241213503 / 0.0010752376679152827 / 0.0007442757647287806 / 1.1790936128864348E-7.",
+          "Observe GLMTest/BoxTestTest far-tail p-values printing as 0.00000 instead of 4.995317351262854E-108 / 4.331279226426007E-135 and 1.217e-62.",
+          "Capture `./gradlew ... --info` or the Gradle test HTML/XML reports (base/build/test-results, core/build/test-results) as the failure artifact."
+        ],
+        "test_command": "./gradlew :base:test --tests 'smile.math.special.GammaTest' --tests 'smile.stat.distribution.PoissonDistributionTest' --tests 'smile.stat.distribution.NegativeBinomialDistributionTest' --tests 'smile.stat.hypothesis.ChiSqTestTest' && ./gradlew :core:test --tests 'smile.regression.GLMTest' --tests 'smile.timeseries.BoxTestTest'",
+        "test_selector": "GammaTest.testUpperIncompleteGammaFarTail, GammaTest.testUpperIncompleteGammaStrictlyDecreasing, PoissonDistributionTest.testCdfFarTail, NegativeBinomialDistributionTest.testPmfLargeK, ChiSqTestTest.testFarTailPValue, GLMTest (ztest far-tail p-value assertions), BoxTestTest (Ljung-Box far-tail p-value assertions)",
+        "expected_buggy_behavior": "The ported far-tail tests fail at the buggy revision: regularizedUpperIncompleteGamma returns 0.0 (or a value near 1.0 through the 1-(1-Q) round trip) for Q(s,x) below ~2^-54 instead of the mpmath tiny positive value; PoissonDistribution.cdf and ChiSqTest.pvalue return 0.0 in the far tail; NegativeBinomialDistribution.p(k) returns non-finite values for k > 161; GLM two-sided z-test p-values and BoxTest Ljung-Box p-values round to 0.0. Assertions with tight tolerances (1E-15 to 1E-69) fail; non-far-tail assertions in the same classes still pass.",
+        "expected_fixed_behavior": "At the fixed commit 2af97f7d, Gamma.regularizedUpperIncompleteGamma returns Q directly (exp(-x + a*log(x) - loggamma) * prod) and P = 1 - Q, so Q(1.0,50.0) = 1.9287498479639178E-22, Q(0.5,500.0) = 1.7958327848007262E-219, and Q(2,x) decreases strictly; Poisson cdf(300) = 2.8361496727739246E-22; ChiSqTest pvalue = 1.554159431389605E-21; GLM z-test p-values are 4.995317351262854E-108 and 4.331279226426007E-135; BoxTest pvalue = 1.217e-62; NegativeBinomial p(k) is finite for all k up to 400 with p(161) = 0.0011318291241213503 and its sum agrees with cdf(400) to 1E-9.",
+        "success_criterion": "With the buggy main sources at 79cbcdab and the PR's far-tail test methods applied, at least one of GammaTest.testUpperIncompleteGammaFarTail / testUpperIncompleteGammaStrictlyDecreasing, PoissonDistributionTest.testCdfFarTail, ChiSqTestTest.testFarTailPValue, NegativeBinomialDistributionTest.testPmfLargeK, GLMTest, BoxTestTest FAILS on the far-tail assertions (wrong value 0.0 or non-finite); the same tests pass once commit 2af97f7d is applied.",
+        "risks_or_ambiguities": [
+          "The reproducing tests are ADDED/MODIFIED by PR #878 and therefore do not exist at the buggy commit; they must be ported from the fixed commit. If the ported test files reference source APIs changed by the fix, compilation at the buggy commit may fail for unrelated reasons.",
+          "The mined evidence gives no explicit test_command or test_selector (both empty), and the recorded build commands target ':serve:build' plus 'npm install' rather than the ':base'/':core' unit tests; the Gradle test commands above are inferred from the gradlew wrapper and must be verified.",
+          "Report shows buggy_output 0.0 for the direct Gamma calls, but the described defect is P = 1 - Q returned from regularizedUpperIncompleteGamma, which for a tiny Q would be ~1.0 rather than 0.0; either value fails the assertion, but the exact observed number may differ.",
+          "GLMTest and BoxTestTest assertions in the PR diff are truncated; the exact new expected values/initializers (e.g. the Bitcoin log-return BoxTest data) may be unavailable, so those two classes may be harder to reproduce exactly.",
+          "Negative-binomial buggy output is described as 'overflow (non-finite/Infinity)' rather than an exact number; the observed value could be Infinity or NaN depending on the path.",
+          "Environment mismatch is possible: evidence lists OpenJDK 25 (Temurin), Gradle 9.5.1, Node 24, LibTorch 2.12.0 and apt packages (libopenblas-dev, libarpack2-dev, xvfb); the local/CI images may differ, and ':serve' or native-dependent modules may not build.",
+          "Gradle multi-filter runs fail if a --tests pattern matches no test in that module, which is why base and core are run as separate invocations."
+        ],
+        "confidence": 0.6
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 4864,
+        "output_tokens": 6849,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.011183
+      }
+    },
+    {
+      "reference": "https://github.com/haifengl/smile/pull/877",
+      "repo": "haifengl/smile",
+      "pr_number": 877,
+      "buggy_commit": "0ae771a16e9d81ef53e7cdba365dca8ca5f3e4ca",
+      "fixed_commit": "825050961db43990f31355ea1234f6757a94a1b2",
+      "is_numerical_bug": true,
+      "bug_type": "accuracy",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "MetricTest (deep/src/test/java/smile/deep/metric/MetricTest.java) adds regression cases for metrics in the smile.deep.metric package. At buggy commit 0ae771a, macro/weighted F1Score.compute() returns the harmonic mean of averaged precision/recall (0.77419355 / 0.72) instead of the average of per-class F1 (23/35 / 111/175), micro Recall/F1Score leak a guarded denominator for empty classes (8/11, 16/21 instead of 0.8), and weighted Precision/Recall/F1 return NaN after reset().",
+        "input_output_examples": [
+          {
+            "input": "IMBALANCED_TRUTH={0,0,0,0,0,0,0,0,0,0,1,1,2,2,2}, IMBALANCED_PRED={0,0,0,0,1,1,1,1,1,1,1,1,2,2,2}, 3 classes; new F1Score(Averaging.Macro); update(output,tgt); compute()",
+            "buggy_output": "0.77419355 (harmonic mean 2PR/(P+R) of macro-averaged P=3/4 and R=4/5; test asserts averaged == 0.7741935 and assertNotEquals(averaged, f1.compute()))",
+            "expected_output": "23.0/35.0 = 0.65714286 (mean of per-class F1: (4/7 + 2/5 + 1)/3)",
+            "source": "test"
+          },
+          {
+            "input": "IMBALANCED_TRUTH={0,0,0,0,0,0,0,0,0,0,1,1,2,2,2}, IMBALANCED_PRED={0,0,0,0,1,1,1,1,1,1,1,1,2,2,2}, 3 classes; new F1Score(Averaging.Weighted); update(output,tgt); compute()",
+            "buggy_output": "0.72 (harmonic mean of weighted P=9/10 and weighted R=3/5)",
+            "expected_output": "111.0/175.0 = 0.63428571 (support-weighted mean of per-class F1: (10*4/7 + 2*2/5 + 3*1)/15)",
+            "source": "test"
+          },
+          {
+            "input": "truth={0,0,0,0,0,1,1,1,1,1}, pred={0,0,0,0,1,0,1,1,1,1}, 3 output classes, no class-2 samples; Accuracy and Recall(Averaging.Micro); update(output,tgt); compute()",
+            "buggy_output": "Accuracy = 0.8 but micro Recall = 8/11 = 0.72727275 (denominator where(size>0,size,1).sum() adds one phantom sample for empty class 2); micro F1 = 16/21 = 0.76190478",
+            "expected_output": "micro recall = 0.8, equal to accuracy 0.8 (assertEquals(0.8, microR.compute(), 1e-6)); micro F1 = 0.8 as well",
+            "source": "test"
+          },
+          {
+            "input": "new Precision/Recall/F1Score(Averaging.Weighted) with no update() after reset() (empty state, as at the end of every epoch)",
+            "buggy_output": "Precision.compute() = NaN, Recall.compute() = NaN, F1Score.compute() = NaN (weighted reduction score.mul(size).sum().div(size.sum()) divides by 0)",
+            "expected_output": "All three return 0.0, matching macro/micro empty-state behavior",
+            "source": "pr"
+          }
+        ],
+        "environment_setup": [
+          "Install Temurin JDK 25 (javac) per CI job 'Test (Java 25)' on ubuntu-latest.",
+          "sudo apt-get update && sudo apt-get install -y libopenblas-dev libarpack2-dev xvfb",
+          "pip install onnxruntime (PyPI, latest)",
+          "Set LD_LIBRARY_PATH and TORCH_VERSION (Torch/LibTorch 2.12.0) so the deep module can load its native Tensor engine; xvfb-run may be needed for headless tests.",
+          "chmod +x gradlew (Gradle wrapper, Gradle 9.5.1 per release notes).",
+          "Only for the full multi-module build: cd serve/src/main/webui && npm install (Node.js 24). Not required for :deep:test."
+        ],
+        "build_steps": [
+          "./gradlew :deep:testClasses (compiles deep main + test sources) to confirm the module builds at the buggy commit before running tests.",
+          "./gradlew :deep:compileTestJava if you only want a fast compile check of the deep test tree.",
+          "Optional full build: ./gradlew :deep:build (skip :serve:* and web UI work, which need npm)."
+        ],
+        "reproduction_steps": [
+          "Confirm the buggy revision: git rev-parse HEAD must be 0ae771a16e9d81ef53e7cdba365dca8ca5f3e4ca.",
+          "Materialize the PR test file only (the buggy tree lacks the new cases): git checkout 825050961db43990f31355ea1234f6757a94a1b2 -- deep/src/test/java/smile/deep/metric/MetricTest.java",
+          "Verify no main-source fix leaked in: git status / git diff --name-only should show only deep/src/test/java/smile/deep/metric/MetricTest.java; Averaging.java, F1Score.java, Precision.java, Recall.java must remain at the buggy revision.",
+          "Confirm the file imports/helpers (logits(int[],int), target(int[])) already exist in the buggy MetricTest; add them only if compilation fails.",
+          "Run the deep metric tests: ./gradlew :deep:test --tests smile.deep.metric.MetricTest",
+          "Inspect the failure report (deep/build/reports/tests/test/index.html or build/test-results) and record the actual vs expected numbers per assertion.",
+          "Re-run the full module suite ./gradlew :deep:test to confirm the pre-existing cases still pass (cross-check the 391 -> 398 test-count claim)."
+        ],
+        "test_command": "./gradlew :deep:test --tests smile.deep.metric.MetricTest",
+        "test_selector": "MetricTest",
+        "expected_buggy_behavior": "The 7 newly added MetricTest cases fail at 0ae771a: macro F1 returns 0.77419355 instead of 23/35=0.65714286; weighted F1 returns 0.72 instead of 111/175=0.63428571; the assertNotEquals(averaged, f1.compute()) case fails because the buggy F1Score equals the harmonic mean of averaged P/R; micro Recall returns 8/11=0.72727275 and micro F1 16/21=0.76190478 instead of 0.8; weighted Precision/Recall/F1Score return NaN after reset() instead of 0.0.",
+        "expected_fixed_behavior": "After the PR fix: macro F1 = 23/35 = 0.65714286, weighted F1 = 111/175 = 0.63428571 (per-class F1 averaged), multi-batch macro F1 also 23/35, micro precision/recall/F1 all equal accuracy 0.8 with no phantom empty-class samples, and weighted Precision/Recall/F1Score return 0.0 after reset(); :deep:test goes from 391 tests/0 failures to 398 tests/0 failures.",
+        "success_criterion": "Running the PR's MetricTest at buggy commit 0ae771a produces assertion failures with exactly the wrong values above (0.77419355, 0.72, 0.72727275/0.76190478, NaN), proving the numerical bug is reproduced; those same tests pass once F1Score/Precision/Recall/Averaging are fixed at 8250509.",
+        "risks_or_ambiguities": [
+          "The PR test file is not present at the buggy commit; it must be copied from the fixed commit, so the agent must not also copy the fixed main sources (that would hide the bug).",
+          "The exact Gradle test invocation is not visible in the retrieved CI snippets; only './gradlew :deep:test' was mined, so the '--tests smile.deep.metric.MetricTest' filter is a standard Gradle assumption.",
+          "The provided test diff is truncated at the start of testGivenClassWithoutInstancesWhenComputingMicroF1 (ends mid-line 'Precision '), so the weighted-reset test body (testGivenWeightedMetricsWhenResetThenComputeReturnsZero) is inferred from the PR body, not shown verbatim.",
+          "The deep module uses a native Tensor engine, so TORCH_VERSION/LD_LIBRARY_PATH (Torch 2.12.0) and possibly xvfb/LD library setup are required; a misconfigured native runtime could fail tests for unrelated reasons.",
+          "Mined build evidence confidence is 0.62 and conflicts (README pre-packaged bin/setup vs CI Gradle build; Gradle 9.5.1 vs unspecified in ci.yml).",
+          "The test-count baseline (391 tests) is from the PR narrative and may differ in the local environment, so counts are weaker evidence than the specific numeric assertions."
+        ],
+        "confidence": 0.8
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 4747,
+        "output_tokens": 4696,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.008289
+      }
+    }
+  ]
+}

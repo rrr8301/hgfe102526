@@ -1,0 +1,92 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index fcc25fbf2a592..422fd6572ac0a 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -308,8 +308,10 @@ Numeric
+ ^^^^^^^
+ - Bug in :meth:`DataFrame.min`, :meth:`DataFrame.max`, :meth:`Series.min`, and :meth:`Series.max` on object-dtype data raising ``TypeError`` when missing values were present alongside values that do not support comparison with ``float`` (e.g. strings or mixed-timezone :class:`Timestamp` objects) (:issue:`65500`)
+ - Fixed bug in :func:`read_excel` where having a column with mixture of numeric and boolean values will typecast the values based on the first appearance data type since 1==True and 0==False (:issue:`60088`)
++- Fixed bug in :meth:`DataFrame.idxmax` and :meth:`DataFrame.idxmin` returning incorrect row labels for nullable ``UInt64`` columns containing missing values alongside values above ``2**53`` (:issue:`64478`)
+ - Fixed bug in :meth:`DataFrame.idxmax` and :meth:`DataFrame.idxmin` with ``axis=1`` and ``skipna=False`` returning incorrect column labels for extension array dtypes (e.g. :class:`BooleanDtype`, nullable integer/float, :class:`ArrowDtype`) (:issue:`56903`)
+ - Fixed bug in :meth:`Series.clip` where passing a scalar numpy array (e.g. ``np.array(0)``) would raise a ``TypeError`` (:issue:`59053`)
++- Fixed bug in :meth:`Series.idxmax`, :meth:`Series.idxmin`, :meth:`DataFrame.idxmax`, and :meth:`DataFrame.idxmin` returning the label of a missing-value row when every non-missing value equals the dtype's minimum (for ``idxmax``) or maximum (for ``idxmin``), e.g. a float column containing only ``-inf`` and NaN (:issue:`64478`)
+ - Fixed bug in :meth:`Series.mean` and :meth:`Series.sum` (and their :class:`DataFrame` counterparts) overflowing for ``float16`` dtypes instead of upcasting to ``float64`` (:issue:`43929`)
+ - Fixed bug in :meth:`Series.skew` and :meth:`Series.kurt` (and their :class:`DataFrame` counterparts) returning ``0.0`` for degenerate distributions; these now return ``NaN`` (:issue:`62864`)
+ - Fixed bug in complex-dtype :meth:`Series.duplicated` and :meth:`Series.unique` (and related hashtable-backed methods) raising ``TypeError`` when backed by a :class:`NumpyExtensionArray` (:issue:`54761`)
+diff --git a/pandas/core/nanops.py b/pandas/core/nanops.py
+index b67b772cea8aa..065ab8fb67b1d 100644
+--- a/pandas/core/nanops.py
++++ b/pandas/core/nanops.py
+@@ -203,6 +203,15 @@ def _get_fill_value(
+             return np.inf
+         else:
+             return -np.inf
++    elif dtype.kind == "u":
++        # Unsigned ints: use a uint64 sentinel so np.where keeps the values
++        # unsigned.  An int64 fill would force a uint64/int64 mix to promote to
++        # float64, losing precision for values above 2**53 and giving the wrong
++        # idxmin/idxmax/min/max (GH#64478).  u8max/0 also bracket the full
++        # uint64 range, unlike i8max which real values can exceed.
++        if fill_value_typ == "+inf":
++            return np.uint64(lib.u8max)
++        return np.uint64(0)
+     elif fill_value_typ == "+inf":
+         # need the max int here
+         # Return as np.int64 so that np.where promotes the dtype
+@@ -1196,9 +1205,10 @@ def nanargmax(
+     """
+     values, mask = _get_values(values, True, fill_value_typ="-inf", mask=mask)
+     result = values.argmax(axis)
+-    # error: Argument 1 to "_maybe_arg_null_out" has incompatible type "Any |
++    # error: Argument 1 to "_maybe_fix_arg_at_na" has incompatible type "Any |
+     # signedinteger[Any]"; expected "ndarray[Any, Any]"
+-    result = _maybe_arg_null_out(result, axis, mask, skipna)  # type: ignore[arg-type]
++    result = _maybe_fix_arg_at_na(result, mask, axis)  # type: ignore[arg-type]
++    result = _maybe_arg_null_out(result, axis, mask, skipna)
+     return result
+ 
+ 
+@@ -1242,9 +1252,10 @@ def nanargmin(
+     """
+     values, mask = _get_values(values, True, fill_value_typ="+inf", mask=mask)
+     result = values.argmin(axis)
+-    # error: Argument 1 to "_maybe_arg_null_out" has incompatible type "Any |
++    # error: Argument 1 to "_maybe_fix_arg_at_na" has incompatible type "Any |
+     # signedinteger[Any]"; expected "ndarray[Any, Any]"
+-    result = _maybe_arg_null_out(result, axis, mask, skipna)  # type: ignore[arg-type]
++    result = _maybe_fix_arg_at_na(result, mask, axis)  # type: ignore[arg-type]
++    result = _maybe_arg_null_out(result, axis, mask, skipna)
+     return result
+ 
+ 
+@@ -1407,6 +1418,30 @@ def nanprod(
+     )
+ 
+ 
++def _maybe_fix_arg_at_na(
++    result: np.ndarray,
++    mask: npt.NDArray[np.bool_] | None,
++    axis: AxisInt | None,
++) -> np.ndarray:
++    # helper function for nanargmin/nanargmax: an argmin/argmax that landed on
++    # a masked position means the extremum equals the sentinel fill, so every
++    # unmasked value ties with the fill; the first unmasked position is the
++    # correct result (GH#64478)
++    if mask is None or not mask.any():
++        return result
++    if axis is None or mask.ndim == 1:
++        if mask.ravel()[result] and not mask.all():
++            # error: Incompatible return value type (got "signedinteger[_32Bit
++            # | _64Bit]", expected "ndarray[tuple[Any, ...], dtype[Any]]")
++            return (~mask).ravel().argmax()  # type: ignore[return-value]
++    else:
++        indexer = np.expand_dims(result, axis)
++        arg_is_na = np.take_along_axis(mask, indexer, axis).squeeze(axis)
++        if arg_is_na.any():
++            result = np.where(arg_is_na, (~mask).argmax(axis), result)
++    return result
++
++
+ def _maybe_arg_null_out(
+     result: np.ndarray,
+     axis: AxisInt | None,

@@ -1,0 +1,112 @@
+{
+  "input": "pipeline_no_historic/pandas_66753/mined/pandas-dev__pandas_66753.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 26953,
+    "output_tokens": 6457,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66753,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66753",
+      "buggy_commit": "5faf9dff8f3f08462ce3e0f72b44731ca10ac291",
+      "fixed_commit": "f040cfd389619846a630107e1953e334f10b04ea",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 8119,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the UTC-to-local overflow in pandas tz conversion (Localizer.utc_val_to_local_val bare add wraps int64 near Timestamp.min/max, and local value equal to iNaT is stored as NaT). Build pandas from the buggy commit 5faf9dff8f3f in editable mode, apply the developer's test diff, and run the targeted tests in pandas/tests/indexes/datetimes/methods/test_tz_convert.py. The test should fail on the buggy revision (no OutOfBoundsDatetime raised, wrapped value returned) and pass on the fixed revision.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain (gcc or clang) capable of building pandas Cython extensions"
+          ],
+          "build_commands": [
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy, python-dateutil, tzdata and Cython have no documented constraint and no era table entry in the evidence; versions are left unpinned and the choice is recorded here rather than inferred from an era. NumPy is numerically relevant but no ceiling was stated, so the current NumPy release compatible with the buggy commit's pyproject build requirements is used.",
+            "tzdata is only required on Windows/Emscripten per README; on Linux the system IANA database is used for zoneinfo zones such as Europe/Berlin and US/Pacific."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/indexes/datetimes/methods/test_tz_convert.py -k 'utc_to_local or local_on_sentinel or all_nat_is_normalized' -p no:cacheprovider -v",
+        "reproducing_test": "pandas/tests/indexes/datetimes/methods/test_tz_convert.py::test_dti_utc_to_local_overflow (parametrized over Europe/Berlin zoneinfo, dateutil gettz Europe/Berlin, Etc/GMT-9), plus test_dti_utc_to_local_underflow, test_dti_utc_to_local_overflow_message_names_the_target_tz, test_dti_local_on_sentinel_raises_where_stored, and test_dti_all_nat_is_normalized",
+        "success_criterion": "On the buggy revision 5faf9dff8f3f the overflow/underflow tests fail because tz_localize(None) returns a silently wrapped DatetimeIndex instead of raising OutOfBoundsDatetime matching 'overflows past' or 'underflows past' (pytest reports DID NOT RAISE). On the fixed revision the same tests pass: the conversion raises OutOfBoundsDatetime with the expected message, and the in-bounds boundary and sentinel-still-renders tests continue to pass.",
+        "numerical_probe": "pd.DatetimeIndex(np.array([pd.Timestamp.max._value], dtype='i8').view('M8[ns]')).tz_localize('UTC').tz_convert('Europe/Berlin').tz_localize(None) should raise OutOfBoundsDatetime on fixed code and return a wrapped value on buggy code",
+        "input_output_examples": [
+          {
+            "input": "pd.DatetimeIndex([pd.Timestamp.min], tz=\"UTC\").tz_convert(\"US/Pacific\").tz_localize(None)",
+            "buggy_output": "2262-04-11 15:54:18.854775809",
+            "expected_output": "OutOfBoundsDatetime raised with message containing 'overflows past'"
+          },
+          {
+            "input": "pd.Timestamp(pd.Timestamp.min._value, tz=\"UTC\").tz_convert(\"US/Pacific\")",
+            "buggy_output": "not buggy (scalar path)",
+            "expected_output": "OutOfBoundsDatetime: Converting 2262-04-11 15:54:18 overflows past ..."
+          },
+          {
+            "input": "pd.DatetimeIndex([pd.Timestamp(iNaT + 3600 * 10**9, tz=\"UTC\")]).tz_convert(timezone(timedelta(hours=-1)))",
+            "buggy_output": "local value == iNaT (stored as NaT)",
+            "expected_output": "OutOfBoundsDatetime raised (local value equal to NPY_NAT must not be stored as NaT)"
+          }
+        ],
+        "risks": [
+          "The wrap is a pure int64 arithmetic effect and is not architecture-specific in the evidence, but the test builds values via np.int64 views; on 32-bit platforms test_dti_utc_to_local_overflow_tzlocal is skipped by td.skip_if_32bit, so it will not transition there.",
+          "test_dti_utc_to_local_overflow_tzlocal depends on tm.set_timezone('Asia/Tokyo') which is skipped on Windows and WASM; the transition cannot be observed on those platforms.",
+          "Timestamp.max and Timestamp.min via the scalar constructor may raise eagerly, so the test uses the raw i8 view helper _utc_dti; if the buggy revision's tz_localize path itself raises a different error the transition would be misattributed.",
+          "The out-of-bounds info.deltas[ntrans] read is nondeterministic across calls in one process, so the nonexistent= shift test may flake on the buggy revision and should not be relied on as the sole transition signal.",
+          "The dateutil gettz parametrization depends on the system zoneinfo database; a missing or differing IANA database could change whether the wrap occurs.",
+          "Sentinel-landing tests depend on tz_convert_from_utc and dt64arr_to_periodarr being the store-back callers; if the fix is partial, to_period('ns') may still pass on buggy code and the transition would be incomplete.",
+          "The dti_local_on_sentinel test set emits a UserWarning from PeriodArray conversion that is filtered; warnings-as-errors configuration could change outcomes.",
+          "The developer test's expected message for the target-tz test ('Converting 2262-04-11 23:47:16 to Etc/GMT-9 overflows past') is stated in the diff but not corroborated by the evidence outside the test; a message mismatch could make that test fail on the fixed revision for reasons unrelated to the bug."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "developer regression test expecting OutOfBoundsDatetime with 'overflows past' / 'underflows past' messages",
+          "why": "The transition is decided by whether an exception is raised, not by a numeric tolerance."
+        },
+        "fails_on_buggy": "On the buggy revision tz_localize(None) returns a wrapped DatetimeIndex with no exception, so pytest.raises reports DID NOT RAISE OutOfBoundsDatetime, and the assertion fails.",
+        "passes_on_fixed": "On the fixed revision the bare add is guarded, the conversion raises OutOfBoundsDatetime with 'overflows past' or 'underflows past', and pytest.raises matches, so the assertion passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 8187,
+        "output_tokens": 2399,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 18766,
+        "output_tokens": 4058,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

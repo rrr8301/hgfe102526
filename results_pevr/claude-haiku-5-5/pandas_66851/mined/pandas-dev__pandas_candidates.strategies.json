@@ -1,0 +1,115 @@
+{
+  "input": "pipeline_no_historic/pandas_66851/mined/pandas-dev__pandas_66851.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 15842,
+    "output_tokens": 6568,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66851,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66851",
+      "buggy_commit": "edcbad30226d27562b95c00113c2fba7a7f5c7df",
+      "fixed_commit": "20a9eefed7b620a78ff40620328739de272861d3",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7161,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the int32 year-wrap defect in pandas datetime accessors and isocalendar by building the buggy commit edcbad30226d from source and running the PR's own tests, which should fail on the buggy build and pass on the fixed build. The tests cover DatetimeIndex.year and Series.dt.year raising on out-of-int32 years, isocalendar year being Int32 with negative BC years representable, and scalar/vector day_of_year and is_leap_year beyond int32.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy>=2.0",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "hypothesis",
+            "meson-python",
+            "meson",
+            "versioneer"
+          ],
+          "system_packages": [
+            "git",
+            "a C/C++ compiler toolchain (gcc or clang on Linux/macOS, MSVC on Windows)"
+          ],
+          "build_commands": [
+            "git checkout edcbad30226d",
+            "python -m pip install cython numpy>=2.0 python-dateutil tzdata pytest hypothesis meson-python meson versioneer",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy: documented in README but with no version constraint and no era-table entry, so numpy>=2.0 is my own choice for a recent pandas main; this is not a documented requirement.",
+            "python-dateutil, tzdata, Cython: documented without constraint; installed unpinned, and they do not affect the int32 year path.",
+            "python_version left null because the evidence does not state one; choose a Python version supported by the checked-out pandas revision.",
+            "Build must be redone after switching between buggy and fixed commits because the Cython extensions (fields.pyx, ccalendar, period.pyx) are compiled; a stale build would silently keep the old behaviour."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/indexes/datetimes/methods/test_isocalendar.py pandas/tests/indexes/datetimes/test_scalar_compat.py pandas/tests/series/accessors/test_dt_accessor.py -k \"isocalendar or beyond_int32 or year_before_year_one\" -q",
+        "reproducing_test": "pandas/tests/indexes/datetimes/methods/test_isocalendar.py::test_isocalendar_year_before_year_one, pandas/tests/indexes/datetimes/test_scalar_compat.py::test_year_beyond_int32_raises (parametrized), pandas/tests/indexes/datetimes/test_scalar_compat.py::test_day_of_year_and_is_leap_year_beyond_int32, and the changed test_isocalendar cases in test_isocalendar.py and test_dt_accessor.py",
+        "success_criterion": "On the buggy revision edcbad30226d the selected tests FAIL: test_isocalendar_year_before_year_one and the test_isocalendar cases fail on the dtype/value mismatch (year is UInt32 and wraps, e.g. -100 becomes 4294967196), and test_year_beyond_int32_raises fails because dti.year and Series.dt.year return wrapped values instead of raising ValueError (pytest reports DID NOT RAISE). On the fixed revision the same selection PASSES: the year column is Int32, negative years round-trip, and out-of-range years raise ValueError with the expected messages.",
+        "numerical_probe": "pd.DatetimeIndex(np.array([np.iinfo(np.int64).max], dtype='M8[s]')).year and pd.DatetimeIndex(np.array(['-0100-03-05'], dtype='M8[s]')).isocalendar().year",
+        "input_output_examples": [
+          {
+            "input": "pd.DatetimeIndex(np.array([np.iinfo(np.int64).max], dtype=\"M8[s]\")) + pd.DateOffset(months=1)",
+            "buggy_output": "DatetimeIndex(['219250469-01-04 15:30:07'], dtype='datetime64[s]', freq=None)",
+            "expected_output": "an error raised by the year accessor rather than a wrapped year; exact expected value not given"
+          },
+          {
+            "input": "isocalendar() year for year -100",
+            "buggy_output": "4294967196",
+            "expected_output": "-100"
+          }
+        ],
+        "risks": [
+          "Architecture: the defect is a fixed-width int32 truncation in pandas' own code, so it should reproduce on x86_64 and arm64 alike; it is not a platform-specific undefined-behaviour bug. Not verified on every platform.",
+          "Windows: C int is 32-bit there too, so the truncation path matches Linux/macOS, but the MSVC build is slower and not validated here.",
+          "Sanitisers: no sanitiser is needed; the failure is a value/dtype assertion, so running under ASan/UBSan is unnecessary and should not be used to judge the transition.",
+          "Scope gap: the PR notes period.pyx pyear() still truncates, and Timestamp.isocalendar() above year 9999 raises a bare OverflowError; these are not covered by the fix, so no test here should be expected to transition for Period.year.",
+          "Incomplete-build risk: if the editable build is not rebuilt after checkout, the buggy and fixed runs will both use the same compiled extensions and the transition will not appear; verify the build is refreshed between runs.",
+          "Test-selection risk: the -k filter must include the three new tests; if pytest collects zero tests, the run looks like a pass. Check the collected count.",
+          "Dependency choice: numpy>=2.0 is my choice, not a documented or era-derived constraint; an older NumPy could change the dtype behaviour of the astype calls in the tests.",
+          "The reproducer's offset-wrap case (SemiMonthEnd(2**32)) relies on an inferred formula and is not part of the graded transition; it is not used in the test command.",
+          "Oracle is exact integer comparison; no tolerance is involved, so no tolerance should be applied when judging pass or fail."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "PR#66851 test diffs (test_isocalendar.py, test_scalar_compat.py, test_dt_accessor.py)",
+          "why": "The defect is integer wrapping of years to 32 bits, so the expected year values (e.g. -100, 292277026596) and dtypes (Int32 vs UInt32) are compared exactly, not within a tolerance."
+        },
+        "fails_on_buggy": "On the buggy revision the year column is UInt32, so the expected Int32 frame in test_isocalendar_year_before_year_one and test_isocalendar does not match, and the year -100 value comes out as 4294967196. In test_year_beyond_int32_raises the vectorized dti.year and Series.dt.year return wrapped int32 values instead of raising, so pytest.raises fails with DID NOT RAISE. In test_day_of_year_and_is_leap_year_beyond_int32 the scalar and vector paths use a truncated year, so day_of_year and is_leap_year can disagree with the expected 364 and leap status.",
+        "passes_on_fixed": "On the fixed revision the year column is Int32 and BC years round-trip (-100), out-of-int32 years raise ValueError with the expected message, and the scalar and vectorized day_of_year and is_leap_year are computed from the full 64-bit year, so all selected assertions hold."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6663,
+        "output_tokens": 4140,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 9179,
+        "output_tokens": 2428,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

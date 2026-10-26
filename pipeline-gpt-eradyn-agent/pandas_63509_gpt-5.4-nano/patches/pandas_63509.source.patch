@@ -1,0 +1,39 @@
+diff --git a/doc/source/whatsnew/v3.0.0.rst b/doc/source/whatsnew/v3.0.0.rst
+index e0b00348df98d..fa7a0858e2d1c 100644
+--- a/doc/source/whatsnew/v3.0.0.rst
++++ b/doc/source/whatsnew/v3.0.0.rst
+@@ -1307,6 +1307,7 @@ I/O
+ Period
+ ^^^^^^
+ - Fixed error message when passing invalid period alias to :meth:`PeriodIndex.to_timestamp` (:issue:`58974`)
++- Fixed recoverable overflow for near-minimum timestamps with microsecond resolution (:issue:`63278`)
+ 
+ Plotting
+ ^^^^^^^^
+diff --git a/pandas/_libs/src/vendored/numpy/datetime/np_datetime.c b/pandas/_libs/src/vendored/numpy/datetime/np_datetime.c
+index 9cdb08972911b..dee664619dbc1 100644
+--- a/pandas/_libs/src/vendored/numpy/datetime/np_datetime.c
++++ b/pandas/_libs/src/vendored/numpy/datetime/np_datetime.c
+@@ -455,8 +455,20 @@ npy_datetime npy_datetimestruct_to_datetime(NPY_DATETIMEUNIT base,
+   }
+ 
+   int64_t microseconds;
+-  PD_CHECK_OVERFLOW(scaleSecondsToMicroseconds(seconds, &microseconds));
+-  PD_CHECK_OVERFLOW(checked_add(microseconds, dts->us, &microseconds));
++  const int64_t us_per_second = 1000000L;
++  const int64_t min_scalable_seconds = NPY_MIN_INT64 / us_per_second;
++  if (seconds < min_scalable_seconds) {
++    const int64_t seconds_below_threshold = seconds - min_scalable_seconds;
++    // split y = a * x + b, where a * x underflows into two parts.
++    // y = a * (x + k - k) + b = a * (x + k) + (b - a * k), where k > 0.
++    int64_t scaled_us = us_per_second * (seconds - seconds_below_threshold);
++    PD_CHECK_OVERFLOW(checked_add(us_per_second * seconds_below_threshold,
++                                  dts->us, &microseconds));
++    PD_CHECK_OVERFLOW(checked_add(scaled_us, microseconds, &microseconds));
++  } else {
++    PD_CHECK_OVERFLOW(scaleSecondsToMicroseconds(seconds, &microseconds));
++    PD_CHECK_OVERFLOW(checked_add(microseconds, dts->us, &microseconds));
++  }
+ 
+   if (base == NPY_FR_us) {
+     return microseconds;

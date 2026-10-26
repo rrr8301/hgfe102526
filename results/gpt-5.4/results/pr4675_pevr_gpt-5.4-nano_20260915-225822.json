@@ -1,0 +1,670 @@
+[
+  {
+    "slug": "burn_4675",
+    "bug_type": "correctness",
+    "image": "rust:1-slim",
+    "status": "NOT_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "test fails on BOTH revisions (the fix did not flip it); the numerical probes did not complete on both revisions",
+    "transition": "fail->fail",
+    "fail_to_pass": false,
+    "numeric_verdict": "inconclusive",
+    "examples_verdict": "not_observed",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "fusion_f16_two_branch_conv_manual_bn_fused_vs_unfused_manualprobe": "use burn::backend::wgpu::{CubeBackend, WgpuRuntime};\nuse burn::prelude::*;\nuse burn::nn::conv::{Conv2dConfig, Conv2d};\nuse burn::nn::BatchNormConfig;\nuse burn::module::Initializer;\nuse burn_fusion::Fusion;\n\n// NOTE: Probe contract requires fn body(), no main.\n\nfn manual_batch_norm_f16<B: Backend>(\n    x: Tensor<B, 4>,\n    mean: Tensor<B, 4>,\n    var: Tensor<B, 4>,\n    gamma: Tensor<B, 4>,\n    beta: Tensor<B, 4>,\n    eps: f32,\n) -> Tensor<B, 4> {\n    // (x - mean) / sqrt(var + eps) * gamma + beta\n    let eps_t = B::float_scalar(eps);\n    (x - mean) / (var + eps_t).sqrt() * gamma + beta\n}\n\n// helper deterministic f16-ish input via simple formula\nfn make_input<B: Backend>(batch: usize, ch: usize, h: usize, w: usize) -> Tensor<B, 4> {\n    let n = batch * ch * h * w;\n    let mut v = Vec::<f32>::with_capacity(n);\n    for idx in 0..n {\n        let x = idx as f32;\n        v.push((x * 7.13).sin() * 0.5);\n    }\n    let t = Tensor::<B, 1>::from_floats(v);\n    t.reshape([batch, ch, h, w])\n}\n\nfn make_params<B: Backend>(ch: usize, seed: u64, scale: f32) -> Tensor<B, 4> {\n    let mut v = Vec::<f32>::with_capacity(ch);\n    // simple LCG-ish deterministic pseudo-random\n    let mut s = seed;\n    for _ in 0..ch {\n        s = s.wrapping_mul(6364136223846793005).wrapping_add(1);\n        let r = ((s >> 32) as u32) as f32 / (u32::MAX as f32);\n        v.push((r - 0.5) * 2.0 * scale);\n    }\n    Tensor::<B, 1>::from_floats(v).reshape([1, ch, 1, 1])\n}\n\nfn run_branch<B: Backend>(\n    input: Tensor<B, 4>,\n    conv: Conv2d<B>,\n    mean: Tensor<B, 4>,\n    var: Tensor<B, 4>,\n    gamma: Tensor<B, 4>,\n    beta: Tensor<B, 4>,\n    eps: f32,\n) -> Tensor<B, 4> {\n    let y = conv.forward(input);\n    manual_batch_norm_f16(y, mean, var, gamma, beta, eps)\n}\n\npub fn body() {\n    // Spatial dims: 16x16, input channels 64, output channels 256\n    type Fused = Fusion<CubeBackend<WgpuRuntime, half::f16, i32, u8>>;\n    type Unfused = CubeBackend<WgpuRuntime, half::f16, i32, u8>;\n\n    let device = WgpuRuntime::new().unwrap();\n    let fused_backend = CubeBackend::new(device.clone());\n    let unfused_backend = CubeBackend::new(device);\n\n    let fused: Fused = Fusion::new(fused_backend);\n    let unfused: Unfused = unfused_backend;\n\n    let (batch, in_ch, out_ch, h, w) = (1usize, 64usize, 256usize, 16usize, 16usize);\n\n    let input_f16 = make_input::<Fused>(batch, in_ch, h, w).to_device(&fused);\n    let input_u16 = make_input::<Unfused>(batch, in_ch, h, w).to_device(&unfused);\n\n    // conv: 1x1, no bias\n    let conv_cfg = Conv2dConfig::new(in_ch, out_ch, [1, 1]).with_bias(false);\n    let conv_a_f = Conv2d::<Fused>::init(conv_cfg.clone(), &mut Default::default());\n    let conv_b_f = Conv2d::<Fused>::init(conv_cfg.clone(), &mut Default::default());\n    let conv_a_u = Conv2d::<Unfused>::init(conv_cfg.clone(), &mut Default::default());\n    let conv_b_u = Conv2d::<Unfused>::init(conv_cfg, &mut Default::default());\n\n    // overwrite weights deterministically with seeds to match input/expected structure\n    // This uses the layer's weight tensor accessor.\n    let scale_w = (2.0f32 / 64.0f32).sqrt();\n    let w_a_f = make_params::<Fused>(out_ch, 1, scale_w).reshape([out_ch, in_ch, 1, 1]);\n    let w_b_f = make_params::<Fused>(out_ch, 2, scale_w).reshape([out_ch, in_ch, 1, 1]);\n    conv_a_f.set_weight(w_a_f);\n    conv_b_f.set_weight(w_b_f);\n\n    let w_a_u = make_params::<Unfused>(out_ch, 1, scale_w).reshape([out_ch, in_ch, 1, 1]);\n    let w_b_u = make_params::<Unfused>(out_ch, 2, scale_w).reshape([out_ch, in_ch, 1, 1]);\n    conv_a_u.set_weight(w_a_u);\n    conv_b_u.set_weight(w_b_u);\n\n    // manual BN params\n    let mean_a_f = make_params::<Fused>(out_ch, 301, 0.5);\n    let mean_b_f = make_params::<Fused>(out_ch, 302, 0.5);\n    let var_a_f = make_params::<Fused>(out_ch, 401, 0.5);\n    let var_b_f = make_params::<Fused>(out_ch, 402, 0.5);\n    let gamma_a_f = make_params::<Fused>(out_ch, 101, 1.0).add(1.0);\n    let gamma_b_f = make_params::<Fused>(out_ch, 102, 1.0).add(1.0);\n    let beta_a_f = make_params::<Fused>(out_ch, 201, 0.3);\n    let beta_b_f = make_params::<Fused>(out_ch, 202, 0.3);\n\n    let mean_a_u = make_params::<Unfused>(out_ch, 301, 0.5);\n    let mean_b_u = make_params::<Unfused>(out_ch, 302, 0.5);\n    let var_a_u = make_params::<Unfused>(out_ch, 401, 0.5);\n    let var_b_u = make_params::<Unfused>(out_ch, 402, 0.5);\n    let gamma_a_u = make_params::<Unfused>(out_ch, 101, 1.0).add(1.0);\n    let gamma_b_u = make_params::<Unfused>(out_ch, 102, 1.0).add(1.0);\n    let beta_a_u = make_params::<Unfused>(out_ch, 201, 0.3);\n    let beta_b_u = make_params::<Unfused>(out_ch, 202, 0.3);\n\n    let eps = 1e-5f32;\n\n    // fused forward: two branches and sum\n    let a_f = run_branch::<Fused>(input_f16.clone(), conv_a_f, mean_a_f, var_a_f, gamma_a_f, beta_a_f, eps);\n    let b_f = run_branch::<Fused>(input_f16, conv_b_f, mean_b_f, var_b_f, gamma_b_f, beta_b_f, eps);\n    let fused_out = a_f + b_f;\n\n    // unfused reference\n    let a_u = run_branch::<Unfused>(input_u16.clone(), conv_a_u, mean_a_u, var_a_u, gamma_a_u, beta_a_u, eps);\n    let b_u = run_branch::<Unfused>(input_u16, conv_b_u, mean_b_u, var_b_u, gamma_b_u, beta_b_u, eps);\n    let unfused_out = a_u + b_u;\n\n    // compare: bring to host floats\n    let fused_vals = fused_out.to_data().value;\n    let unfused_vals = unfused_out.to_data().value;\n\n    let mut max_abs = 0.0f32;\n    let mut any_nonfinite = false;\n    let mut first_bad_idx: i32 = -1;\n    for (i, (&f, &u)) in fused_vals.iter().zip(unfused_vals.iter()).enumerate() {\n        let f32v = f.to_f32();\n        let u32v = u.to_f32();\n        if !f32v.is_finite() || !u32v.is_finite() {\n            any_nonfinite = true;\n            if first_bad_idx < 0 { first_bad_idx = i as i32; }\n        }\n        let d = (f32v - u32v).abs();\n        if d > max_abs { max_abs = d; }\n    }\n\n    // record\n    let _ = probe_scalar(\"fused_any_nonfinite\", if any_nonfinite {1.0} else {0.0});\n    let _ = probe_scalar(\"fused_first_bad_idx\", first_bad_idx as f32);\n    let _ = probe_scalar(\"max_abs_diff\", max_abs);\n    if fused_vals.len() > 0 {\n        let f0 = fused_vals[0].to_f32();\n        let u0 = unfused_vals[0].to_f32();\n        let _ = probe_scalar(\"fused_elem0\", f0);\n        let _ = probe_scalar(\"unfused_elem0\", u0);\n    }\n}\n"
+      },
+      "fixed": {}
+    },
+    "report": {
+      "status": "NOT_REPRODUCED",
+      "rationale": "test fails on BOTH revisions (the fix did not flip it); the numerical probes did not complete on both revisions",
+      "transition": "fail->fail",
+      "fail_to_pass": false,
+      "numeric_verdict": "inconclusive",
+      "examples_verdict": "not_observed",
+      "success_criterion": "The reproducing test FAILS on the checked-out buggy commit (RUST_MIN_STACK=167772160 cargo test fusion_f16_two_branch_conv_ produces a fused-vs-unfused mismatch panic), and the same test would PASS on the fixed commit 6cb763107c8ab81c7d6cbf6e905fa157086544ab.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 101,
+            "failure_kind": "build",
+            "passed": null,
+            "failed": null,
+            "errors": null
+          },
+          "fixed": {
+            "status": "fail",
+            "exit_code": 101,
+            "failure_kind": "",
+            "passed": 0,
+            "failed": 1,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "fusion_f16_two_branch_conv_manual_bn_fused_vs_unfused_manualprobe",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": null,
+              "reasons": [
+                "probe produced no structured output"
+              ]
+            },
+            "fixed": null,
+            "buggy_status": "harness_error",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": null
+          }
+        ],
+        "examples": [
+          {
+            "input": "Fused and Unfused f16 backends (type Fused = Fusion<CubeBackend<WgpuRuntime, half::f16, i32, u8>>) each run two parallel branches: conv(64->256, kernel [1,1], no bias) followed by manual batch-norm (x - m) / sqrt(v + EPS) * g + b with [1,256,1,1] broadcast params, EPS=1e-5, then a+b. Filters/seeds: ",
+            "expected_output": "Fused output matches the unfused reference for every element within tolerance 0.01, with no Inf/NaN values.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Fused output does not match the unfused reference; the second branch produces wrong values under Fusion<f16>, and corruption appears as Inf/NaN values in downstream tensors (no exact wrong numeric values are reported in the PR or test; the test panics once any |fused-ref| > 0.01 or fused is non-finite).",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "Test fusion_f16_two_branch_conv_manual_bn from crates/burn-cubecl-fusion/tests/fusion_f16_broadcast.rs: calls two_conv_bn_branches::<Fused>() and two_conv_bn_branches::<Unfused>() with pseudo-random data: weights scale=sqrt(2/64), means scale 0.5 seeds 301/302, vars 0.5+|value*0.3| seeds 401/402, ga",
+            "expected_output": "No mismatch: max_diff over all elements is <= 0.01 and no fused value is NaN or infinite.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "On the buggy commit the test fails: fused vs unfused mismatch, max_diff > 0.01 or first bad fused value is NaN/infinite; no exact wrong numbers are asserted in the test source.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 5,
+            "n_failed": 5,
+            "ran_test": true,
+            "failed_setup_or_build": [
+              "cd /workspace/buggy && RUST_MIN_STACK=167772160 cargo test fusion_f16_two_branch_conv_ --no-run"
+            ]
+          },
+          "fixed": {
+            "n_commands": 4,
+            "n_failed": 2,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [],
+          "skipped": "the spec names no test dependencies"
+        },
+        "error": "",
+        "buggy_commit_date": "2026-03-25T14:54:57-04:00",
+        "fixed_commit_date": "2026-03-26T11:57:31-04:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [],
+          "skipped": "the instance names no system packages"
+        },
+        "era": "2026-03-26T11:57:31-04:00",
+        "build": {
+          "skipped": "not a compiled Python instance"
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": true,
+            "reason": ""
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": true,
+            "reason": ""
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 101,
+        "failure_kind": "build",
+        "passed": null,
+        "failed": null,
+        "errors": null
+      },
+      "fixed": {
+        "status": "fail",
+        "exit_code": 101,
+        "failure_kind": "",
+        "passed": 0,
+        "failed": 1,
+        "errors": null
+      },
+      "transition": "fail->fail",
+      "fail_to_pass": false,
+      "numeric": {
+        "n_pairs": 1,
+        "verdict": "inconclusive",
+        "pairs": [
+          {
+            "label": "fusion_f16_two_branch_conv_manual_bn_fused_vs_unfused_manualprobe",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": null,
+              "reasons": [
+                "probe produced no structured output"
+              ]
+            },
+            "fixed": null,
+            "buggy_status": "harness_error",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": null
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 2,
+        "n_judged": 0,
+        "n_reproduced": 0,
+        "evaluable": false,
+        "n_diverged": 0,
+        "n_unobserved": 2,
+        "n_contested": 0,
+        "unobserved": [
+          "Fused and Unfused f16 backends (type Fused = Fusion<CubeBackend<WgpuRuntime, half::f16, i32, u8>>) each run two parallel branches: conv(64->256, kernel [1,1], no bias) followed by manual batch-norm (x - m) / sqrt(v + EPS) * g + b with [1,256,1,1] broadcast params, EPS=1e-5, then a+b. Filters/seeds: ",
+          "Test fusion_f16_two_branch_conv_manual_bn from crates/burn-cubecl-fusion/tests/fusion_f16_broadcast.rs: calls two_conv_bn_branches::<Fused>() and two_conv_bn_branches::<Unfused>() with pseudo-random data: weights scale=sqrt(2/64), means scale 0.5 seeds 301/302, vars 0.5+|value*0.3| seeds 401/402, ga"
+        ],
+        "verdict": "not_observed",
+        "examples": [
+          {
+            "input": "Fused and Unfused f16 backends (type Fused = Fusion<CubeBackend<WgpuRuntime, half::f16, i32, u8>>) each run two parallel branches: conv(64->256, kernel [1,1], no bias) followed by manual batch-norm (x - m) / sqrt(v + EPS) * g + b with [1,256,1,1] broadcast params, EPS=1e-5, then a+b. Filters/seeds: ",
+            "expected_output": "Fused output matches the unfused reference for every element within tolerance 0.01, with no Inf/NaN values.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Fused output does not match the unfused reference; the second branch produces wrong values under Fusion<f16>, and corruption appears as Inf/NaN values in downstream tensors (no exact wrong numeric values are reported in the PR or test; the test panics once any |fused-ref| > 0.01 or fused is non-finite).",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "Test fusion_f16_two_branch_conv_manual_bn from crates/burn-cubecl-fusion/tests/fusion_f16_broadcast.rs: calls two_conv_bn_branches::<Fused>() and two_conv_bn_branches::<Unfused>() with pseudo-random data: weights scale=sqrt(2/64), means scale 0.5 seeds 301/302, vars 0.5+|value*0.3| seeds 401/402, ga",
+            "expected_output": "No mismatch: max_diff over all elements is <= 0.01 and no fused value is NaN or infinite.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "On the buggy commit the test fails: fused vs unfused mismatch, max_diff > 0.01 or first bad fused value is NaN/infinite; no exact wrong numbers are asserted in the test source.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 5,
+          "n_failed": 5,
+          "ran_test": true,
+          "failed_setup_or_build": [
+            "cd /workspace/buggy && RUST_MIN_STACK=167772160 cargo test fusion_f16_two_branch_conv_ --no-run"
+          ]
+        },
+        "fixed": {
+          "n_commands": 4,
+          "n_failed": 2,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "The reproducing test FAILS on the checked-out buggy commit (RUST_MIN_STACK=167772160 cargo test fusion_f16_two_branch_conv_ produces a fused-vs-unfused mismatch panic), and the same test would PASS on the fixed commit 6cb763107c8ab81c7d6cbf6e905fa157086544ab."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [],
+        "skipped": "the spec names no test dependencies"
+      },
+      "error": "",
+      "buggy_commit_date": "2026-03-25T14:54:57-04:00",
+      "fixed_commit_date": "2026-03-26T11:57:31-04:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [],
+        "skipped": "the instance names no system packages"
+      },
+      "era": "2026-03-26T11:57:31-04:00",
+      "build": {
+        "skipped": "not a compiled Python instance"
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": true,
+          "reason": ""
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": true,
+          "reason": ""
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 4,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the reported f16 fused-kernel numerical/memory-corruption bug by running the added fusion_f16_two_branch_conv_* tests on both the buggy and fixed commits and verify that only the fixed revision matches the unfused reference (no NaNs/Infs and max diff within tolerance).",
+          "milestones": [
+            "buggy_test_fails [buggy] \u2014 Establish that the reproducing fusion_f16_two_branch_conv_* tests fail on the buggy revision. (2 steps, verify: steps_succeeded, test_ran, test_fails)",
+            "buggy_examples_observed [buggy] \u2014 Check the report-provided example expressions (if any are machine-evaluable) to observe the buggy-reported values on the buggy revision. (1 steps, verify: steps_succeeded)",
+            "fixed_test_passes [fixed] \u2014 Establish that the same fusion_f16_two_branch_conv_* tests pass on the fixed revision. (2 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "fixed_examples_observed [fixed] \u2014 Check the report-provided example expressions on the fixed revision to confirm they match the expected outputs. (1 steps, verify: steps_succeeded)",
+            "revisions_differ_final [fixed] \u2014 Demonstrate that the buggy and fixed revisions behave differently for the reproducing f16 fused-kernel tests. (1 steps, verify: revisions_differ, test_fails, test_passes)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && RUST_MIN_STACK=167772160 cargo test fusion_f16_two_branch_conv_ --no-run",
+        "purpose": "build",
+        "exit_code": 101,
+        "runtime_s": 17.61
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && export RUST_MIN_STACK=167772160 && cargo test fusion_f16_two_branch_conv_",
+        "purpose": "test",
+        "exit_code": 101,
+        "runtime_s": 13.05
+      },
+      {
+        "verification": {
+          "milestone": "buggy_test_fails",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && RUST_MIN_STACK=167772160 cargo test fusion_f16_two_branch` exited 101: ation about this error, try `rustc --explain E0512`.\n   Compiling dtor v0.1.1\nerror: could not compile `ethnum` (lib) due to 1 previous error\nwarning: build failed, waiting for other jobs to finish...; `cd /workspace/buggy && export RUST_MIN_STACK=167772160 && cargo test fusion_f16_` exited 101: /safetensors-tests)\n   Compiling dotenvy v0.15.7\n   Compiling condtype v1.3.0\nerror: could not compile `ethnum` (lib) due to 1 previous error\nwarning: build failed, waiting for other jobs to finish..."
+            },
+            {
+              "check": "test_ran",
+              "passed": false,
+              "detail": "test error on buggy: ling drawille v0.3.0\nFor more information about this error, try `rustc --explain E0512`.\n   Compiling regex-lite v0.1.9\n   Compiling safetensors-tests v0.21.0-pre.2 (/workspace/buggy/crates/burn-store/safetensors-tests)\n   Compiling dotenvy v0.15.7\n   Compiling condtype v1.3.0\nerror: could not compile `ethnum` (lib) due to 1 previous error\nwarning: build failed, waiting for other jobs to finish..."
+            },
+            {
+              "check": "test_fails",
+              "passed": false,
+              "detail": "test error on buggy (milestone required fail): ling drawille v0.3.0\nFor more information about this error, try `rustc --explain E0512`.\n   Compiling regex-lite v0.1.9\n   Compiling safetensors-tests v0.21.0-pre.2 (/workspace/buggy/crates/burn-store/safetensors-tests)\n   Compiling dotenvy v0.15.7\n   Compiling condtype v1.3.0\nerror: could not compile `ethnum` (lib) due to 1 previous error\nwarning: build failed, waiting for other jobs to finish..."
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the reported fused f16 corruption by probing the specific fused-vs-unfused behavior directly, since the reproducing Rust test cannot compile on the buggy revision due to an ethnum build error.",
+          "milestones": [
+            "rust_build_issue_confirmed [buggy] \u2014 Confirm that on the buggy revision the reproducing cargo test cannot compile due to an ethnum E0512 error, and capture the exact failure signal; also ensure the fixed revision builds/runs the same selector. (1 steps, verify: steps_succeeded)",
+            "fixed_test_selector_passes [fixed] \u2014 Show that the selector compiles and runs on the fixed revision (so the environment/build is otherwise usable). (1 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "direct_example_probe_fused_vs_unfused [buggy] \u2014 Evaluate the mined PR/report example expressions (the fused-vs-unfused comparison) on both revisions by executing the report\u2019s own examples, demonstrating wrong non-finite values on buggy and matching values on fixed. (1 steps, verify: steps_succeeded, examples_reproduced)",
+            "direct_example_probe_fused_vs_unfused_fixed_side [fixed] \u2014 Run the same report-provided example(s) on the fixed revision, confirming they match the expected outputs and are finite. (1 steps, verify: steps_succeeded, examples_reproduced)",
+            "revisions_differ_on_bug_examples [fixed] \u2014 Demonstrate that buggy and fixed revisions differ on the report examples: buggy shows the reported mismatch/non-finite values while fixed matches expected within tolerance. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && export RUST_MIN_STACK=167772160 && cargo test fusion_f16_two_branch_conv_",
+        "purpose": "test",
+        "exit_code": 101,
+        "runtime_s": 12.55
+      },
+      {
+        "verification": {
+          "milestone": "rust_build_issue_confirmed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && export RUST_MIN_STACK=167772160 && cargo test fusion_f16_` exited 101: tf v0.1.4\nFor more information about this error, try `rustc --explain E0512`.\nerror: could not compile `ethnum` (lib) due to 1 previous error\nwarning: build failed, waiting for other jobs to finish..."
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failing Rust-test-based milestone with a direct numerical repro of the fused-vs-unfused f16 corruption by running the mined example expressions on both buggy and fixed revisions, without relying on the selector\u2019s cargo compilation.",
+          "milestones": [
+            "direct_repro_probe_on_buggy_and_fixed [buggy] \u2014 Run a report-style fused-vs-unfused numerical probe (from the mined PR/test scenario) on both buggy and fixed commits to show non-finite or mismatched outputs on buggy and matching outputs on fixed. (3 steps, verify: steps_succeeded)",
+            "direct_repro_assertion_fixed_side [fixed] \u2014 On the fixed revision, the same fused-vs-unfused numerical probe should produce finite outputs and small max_abs_diff. (1 steps, verify: steps_succeeded)",
+            "revisions_differ_on_fused_corruption [fixed] \u2014 Confirm that outputs from the fused-vs-unfused probe differ between buggy and fixed revisions (buggy shows corruption/non-finite or larger max_abs_diff; fixed does not). (1 steps, verify: steps_succeeded)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && ls -R crates/burn-cubecl-fusion/tests | head",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.17
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && rg -n \"two_conv_bn_branches|fusion_f16_two_branch_conv\" crates/burn-cubecl-fusion/tests crates/burn-cubecl-fusion/src || true",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.17
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "fusion_f16_two_branch_conv_manual_bn_fused_vs_unfused",
+        "language": "rust",
+        "status": "probe_generation_error",
+        "errors": [
+          "a Rust probe must define `fn body()` \u2014 the harness calls it.",
+          "do not define `fn main()`; the harness owns the entry point.",
+          "record at least one observation with `probe_scalar(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: rust\n\nProblems:\n  - a Rust probe must define `fn body()` \u2014 the harness calls it.\n  - do not define `fn main()`; the harness owns the entry point.\n  - record at least one observation with `probe_scalar(name, value)`.\n  - the code looks like JavaScript/TypeScript.\n\nThe rust probe contract: Rust items that define `fn body()` \u2014 NOT fn main. `use` lines are fine; the probe is built as an example of the crate, so `use <crate_name>::\u2026` resolves to THIS revision's public API. Record with probe_scalar(name, v), probe_values(name, &[..]), probe_text(name, s), probe_iteration(&[(\"residual\", r)]).\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(fusion_f16_two_branch_conv_manual_bn_fused_vs_unfused) \u2014 Run a numerical probe on both revisions using the report/provided scenario: build two-branch conv+manual BN and compare fused vs unfused outputs; record whether outputs contain NaN/Inf and compute max abs diff vs unfused reference."
+      },
+      {
+        "verification": {
+          "milestone": "direct_repro_probe_on_buggy_and_fixed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(fusion_f16_two_branch_conv_manual_bn_fused_vs_unfused) \u2014 Run a numerical probe on both revisions using the report/provided scenario: build two-branch conv+manual BN and compare fused vs unfused outputs; record whether outputs contain NaN/Inf and compute max abs diff vs unfused reference. did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "direct_repro_probe_on_buggy_and_fixed",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 2,
+          "detail": [
+            "[buggy] run_numerical_probe(fusion_f16_two_branch_conv_manual_bn_fused_vs_unfused) \u2014 Run a numerical probe on both revisions using the report/provided scenario: build two-branch conv+manual BN and compare fused vs unfused outputs; record whether outputs contain NaN/Inf and compute max abs diff vs unfused reference. did not execute"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "fusion_f16_two_branch_conv_manual_bn_fused_vs_unfused",
+        "language": "rust",
+        "status": "probe_generation_error",
+        "errors": [
+          "a Rust probe must define `fn body()` \u2014 the harness calls it.",
+          "do not define `fn main()`; the harness owns the entry point.",
+          "record at least one observation with `probe_scalar(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: rust\n\nProblems:\n  - a Rust probe must define `fn body()` \u2014 the harness calls it.\n  - do not define `fn main()`; the harness owns the entry point.\n  - record at least one observation with `probe_scalar(name, value)`.\n  - the code looks like JavaScript/TypeScript.\n\nThe rust probe contract: Rust items that define `fn body()` \u2014 NOT fn main. `use` lines are fine; the probe is built as an example of the crate, so `use <crate_name>::\u2026` resolves to THIS revision's public API. Record with probe_scalar(name, v), probe_values(name, &[..]), probe_text(name, s), probe_iteration(&[(\"residual\", r)]).\n\nRegenerate only the probe, following that contract.",
+        "step": "[fixed] run_numerical_probe(fusion_f16_two_branch_conv_manual_bn_fused_vs_unfused) \u2014 Run the identical fused-vs-unfused numerical probe on the fixed revision to confirm no NaN/Inf and max_abs_diff within tolerance."
+      },
+      {
+        "verification": {
+          "milestone": "direct_repro_assertion_fixed_side",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[fixed] run_numerical_probe(fusion_f16_two_branch_conv_manual_bn_fused_vs_unfused) \u2014 Run the identical fused-vs-unfused numerical probe on the fixed revision to confirm no NaN/Inf and max_abs_diff within tolerance. did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the fused-vs-unfused f16 corruption numerically (without cargo test selector) by running a correct Rust numerical probe on both buggy and fixed revisions and asserting finite outputs and small max_abs_diff on fixed, plus divergence on buggy.",
+          "milestones": [
+            "direct_repro_probe_rust_ready [buggy] \u2014 Run a Rust numerical probe (with harness-compatible fn body) that computes fused and unfused outputs for a two-branch conv + manual BN in f16 and records finite-ness plus max_abs_diff, on both buggy and fixed revisions. (1 steps, verify: steps_succeeded, probe_ran)",
+            "direct_repro_probe_rust_ready_fixed [fixed] \u2014 Run the same numerical probe as the previous milestone on the fixed revision and ensure outputs are finite and max_abs_diff is small. (1 steps, verify: steps_succeeded, probe_ran)",
+            "compare_revisions [buggy] \u2014 Establish that buggy and fixed revisions produce different numerical outcomes in the fused-vs-unfused comparison (max_abs_diff and/or non-finite flags), indicating the corruption is fixed. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "fusion_f16_two_branch_conv_manual_bn_fused_vs_unfused_manualprobe",
+        "language": "rust",
+        "status": "harness_error",
+        "pathology": null,
+        "reasons": [
+          "probe produced no structured output"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "direct_repro_probe_rust_ready",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "probe 'fusion_f16_two_branch_conv_manual_bn_fused_vs_unfused_manualprobe' did not complete: harness_error"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "1 of 1 probe(s) did not complete: 'fusion_f16_two_branch_conv_manual_bn_fused_vs_unfused_manualprobe' (harness_error): probe produced no structured output | error: could not compile `burn-cubecl-fusion` (example \"numagent_probe\") due to 28 previous errors; 2 warnings emitted"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cargo test -p burn-cubecl-fusion fusion_f16_two_branch_conv_manual_bn -- --nocapture",
+        "purpose": "test",
+        "exit_code": 101,
+        "runtime_s": 4.83
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cargo test -p burn-cubecl-fusion fusion_f16_two_branch_conv_manual_bn -- --nocapture",
+        "purpose": "test",
+        "exit_code": 101,
+        "runtime_s": 62.65
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cargo test -p burn-cubecl-fusion fusion_f16_two_branch_conv_bn_add_matches_reference -- --nocapture",
+        "purpose": "test",
+        "exit_code": 101,
+        "runtime_s": 1.27
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cargo test -p burn-cubecl-fusion fusion_f16_two_branch_conv_bn_add_matches_reference -- --nocapture",
+        "purpose": "test",
+        "exit_code": 101,
+        "runtime_s": 0.72
+      },
+      {
+        "reproducing_test_run": {
+          "case": "fusion_f16_two_branch_conv_bn_add_matches_reference",
+          "command": "cargo test -p burn-cubecl-fusion fusion_f16_two_branch_conv_bn_add_matches_reference -- --nocapture",
+          "package": "burn-cubecl-fusion",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "fail"
+          },
+          "exit_codes": {
+            "buggy": 101,
+            "fixed": 101
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "fusion_f16_two_branch_conv_manual_bn",
+              "command": "cargo test -p burn-cubecl-fusion fusion_f16_two_branch_conv_manual_bn -- --nocapture",
+              "buggy": "fail",
+              "fixed": "fail"
+            },
+            {
+              "case": "fusion_f16_two_branch_conv_bn_add_matches_reference",
+              "command": "cargo test -p burn-cubecl-fusion fusion_f16_two_branch_conv_bn_add_matches_reference -- --nocapture",
+              "buggy": "fail",
+              "fixed": "fail"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->fail",
+        "fail_to_pass": false,
+        "numeric_verdict": "inconclusive",
+        "examples_verdict": "not_observed",
+        "examples": "0/0"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "NOT_REPRODUCED",
+        "rationale": "test fails on BOTH revisions (the fix did not flip it); the numerical probes did not complete on both revisions"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 4,
+      "input_tokens": 14776,
+      "output_tokens": 12019,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.017979
+    }
+  }
+]

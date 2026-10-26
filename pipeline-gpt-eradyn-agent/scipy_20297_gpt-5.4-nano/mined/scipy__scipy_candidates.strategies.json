@@ -1,0 +1,98 @@
+{
+  "input": "pipeline-gpt-5.4-nano/scipy_20297_gpt-5.4-nano/mined/scipy__scipy_20297.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 12066,
+    "output_tokens": 3168,
+    "cost_usd": 0.006373,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 20297,
+      "reference": "https://github.com/scipy/scipy/pull/20297",
+      "buggy_commit": "237b6915e37ed433c18e87952cb3b8c4880ad774",
+      "fixed_commit": "bb92c8014e21052e7dde67a76b28214dd1dcb94a",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 5787,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce SciPy linalg accuracy bug for `scipy.linalg.pinvh` on the buggy revision (commit 237b6915e37e) where `pinvh` can rely on `eigh` using the LAPACK SYEVR/`evr` path, producing a perturbed near-zero eigenvalue and causing the Moore\u2013Penrose condition 2 (`allclose(a @ p @ a, a)`) to fail for a specific Hermitian matrix. Ensure the project test `test_zero_eigenvalue` fails on buggy and passes on fixed by checking out the buggy commit vs the fixed PR head.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.7.6",
+          "pip_packages": [
+            "numpy==1.18.1",
+            "scipy==1.4.1"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python3.7 -m pip install -U pip",
+            "python3.7 -m pip install numpy==1.18.1",
+            "python3.7 -m pip install -r requirements-dev.txt || true",
+            "python3.7 -m pip install -e .[test] || true"
+          ],
+          "pinned_because": [
+            "SciPy constraint is documented as 1.4.1 and NumPy as 1.18.1 (issue#12515 reproduction context).",
+            "Python 3.7.6 matches the provided environment; LAPACK driver behavior (SYEVR vs SYEV) can be sensitive, so keep this environment stable."
+          ]
+        },
+        "test_command": "python3.7 -m pytest scipy/linalg/tests/test_basic.py -k test_zero_eigenvalue",
+        "reproducing_test": "scipy/linalg/tests/test_basic.py::test_zero_eigenvalue",
+        "success_criterion": "On buggy revision 237b6915e37e, `test_zero_eigenvalue` fails because the second Moore\u2013Penrose check `assert_allclose(a @ p @ a, a, atol=1e-15)` is false. On the fixed revision (PR #20297 includes changing `pinvh` to call `eigh(..., driver='ev')` / using SYEV instead of SYEVR), the same test passes (both `assert_allclose(p @ a @ p, p, atol=1e-15)` and `assert_allclose(a @ p @ a, a, atol=1e-15)` succeed).",
+        "numerical_probe": "Matrix a = [[1,-1,0],[-1,2,-1],[0,-1,1]]; compute p = scipy.linalg.pinvh(a); verify Moore\u2013Penrose conditions via np.allclose/allclose tolerance atol=1e-15.",
+        "input_output_examples": [
+          {
+            "input": "x = np.array([[1,-1, 0], [-1, 2, -1], [0, -1, 1]])",
+            "buggy_output": "For y1 = pinvh(x): np.allclose(x @ y1 @ x, x) == True but np.allclose(y1 @ x @ y1, y1) == False.",
+            "expected_output": "For p = pinvh(a) the test expects both Moore\u2013Penrose conditions to satisfy allclose with atol=1e-15, i.e., np.allclose(p @ a @ p, p, atol=1e-15) and np.allclose(a @ p @ a, atol=1e-15) are True."
+          },
+          {
+            "input": "eigh driver comparison example (from issue)",
+            "buggy_output": "driver='evr' may report a zero eigenvalue as approximately 2.66453526e-15 (shown example) vs driver='ev' approximately 9.99658224e-17.",
+            "expected_output": "Using the more robust SYEV/`ev` path avoids the larger perturbation of the near-zero eigenvalue, yielding a correct `pinvh` pseudoinverse for the test matrix."
+          }
+        ],
+        "risks": [
+          "This is LAPACK-driver sensitive: the failure depends on whether `pinvh` ends up using the SYEVR (`evr`) path for `eigh` in the buggy revision. If your build/linked LAPACK version or SciPy\u2019s internal driver selection causes SYEV-like behavior even on the buggy commit, the test may pass (no transition).",
+          "Exact behavior can vary by platform/architecture, BLAS/LAPACK vendor, and threading/runtime; only attempt the comparison on the same environment/toolchain for buggy vs fixed commits.",
+          "The evidence does not specify compiler flags, BLAS/LAPACK backend, or exact PR fixed commit SHA; you must test on the same checkout baseline except for the code change from PR #20297 (driver selection in `scipy/linalg/_basic.py`)."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "atol=1e-15",
+          "reference_source": "Embedded test in scipy/linalg/tests/test_basic.py (added in PR #20297) using assert_allclose for the two Moore\u2013Penrose conditions.",
+          "why": "The test asserts both Moore\u2013Penrose conditions with an absolute tolerance of 1e-15; the buggy behavior is characterized as failing the condition `assert_allclose(a @ p @ a, a, atol=1e-15)` while still passing `assert_allclose(p @ a @ p, p, atol=1e-15)`. "
+        },
+        "fails_on_buggy": "`pytest ... -k test_zero_eigenvalue` raises an AssertionError at `assert_allclose(a @ p @ a, a, atol=1e-15)` (second Moore\u2013Penrose condition fails) for `a = [[1,-1,0],[-1,2,-1],[0,-1,1]]` because the buggy revision\u2019s driver path for `eigh` yields a near-zero eigenvalue that is not treated accurately enough for `pinvh`.",
+        "passes_on_fixed": "`pytest ... -k test_zero_eigenvalue` succeeds because the fix changes `pinvh` to use the more robust SYEV/`ev` driver in `eigh`, avoiding the larger perturbation from SYEVR/`evr` and restoring the Moore\u2013Penrose condition `allclose(a @ p @ a, a, atol=1e-15)`. "
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 2713,
+        "output_tokens": 1297,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002164
+      },
+      "miner_usage": {
+        "input_tokens": 9353,
+        "output_tokens": 1871,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.004209,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

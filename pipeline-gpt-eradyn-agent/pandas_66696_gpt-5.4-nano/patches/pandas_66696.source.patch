@@ -1,0 +1,45 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index b55eddcaaf94a..06ebf7c3ccbb2 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -430,6 +430,7 @@ Bug fixes
+ ~~~~~~~~~
+ - Fixed bug in :class:`Index` repr where attributes were not wrapped to respect ``display.width`` (:issue:`11552`)
+ - Fixed bug in :class:`Series` where empty frozensets were formatted incorrectly (:issue:`66192`)
++- Fixed bug in :func:`testing.assert_frame_equal`, :func:`testing.assert_index_equal`, :func:`testing.assert_series_equal` and :func:`testing.assert_extension_array_equal` where ``rtol`` and ``atol`` were applied after casting to ``float64``, so integers above ``2**53`` could compare equal while differing by more than the tolerance, or unequal while within it (:issue:`66400`)
+ - Fixed bug in :func:`testing.assert_series_equal` showing a misleading class mismatch message when Series values were backed by different :class:`numpy.ndarray` subclasses (:issue:`65770`)
+ - Fixed bug in :func:`to_timedelta` and :class:`Timedelta` not accepting Day offsets (:issue:`64240`)
+ 
+diff --git a/pandas/_libs/testing.pyx b/pandas/_libs/testing.pyx
+index cfd31fa610e69..aadf3d54459b6 100644
+--- a/pandas/_libs/testing.pyx
++++ b/pandas/_libs/testing.pyx
+@@ -14,6 +14,7 @@ from pandas._libs.missing cimport (
+ from pandas._libs.util cimport (
+     is_array,
+     is_complex_object,
++    is_integer_object,
+     is_real_number_object,
+ )
+ 
+@@ -195,6 +196,20 @@ cpdef assert_almost_equal(a, b,
+         # object comparison
+         return True
+ 
++    # GH#66400 float64 cannot hold integers above 2**53 exactly, so the
++    #  tolerance below would be applied to rounded values. Negative tolerances
++    #  are left to math.isclose, which rejects them.
++    if (is_integer_object(a) and is_integer_object(b)
++            and rtol >= 0 and atol >= 0):
++        ia = int(a)
++        ib = int(b)
++
++        if abs(ia - ib) > max(rtol * max(abs(ia), abs(ib)), atol):
++            # whole numbers render the same as the ".5f" used below
++            assert False, (f"expected {ib}.00000 but got {ia}.00000, "
++                           f"with rtol={rtol}, atol={atol}")
++        return True
++
+     if is_real_number_object(a) and is_real_number_object(b):
+         fa, fb = a, b
+ 

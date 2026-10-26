@@ -1,0 +1,109 @@
+{
+  "input": "pipeline-haiku-eradyn-inloop/scipy_20654_claude-haiku-5-5/mined/scipy__scipy_20654.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-23",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 15760,
+    "output_tokens": 5382,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 20654,
+      "reference": "https://github.com/scipy/scipy/pull/20654",
+      "buggy_commit": "44c3b6f424e54c406c9ebe9e5080ae2fecd46cb5",
+      "fixed_commit": "19966584c4f131ee063e116e8f80ed5134fd0373",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 3091,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce scipy PR #20654: yulesimon kurtosis for alpha=5 is wrong on the buggy commit 44c3b6f424e5 because _stats omits the factor 11 on alpha**3. The developer's test removes the yulesimon exemption from check_kurt_expect in test_moments, so the parametrized test_moments[yulesimon-...] case should fail on the buggy revision and pass after the fix is applied. Requires a compiled scipy build from the buggy commit, Python 3.9.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.9",
+          "pip_packages": [
+            "numpy",
+            "scipy-build-deps (meson, meson-python, cython, pybind11, pythran as required by the buggy revision's pyproject.toml)",
+            "pytest",
+            "hypothesis",
+            "mpmath",
+            "pooch"
+          ],
+          "system_packages": [
+            "gfortran",
+            "a C/C++ compiler toolchain (gcc or clang)",
+            "ninja",
+            "BLAS/LAPACK development libraries if the build does not vendor OpenBLAS"
+          ],
+          "build_commands": [
+            "git checkout 44c3b6f424e5",
+            "git submodule update --init --recursive",
+            "python -m pip install -r requirements/build.txt",
+            "python dev.py build (or pip install -e . --no-build-isolation)"
+          ],
+          "pinned_because": [
+            "python 3.9 is from the evidence environment (language_version), not inferred",
+            "numpy and build-dependency pins are era-inferred from the 2024-05-06 PR date only; the evidence does not document exact versions, so use the versions in the buggy commit's requirements files rather than latest releases"
+          ]
+        },
+        "test_command": "python dev.py test -t scipy.stats.tests.test_discrete_basic -- -k \"test_moments and yulesimon\" (or, from an editable install: pytest scipy/stats/tests/test_discrete_basic.py -k \"test_moments and yulesimon\")",
+        "reproducing_test": "scipy/stats/tests/test_discrete_basic.py::test_moments with distname='yulesimon', after applying the developer's diff, which replaces the 'if distname not in [zipf, yulesimon, betanbinom]' guard with a suppress_warnings block that filters RuntimeWarning only for zipf and betanbinom, so check_kurt_expect now runs for yulesimon.",
+        "success_criterion": "Transition: on the buggy revision (44c3b6f424e5) with the test diff applied, test_moments[yulesimon-*] FAILS inside check_kurt_expect because the computed kurtosis for alpha=5 (about -6.2) does not match the moment-derived kurtosis (about 118.8). On the fixed revision (the PR's source change applied: 11*alpha**3 in the g2 numerator, plus the zipf parameter change to 6.6), the same test PASSES. Other test_moments cases should be unaffected.",
+        "numerical_probe": "stats.yulesimon(5).stats('mvsk')[3] (buggy: about -6.199999999999999; expected about 118.8). Also stats.yulesimon.moment(4, 5) (about 52.083) versus stats.yulesimon._munp(4, 5) (buggy: about 51.50 with non-convergence warning).",
+        "input_output_examples": [
+          {
+            "input": "stats.yulesimon(5).stats('mvsk') kurtosis",
+            "buggy_output": "-6.199999999999999",
+            "expected_output": "118.8"
+          },
+          {
+            "input": "stats.yulesimon._munp(4, 5)",
+            "buggy_output": "51.50194329138698 with warning that sum doesn't converge",
+            "expected_output": "52.083333333333336 (stats.yulesimon.moment(4, 5))"
+          }
+        ],
+        "risks": [
+          "Platform/toolchain: the evidence does not name an architecture or sanitizer; the defect is a pure formula error and should appear on any platform, but the test selection depends on a successful scipy build from the buggy commit, which is the main practical risk.",
+          "Warnings-as-errors: scipy's pytest configuration may escalate the non-convergence RuntimeWarning from _munp summation to an error. On the buggy revision the test could then fail on the warning before reaching the kurtosis assertion, which still counts as failing but for a different reason; check the failure text to confirm it is the kurtosis mismatch.",
+          "Era-inferred pins: numpy/meson/pythran versions are not documented in the evidence; a mismatched numpy ABI can break the build or change nsum warning behaviour.",
+          "Exemption removal: the test change also alters zipf and betanbinom warning handling; if those fail for unrelated reasons on the buggy commit, the -k filter must keep the run focused on yulesimon.",
+          "The fixed revision requires both the _stats formula change and the zipf parameter change from the same commit; applying only the test diff plus the formula fix may not be the exact upstream state."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": "Wolfram WaringYuleDistribution[5] = 118.8 (cited in the issue); Wikipedia Yule-Simon formula (cited by maintainer)",
+          "why": "The evidence does not state the rtol used by check_kurt_expect; the transition is decided by the existing test's own comparison, not by a separately specified tolerance."
+        },
+        "fails_on_buggy": "check_kurt_expect compares the _stats kurtosis (about -6.2 for alpha=5, from the typo alpha**3 - 49*alpha - 22 with the 11 factor missing) against the kurtosis derived from the moments, which is about 118.8. The mismatch exceeds tolerance, so the assertion fails for test_moments[yulesimon-*].",
+        "passes_on_fixed": "With 11*alpha**3 in the g2 numerator, the _stats kurtosis for alpha=5 matches the moment-derived kurtosis, so check_kurt_expect passes and test_moments[yulesimon-*] succeeds."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 3400,
+        "output_tokens": 3002,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 12360,
+        "output_tokens": 2380,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

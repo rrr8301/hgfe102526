@@ -1,0 +1,54 @@
+diff --git a/modules/dnn/src/layers/cpu_kernels/activation_kernels.simd.hpp b/modules/dnn/src/layers/cpu_kernels/activation_kernels.simd.hpp
+index 161c1e0479f6..a28e57c44110 100644
+--- a/modules/dnn/src/layers/cpu_kernels/activation_kernels.simd.hpp
++++ b/modules/dnn/src/layers/cpu_kernels/activation_kernels.simd.hpp
+@@ -232,10 +232,13 @@ static void activationGELUApprox(const void* input, void* output,
+     v_float32 half = vx_setall_f32(0.5f), one = vx_setall_f32(1.f);
+     v_float32 v_s2pi = vx_setall_f32(sqrt2_pi), v_coeff = vx_setall_f32(coeff);
+     v_float32 two = vx_setall_f32(2.f);
++    // Clamp to [-9, 9] to prevent overflow in exp(2*inner); tanh saturates here anyway
++    v_float32 clamp_hi = vx_setall_f32(9.f), clamp_lo = vx_setall_f32(-9.f);
+     for (; i + vlanes <= len; i += vlanes) {
+         v_float32 x = vx_load(inp + i);
+         // inner = sqrt(2/pi) * x + coeff * x^3 = x * (sqrt(2/pi) + coeff * x^2)
+         v_float32 inner = v_mul(x, v_add(v_s2pi, v_mul(v_coeff, v_mul(x, x))));
++        inner = v_min(v_max(inner, clamp_lo), clamp_hi);
+         // tanh via exp: (exp(2*inner)-1)/(exp(2*inner)+1)
+         v_float32 e2 = v_exp(v_mul(two, inner));
+         v_float32 t = v_div(v_sub(e2, one), v_add(e2, one));
+diff --git a/modules/dnn/src/layers/cpu_kernels/softmax.cpp b/modules/dnn/src/layers/cpu_kernels/softmax.cpp
+index aa5f683be656..e07be85e517d 100644
+--- a/modules/dnn/src/layers/cpu_kernels/softmax.cpp
++++ b/modules/dnn/src/layers/cpu_kernels/softmax.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include "../../precomp.hpp"
+ #include "softmax.hpp"
++#include "opencv2/core/fast_math.hpp"
+ 
+ namespace cv { namespace dnn {
+ 
+@@ -101,10 +102,13 @@ void softmax(Mat &dst, const Mat &src, int axis, int axisBias, int axisStep){
+                 s += axisBuf[cnDim];
+             }
+ 
+-            s = 1.f / s;
+-
+             // copy back the result to src
+             _cnDim = 0;
++            if (s == 0.f || cvIsInf(1.f / s)) {
++                for (; _cnDim < axisStep; _cnDim++)
++                    dstPtr[srcOffset + (_cnDim + axisBias) * cnStep] = 0.f;
++            } else {
++                s = 1.f / s;
+ #if CV_ENABLE_UNROLLED && defined(_M_ARM64)
+             for (; _cnDim + 3 < axisStep; _cnDim += 4) {
+                 dstPtr[srcOffset + (_cnDim + 0 + axisBias) * cnStep] = axisBuf[_cnDim + 0] * s;
+@@ -115,6 +119,7 @@ void softmax(Mat &dst, const Mat &src, int axis, int axisBias, int axisStep){
+ #endif
+             for (; _cnDim < axisStep; _cnDim++)
+                 dstPtr[srcOffset + (_cnDim + axisBias) * cnStep] = axisBuf[_cnDim] * s;
++            }
+         }
+     }, nstripes);
+ }

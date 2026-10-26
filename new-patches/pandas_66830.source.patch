@@ -1,0 +1,89 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 362c8b3ebbf1c..1487e2694c2f3 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -285,7 +285,7 @@ Deprecations
+   :meth:`DataFrame.var`, :meth:`DataFrame.sem`, :meth:`DataFrame.sum`,
+   :meth:`DataFrame.prod` (and their :class:`Series` equivalents); this will raise in
+   a future version of pandas (:issue:`53098`)
+-- Deprecated passing integers to :class:`Period`, :class:`PeriodIndex`, :func:`period_range`, :func:`period_array`, and :meth:`PeriodArray._from_sequence`. In a future version, integers will be treated as period ordinals instead of calendar years. To get the future behavior now, use ``Period(ordinal=...)`` or :meth:`PeriodIndex.from_ordinals`; to keep the current behavior, construct the :class:`Period` objects explicitly (:issue:`64227`)
++- Deprecated passing integers to :class:`Period`, :class:`PeriodIndex`, :func:`period_range`, :func:`period_array`, and :meth:`PeriodArray._from_sequence`. In a future version, integers will be treated as period ordinals instead of calendar years. To get the future behavior now, use ``Period(ordinal=...)`` or :meth:`PeriodIndex.from_ordinals`; to keep the current behavior, pass strings, e.g. ``Period(str(value), freq=...)`` or ``data.astype(str)`` (:issue:`64227`)
+ - Deprecated ``inplace`` keyword for :meth:`DataFrame.rename` and :meth:`DataFrame.drop`. This keyword will be removed in a future version (:issue:`63207`); see also `PDEP-8 <https://pandas.pydata.org/pdeps/0008-inplace-methods-in-pandas.html>`_
+ - Deprecated the ``infer_objects``, ``convert_string``, ``convert_integer``, ``convert_boolean``, and ``convert_floating`` keywords in :meth:`DataFrame.convert_dtypes` and :meth:`Series.convert_dtypes` (:issue:`62022`)
+ - Deprecated using ``isinstance(obj, DateOffset)`` and ``issubclass(cls, DateOffset)`` to check for offset types that are not :class:`DateOffset`; these will return ``False`` in a future version. Use ``pd.offsets.BaseOffset`` instead (:issue:`48262`)
+diff --git a/pandas/_libs/tslibs/period.pyx b/pandas/_libs/tslibs/period.pyx
+index a7632d0eef49e..21d0ff685f1a0 100644
+--- a/pandas/_libs/tslibs/period.pyx
++++ b/pandas/_libs/tslibs/period.pyx
+@@ -1759,18 +1759,20 @@ def from_calendar_ordinals(const int64_t[:] values, PeriodDtypeBase dtype):
+         val = values[i]
+         if val == NPY_NAT:
+             result[i] = NPY_NAT
+-        else:
+-            # equiv Period(val, freq=dtype.unit).ordinal, specialized
+-            #  bc we know val is an integer
+-            if not INT32_MIN <= val <= INT32_MAX:
+-                # val is used as the year, which lands in the int32
+-                #  npy_datetimestruct.year field; out-of-range would silently
+-                #  wrap, so raise to match the scalar Period(int) path.
+-                raise OutOfBoundsDatetime(f"Out of bounds year: {val}")
++        elif 1000 <= val <= 9999:
++            # Fast path: for a four-digit value str(val) parses as that
++            #  calendar year, so this is Period(val, freq=dtype).ordinal
++            #  without the parsing.
+             dts.year = val
+             if check_bounds and not min_year <= val <= max_year:
+                 check_dts_bounds(&dts, unit)
+             result[i] = get_period_ordinal_unchecked(&dts, freq)
++        else:
++            # Outside four digits reading val as the year disagrees with
++            #  Period(val, freq) -- 200701 is 2001-07-20, not year 200701 --
++            #  so use the parser the scalar and object-dtype paths use, which
++            #  also raises for the values they reject.
++            result[i] = Period(str(val), freq=dtype).ordinal
+ 
+     return result.base
+ 
+@@ -1889,17 +1891,15 @@ DIFFERENT_FREQ = ("Input has different freq={other_freq} "
+ 
+ 
+ # GH#64227
+-# NB: no one-liner reproduces the current behavior for every input, because
+-#  the int-array path (from_calendar_ordinals) reads an int as a calendar
+-#  year while the object path parses str(value), and those disagree outside
+-#  4-digit years -- e.g. 200701 gives year 200701 vs 2007-01. So we point at
+-#  the unambiguous replacement and leave the rest to the user.
++# NB: astype(str) reproduces the current behavior because every integer path
++#  parses str(value); the exception is the iNaT sentinel, which the integer
++#  paths read as NaT.
+ INT_TO_PERIOD_DEPR_MSG = (
+     "Passing integer data to PeriodArray/PeriodIndex is deprecated and will "
+     "change behavior in a future version, when integers will be treated as "
+     "period ordinals instead of calendar years. To get the future behavior "
+     "now, use PeriodIndex.from_ordinals(data, freq=...). To retain the "
+-    "current behavior, construct the Period objects explicitly."
++    "current behavior, pass strings, e.g. data.astype(str)."
+ )
+ 
+ INT_TO_PERIOD_SCALAR_DEPR_MSG = (
+diff --git a/pandas/core/arrays/period.py b/pandas/core/arrays/period.py
+index 9a38f6e797515..abfe150444100 100644
+--- a/pandas/core/arrays/period.py
++++ b/pandas/core/arrays/period.py
+@@ -302,6 +302,16 @@ def _from_sequence(
+             scalars = scalars.to_numpy(dtype=object, na_value=NaT)
+ 
+         arrdata = np.asarray(scalars)
++        if (
++            arrdata.dtype.kind == "u"
++            and arrdata.size
++            and arrdata.max() > np.iinfo(np.int64).max
++        ):
++            # GH#64231 the int64 cast below would wrap these silently; read
++            #  them through the object path, which rejects them the way the
++            #  Period(int) scalar constructor does.
++            arrdata = arrdata.astype(object)
++
+         if arrdata.dtype.kind == "f" and len(arrdata) > 0:
+             if not lib.all_nans(arrdata):
+                 raise TypeError(

@@ -1,0 +1,99 @@
+{
+  "input": "pipeline_no_historic/numba_9747/mined/numba__numba_9747.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 14813,
+    "output_tokens": 5861,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "numba/numba",
+      "pr_number": 9747,
+      "reference": "https://github.com/numba/numba/pull/9747",
+      "buggy_commit": "30c17f24486ccfb63c2f46c8c8b69db0c9afd889",
+      "fixed_commit": "670ea3e5950d16c808da7044dcc55077d62d9fa3",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 4260,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the mid-range binomial mismatch in numba.np.random.old_distributions.random_binomial_btpe by running the project's own test_binomial_specific_issues on the buggy commit 30c17f24486c, where the jitted Generator.binomial(301, 0.1, ...) should differ from the py_func (NumPy C) result, and on the fixed revision, where the two agree. The developer test compares jit output with py_func output, so no hard-coded expected values are needed. Pins for numpy and llvmlite are era-inferred, not documented, and are stated as such.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy<2",
+            "llvmlite>=0.42,<0.43",
+            "pytest"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install 'numpy>=1.22,<2' 'llvmlite>=0.42,<0.43' pytest",
+            "git checkout 30c17f24486c",
+            "python setup.py build_ext --inplace"
+          ],
+          "pinned_because": [
+            "numpy<2: era-inferred, not documented. The context gives no numpy constraint; numba 0.59 predates NumPy 2 support, so this is chosen to match the reporter's era.",
+            "llvmlite 0.42.x: era-inferred. It is the llvmlite line paired with numba 0.59; the context gives no documented constraint.",
+            "numba must be built from source at the buggy commit (build_ext --inplace) so the old_distributions.py change under test is what runs, rather than a released numba 0.59 wheel.",
+            "numba version 0.59: taken from issue #9493 reporter statement, not from a documented constraint; used only to pick the era of compatible numpy and llvmlite."
+          ]
+        },
+        "test_command": "timeout 900 python -m pytest numba/tests/test_np_randomgen.py -k test_binomial_specific_issues -v",
+        "reproducing_test": "numba/tests/test_np_randomgen.py::test_binomial_specific_issues (the subTest 'issue with midrange value branch #9493/#9734' with gen.binomial(301, 0.1, 100) is the decisive one; the subTest for binomial(700, 0.1, 100) can hang on the buggy revision and must be guarded by the timeout)",
+        "success_criterion": "On the buggy revision 30c17f24486c, test_binomial_specific_issues FAILS: the subTest 'issue with midrange value branch' reports that the jitted binomial(301, 0.1, 100) result does not precisely equal py_func's result, and the n=700 subTest may instead hang (killed by the timeout, which also counts as not passing). On the fixed revision the same test PASSES: both subTests produce results that are assertPreciseEqual to py_func under default_rng(0).",
+        "numerical_probe": "python -c \"import numpy as np; from numba import njit; f=njit(lambda g: g.binomial(301,0.1,3)); print(f(np.random.default_rng(0)), f.py_func(np.random.default_rng(0)))\" (buggy: jit [33,31,23] vs py_func [32,31,22]; fixed: equal)",
+        "input_output_examples": [
+          {
+            "input": "gen = np.random.default_rng(0); foo(gen) where foo is @jit and returns gen.binomial(301, 0.1, 3)",
+            "buggy_output": "[33, 31, 23]",
+            "expected_output": "[32, 31, 22]"
+          }
+        ],
+        "risks": [
+          "The provided test_commands entry 'python bug.py' is not the project's test; the plan uses the developer test in numba/tests/test_np_randomgen.py instead.",
+          "On the buggy revision the n=700 subTest may hang rather than fail, because of the missing fall-through to case 60; a timeout is required so the run terminates.",
+          "The exact buggy and expected values for size 100 are not given; only the size-3 draws [33,31,23] vs [32,31,22] are known. The test failure is expected from the subTest comparison but the precise failing numbers are unverified.",
+          "numpy and llvmlite pins are era-inferred (numba 0.59 era), not documented constraints. Using numpy 2.x may break the build or the py_func comparison, so the pin is required.",
+          "Only reproducible on a platform where the jitted BTPE path is exercised (standard x86_64 Linux assumed). Nothing in the evidence shows an architecture-, sanitizer- or threading-specific trigger, but this has not been verified on other platforms.",
+          "The test class name containing test_binomial_specific_issues is not stated in the diff context; -k selection avoids needing it, but confirm with grep if pytest selects zero tests.",
+          "Fixed numba version number is not stated in the evidence, so the fixed revision must be identified by the PR merge commit rather than by version."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "NumPy C Generator.binomial via py_func (numpy/random/src/distributions/distributions.c), as used by the developer test",
+          "why": "The outputs are integer counts; assertPreciseEqual compares them exactly against the py_func reference."
+        },
+        "fails_on_buggy": "The midrange subTest calls the jitted binomial(301, 0.1, 100) and compares it to py_func under default_rng(0). On the buggy revision the int() cast on p1 changes the BTPE draws, so the arrays differ and assertPreciseEqual raises; the n=700 subTest may instead loop forever.",
+        "passes_on_fixed": "With the int() cast removed from p1 and the fall-through to case 60 added, the jitted results match py_func for both n=700 and n=301, so both subTests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4142,
+        "output_tokens": 3722,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 10671,
+        "output_tokens": 2139,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

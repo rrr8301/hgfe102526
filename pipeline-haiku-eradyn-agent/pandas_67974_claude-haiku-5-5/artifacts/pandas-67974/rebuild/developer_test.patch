@@ -1,0 +1,123 @@
+diff --git a/pandas/tests/extension/list/test_list.py b/pandas/tests/extension/list/test_list.py
+index 3cb1c1916492c..4326475c1ec8d 100644
+--- a/pandas/tests/extension/list/test_list.py
++++ b/pandas/tests/extension/list/test_list.py
+@@ -31,3 +31,15 @@ def test_to_csv(data):
+     df = pd.DataFrame({"a": data})
+     res = df.to_csv()
+     assert str(data[0]) in res
++
++
++def test_append_internal_retains_dtype(data):
++    # GH#65431 boxing the values the row pre-cast compares must not read an
++    #  array of list-valued scalars as 2-D
++    df = pd.DataFrame({"a": data[:2]})
++    ser = pd.Series([[5, 6]], index=["a"], name=2)
++
++    result = df._append_internal(ser)
++
++    assert result["a"].dtype == data.dtype
++    assert list(result["a"]) == [*list(data[:2]), [5, 6]]
+diff --git a/pandas/tests/indexing/test_loc.py b/pandas/tests/indexing/test_loc.py
+index eaa5efcb95b02..3d6ff44a7ccac 100644
+--- a/pandas/tests/indexing/test_loc.py
++++ b/pandas/tests/indexing/test_loc.py
+@@ -2589,6 +2589,46 @@ def test_loc_setitem_with_expansion_pyarrow_finer_resolution(self):
+         )
+         tm.assert_series_equal(ser, expected)
+ 
++    @pytest.mark.parametrize(
++        "dtype, item",
++        [
++            # used to raise: pyarrow lets an OverflowError out of the cast.
++            #  Spelled out rather than "str" so the case survives with
++            #  future.infer_string disabled
++            (pd.StringDtype(na_value=np.nan), 2**70),
++            # used to raise: BaseMaskedArray._from_sequence rejects NaT
++            ("Int64", pd.NaT),
++            # used to land on an arrow period/interval type, which concat
++            #  then coerced back into the int64 column
++            ("int64[pyarrow]", pd.Period("2021-01-01", freq="D")),
++            ("int64[pyarrow]", pd.Interval(5, 6)),
++        ],
++    )
++    def test_loc_setitem_with_expansion_lossy_pre_cast(self, dtype, item):
++        # GH#65431 the pre-cast is only an optimization; when it raises or
++        #  lands on another dtype, the column widens to object
++        if "pyarrow" in str(dtype):
++            pytest.importorskip("pyarrow")
++        df = pd.DataFrame({"a": pd.Series([1, 2], dtype=dtype)})
++        original = list(df["a"])
++
++        with tm.assert_produces_warning(Pandas4Warning, match="incompatible dtype"):
++            df.loc[2] = [item]
++
++        expected = pd.DataFrame({"a": pd.Series([*original, item], dtype=object)})
++        tm.assert_frame_equal(df, expected)
++
++    def test_loc_setitem_with_expansion_sparse_na(self):
++        # GH#65431 pre-casting NaN gives Sparse[float64, nan], not the column's
++        #  Sparse[int64, 0]; adopting it used to turn the appended NaN into 0
++        df = pd.DataFrame({"a": pd.arrays.SparseArray([0, 1, 2], fill_value=0)})
++
++        with tm.assert_produces_warning(Pandas4Warning, match="incompatible dtype"):
++            df.loc[3] = [np.nan]
++
++        expected = pd.DataFrame({"a": pd.arrays.SparseArray([0.0, 1.0, 2.0, np.nan])})
++        tm.assert_frame_equal(df, expected)
++
+     def test_loc_setitem_with_expansion_multiindex_retains_dtypes(self):
+         # GH#17026
+         mi = pd.MultiIndex.from_tuples([("a", "c"), ("b", "c"), ("c", "d")])
+diff --git a/pandas/tests/reshape/concat/test_append.py b/pandas/tests/reshape/concat/test_append.py
+index 5abeb234851bb..87a9c8f1c8dae 100644
+--- a/pandas/tests/reshape/concat/test_append.py
++++ b/pandas/tests/reshape/concat/test_append.py
+@@ -345,3 +345,47 @@ def test_append_frame_with_timedelta64ns_nat(self, dtype_str, val):
+ 
+         expected = pd.DataFrame({"a": [df.iloc[0, 0], other.iloc[0, 0]]}, dtype=object)
+         tm.assert_frame_equal(result, expected)
++
++
++def test_append_internal_reordered_row_matches_by_label():
++    # GH#65431 the pre-cast matches positionally, so a reordered row has to be
++    #  left for concat to align by label
++    df = pd.DataFrame(
++        {"a": pd.array([1, 2], dtype="Int64"), "b": pd.array([1, 2], dtype="int64")}
++    )
++    ser = pd.Series({"b": 5, "a": 6}, name=2)
++
++    result = df._append_internal(ser)
++
++    expected = pd.DataFrame(
++        {
++            "a": pd.array([1, 2, 6], dtype="Int64"),
++            "b": pd.array([1, 2, 5], dtype="int64"),
++        },
++        index=[0, 1, 2],
++    )
++    tm.assert_frame_equal(result, expected)
++
++
++def test_append_internal_pre_cast_retains_numpy_dtype():
++    # GH#65431 a losslessly-holdable value is pre-cast, so concat keeps int64
++    #  instead of widening the column to float64
++    df = pd.DataFrame({"a": [1, 2]})
++    ser = pd.Series([3.0], index=["a"], name=2)
++
++    result = df._append_internal(ser)
++
++    expected = pd.DataFrame({"a": [1, 2, 3]}, index=[0, 1, 2])
++    tm.assert_frame_equal(result, expected)
++
++
++def test_append_internal_pre_cast_declines_narrowing():
++    # GH#65431 the pre-cast has to preserve the value, not just the dtype:
++    #  0.1 fits float32's dtype but not its precision, so the column widens
++    df = pd.DataFrame({"a": pd.Series([1, 2], dtype="float32")})
++    ser = pd.Series([0.1], index=["a"], name=2)
++
++    result = df._append_internal(ser)
++
++    expected = pd.DataFrame({"a": [1.0, 2.0, 0.1]}, index=[0, 1, 2])
++    tm.assert_frame_equal(result, expected)

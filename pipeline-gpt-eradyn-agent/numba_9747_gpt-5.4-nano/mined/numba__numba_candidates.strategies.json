@@ -1,0 +1,100 @@
+{
+  "input": "pipeline-gpt-5.4-nano/numba_9747_gpt-5.4-nano/mined/numba__numba_9747.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 8777,
+    "output_tokens": 2328,
+    "cost_usd": 0.004666,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "numba/numba",
+      "pr_number": 9747,
+      "reference": "https://github.com/numba/numba/pull/9747",
+      "buggy_commit": "30c17f24486ccfb63c2f46c8c8b69db0c9afd889",
+      "fixed_commit": "670ea3e5950d16c808da7044dcc55077d62d9fa3",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 4552,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce Numba\u2019s correctness bug in numpy.random.Generator.binomial for intermediate-size n by running the project\u2019s own added test `test_binomial_specific_issues` on the buggy Numba revision (30c17f24486c) and verifying that `assertPreciseEqual(got, expected)` fails for the subtest using (n=301, p=0.1, size=100) with RNG seed 0; the fixed revision should make it pass for both the (700,0.1,100) hang-regression and (301,0.1,100) midrange-branch correctness.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.10",
+          "pip_packages": [
+            "numpy",
+            "numba==<from revision build>",
+            "pytest"
+          ],
+          "system_packages": [
+            "git",
+            "gcc",
+            "g++",
+            "make"
+          ],
+          "build_commands": [
+            "git clone https://github.com/numba/numba.git",
+            "cd numba",
+            "git checkout 30c17f24486c",
+            "python -m pip install -U pip setuptools wheel",
+            "python -m pip install -e .[test]"
+          ],
+          "pinned_because": [
+            "No documented version constraints are provided in the evidence for numba or numpy; choose a modern baseline that supports Generator.binomial and Numba\u2019s test suite. The test should run under the same Python/NumPy versions for buggy vs fixed to ensure a clean transition."
+          ]
+        },
+        "test_command": "pytest -q numba/tests/test_np_randomgen.py::TestGenerator -k \"binomial_specific_issues\"",
+        "reproducing_test": "numba/tests/test_np_randomgen.py::TestGenerator::test_binomial_specific_issues (subTest: \"issue with midrange value branch #9493/#9734\")",
+        "success_criterion": "Buggy revision: the test runs `got = foo(gen1)` and `expected = foo.py_func(gen2)` for `gen.binomial(301, 0.1, 100)` with both generators seeded via `np.random.default_rng(0)`, and `self.assertPreciseEqual(got, expected)` fails (values differ). Fixed revision: `assertPreciseEqual` passes for that subtest (and also passes for the hang-regression subtest using `gen.binomial(700, 0.1, 100)`), so the whole `test_binomial_specific_issues` method succeeds.",
+        "numerical_probe": "None (the test compares arrays directly using `assertPreciseEqual`; do not separately inspect values beyond the assertion failure).",
+        "input_output_examples": [
+          {
+            "input": "Inside Numba-jitted `foo(gen) = gen.binomial(301, 0.1, 100)`; `gen1 = np.random.default_rng(0)` and `gen2 = np.random.default_rng(0)`; compare `got = foo(gen1)` vs `expected = foo.py_func(gen2)`.",
+            "buggy_output": "Test assertion fails because `got` and `expected` differ (example from issue: for size=3, NumPy gives `[32, 31, 22]` while Numba gave `[33, 31, 23]`; the size=100 test will similarly mismatch at least one element).",
+            "expected_output": "Test assertion passes: `got` matches `expected` exactly for the same seeded generators."
+          }
+        ],
+        "risks": [
+          "Hang risk: the test also includes `gen.binomial(700, 0.1, 100)`; on some buggy configurations this can hang indefinitely. Run with a test timeout (e.g., `pytest-timeout`) or execute in a subprocess with a wall-clock limit so the CI can still detect non-termination on the buggy revision.",
+          "Environment/version sensitivity: evidence does not specify exact numba/numpy/Python versions. If the bug is fixed in later releases or only triggers on certain version combinations, you may need to align NumPy/Numba to what the issue-reporter used; the evidence only states \u201cI'm using numba 0.59\u201d in an issue snippet, but it does not provide numpy version, so lock versions once you find a failing baseline.",
+          "Platform/toolchain differences: Numba random algorithms and compilation can vary with architecture and compiler (e.g., 32-bit vs 64-bit, different CPU vectorization). If the failure does not reproduce, try a different CPU/OS or build with default flags consistent across buggy/fixed.",
+          "RNG implementation dependence: correctness depends on matching NumPy\u2019s C implementation via Numba\u2019s generator. If upstream NumPy changes binomial semantics or the test suite is not aligned to that semantics, the expected-vs-got comparison will reflect that; keep NumPy constant across revisions. "
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "Numba\u2019s `foo.py_func(gen2)` path (pure Python execution using the same `Generator` object logic) is used as the reference oracle in the test via `assertPreciseEqual`.",
+          "why": "The added test explicitly uses `self.assertPreciseEqual(got, expected)` where `expected` is produced by `foo.py_func` for the same seeded generator. This enforces exact element-wise equality, not a tolerance-based comparison."
+        },
+        "fails_on_buggy": "`test_binomial_specific_issues` fails in the subtest \"issue with midrange value branch #9493/#9734\" because `assertPreciseEqual(got, expected)` does not hold for `gen.binomial(301, 0.1, 100)` under Numba commit `30c17f24486c` (midrange branch incorrect due to an incorrect `int` cast in `random_binomial_btpe`).",
+        "passes_on_fixed": "On the fixed commit for PR #9747, `assertPreciseEqual` holds for both subtests, so `test_binomial_specific_issues` completes successfully without mismatched results (and without the reported hang for n=700)."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 2396,
+        "output_tokens": 1228,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002014
+      },
+      "miner_usage": {
+        "input_tokens": 6381,
+        "output_tokens": 1100,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0026520000000000003,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

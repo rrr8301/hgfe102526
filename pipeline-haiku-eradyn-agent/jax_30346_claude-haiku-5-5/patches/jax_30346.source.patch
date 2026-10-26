@@ -1,0 +1,66 @@
+diff --git a/jax/_src/lax/lax.py b/jax/_src/lax/lax.py
+index 7ba24eb4064e..8925fe968cb6 100644
+--- a/jax/_src/lax/lax.py
++++ b/jax/_src/lax/lax.py
+@@ -4202,7 +4202,14 @@ def _exp2_lower(ctx, x, accuracy):
+ core.pp_eqn_rules[log_p] = _unary_with_accuracy_pp_rule
+ 
+ expm1_p = standard_unop(_float | _complex, 'expm1')
+-ad.defjvp2(expm1_p, lambda g, ans, x, **kwargs: mul(g, add(ans, _one(ans))))
++ad.defjvp2(
++    expm1_p,
++    lambda g, ans, x, accuracy: (
++        mul(g, exp(x, accuracy=accuracy))
++        if accuracy is AccuracyMode.HIGHEST
++        else mul(g, add(ans, _one(ans)))
++    ),
++)
+ mlir.register_lowering(expm1_p,
+                        partial(_nary_lower_hlo, hlo.exponential_minus_one))
+ core.pp_eqn_rules[expm1_p] = _unary_with_accuracy_pp_rule
+@@ -4215,7 +4222,14 @@ def _exp2_lower(ctx, x, accuracy):
+ tanh_p = standard_unop(_float | _complex, 'tanh')
+ ad.defjvp2(
+     tanh_p,
+-    lambda g, ans, x, **kwargs: mul(add(g, mul(g, ans)), sub(_one(x), ans)),
++    lambda g, ans, x, accuracy: mul(g,
++        mul(_const(x, 4),
++            mul(logistic(mul(_const(x, 2), x), accuracy=accuracy),
++                logistic(mul(_const(x, -2), x), accuracy=accuracy)),
++        ),
++    )
++    if accuracy is AccuracyMode.HIGHEST
++    else mul(add(g, mul(g, ans)), sub(_one(x), ans)),
+ )
+ mlir.register_lowering(tanh_p, partial(_nary_lower_hlo, hlo.tanh))
+ core.pp_eqn_rules[tanh_p] = _unary_with_accuracy_pp_rule
+@@ -4223,12 +4237,15 @@ def _exp2_lower(ctx, x, accuracy):
+ logistic_p = standard_unop(_float | _complex, 'logistic')
+ ad.defjvp2(
+     logistic_p,
+-    lambda g, ans, x, **kwargs: mul(g, mul(ans, sub(_one(ans), ans))),
++    lambda g, ans, x, accuracy: mul(g, mul(ans, logistic(neg(x))))
++    if accuracy is AccuracyMode.HIGHEST
++    else mul(g, mul(ans, sub(_one(ans), ans))),
+ )
+ # TODO(phawkins): switch to LogisticOp lowering; debug numerical problems.
+ # mlir.register_lowering(logistic_p, partial(_nary_lower_hlo, hlo.logistic))
+ 
+ def logistic_impl(x, accuracy):
++  del accuracy
+   one = _const(x, 1)
+   return div(one, add(one, exp(neg(x))))
+ 
+diff --git a/jax/lax/__init__.py b/jax/lax/__init__.py
+index c736894646e2..95c54bf05b3f 100644
+--- a/jax/lax/__init__.py
++++ b/jax/lax/__init__.py
+@@ -18,6 +18,8 @@
+ from jax._src.lax.lax import (
+   DotDimensionNumbers as DotDimensionNumbers,
+   RaggedDotDimensionNumbers as RaggedDotDimensionNumbers,
++  AccuracyMode as AccuracyMode,
++  Tolerance as Tolerance,
+   Precision as Precision,
+   PrecisionLike as PrecisionLike,
+   DotAlgorithm as DotAlgorithm,

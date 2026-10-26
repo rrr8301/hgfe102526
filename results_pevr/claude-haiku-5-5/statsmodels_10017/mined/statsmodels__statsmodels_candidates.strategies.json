@@ -1,0 +1,103 @@
+{
+  "input": "pipeline_no_historic/statsmodels_10017/mined/statsmodels__statsmodels_10017.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 15073,
+    "output_tokens": 4991,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10017,
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10017",
+      "buggy_commit": "da83c3b8e37fb382b06f8534534b9be88f42c7a4",
+      "fixed_commit": "2edccacdb602db748963e36766d57f722968a69e",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5935,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the acf missing='drop'/'conservative' bug by building the buggy statsmodels checkout and running the four TestACFMissing tests added in PR 10017 (test_qstat_drop, test_qstat_conservative, test_confint_drop, test_confint_conservative). On the buggy revision they should fail because nobs=len(x) includes NaNs; on the fixed revision (nobs=non-missing count, n=203 in the Stata check) they should pass against results_corrgram.csv.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "scipy",
+            "pandas",
+            "patsy",
+            "pytest",
+            "cython"
+          ],
+          "system_packages": [
+            "a C compiler toolchain (gcc or clang) for building the Cython extensions"
+          ],
+          "build_commands": [
+            "git checkout da83c3b8e37f",
+            "python -m pip install -U numpy scipy pandas patsy pytest cython",
+            "python setup.py build_ext --inplace"
+          ],
+          "pinned_because": [
+            "numpy: no documented constraint and no era ceiling in the context; unpinned, chosen as a current numpy that supports np.random.default_rng (needs numpy>=1.17). This is my choice, not a documented requirement.",
+            "statsmodels: no documented constraint; the revision under test is built from the checkout itself, so no version pin is applied. Build is required because the tree contains Cython extensions.",
+            "scipy, pandas, patsy, pytest: not named in the context; included as the usual statsmodels test dependencies, not as documented constraints."
+          ]
+        },
+        "test_command": "python -m pytest statsmodels/tsa/tests/test_stattools.py -k \"TestACFMissing\" -v",
+        "reproducing_test": "statsmodels/tsa/tests/test_stattools.py::TestACFMissing::test_qstat_drop, test_qstat_conservative, test_confint_drop, test_confint_conservative (added by the PR diff, which also adds cls.confint_res from results[[\"acvar_lb\",\"acvar_ub\"]] in setup_class)",
+        "success_criterion": "Transition: on the buggy revision da83c3b8e37f, test_qstat_drop and test_qstat_conservative fail with an AssertionError at DECIMAL_3 (qstat lag 1 about 0.795745 vs Stata 0.400857), and test_confint_drop and test_confint_conservative fail at DECIMAL_8 because the Bartlett half-width is too small (0.098000 vs 0.138590). On the fixed revision all four pass. The transition alone is the success criterion; no printed value is checked.",
+        "numerical_probe": "Reproducer: x = concatenate(default_rng(0).standard_normal(200), full(200, nan)); acf(x, nlags=10, qstat=True, alpha=0.05, missing='drop', fft=False); compare lag 1 qstat and confint half-width to the reference values.",
+        "input_output_examples": [
+          {
+            "input": "x_with_nans = concatenate(rng.standard_normal(200) with seed 0, np.full(200, nan)); acf(x_with_nans, nlags=10, qstat=True, alpha=0.05, missing=\"drop\", fft=False), lag 1",
+            "buggy_output": "confint half-width 0.098000; qstat 0.795745",
+            "expected_output": "confint half-width 0.138590; qstat 0.400857"
+          }
+        ],
+        "risks": [
+          "Platform: the defect is pure NumPy/Python arithmetic with no architecture, threading, or sanitizer dependence, so it should transition on any standard Linux or macOS x86_64 build. Nothing here needs a special platform.",
+          "The Cython build must succeed on the buggy commit before tests run; a stale build artifact from another revision would invalidate the transition.",
+          "Reference values 0.138590 and 0.400857 were hand-computed in the PR and not independently verified in the passages; the test's own reference is results_corrgram.csv (Stata), which is what the transition actually uses.",
+          "The truncated reproducer means the exact assertions in the PR body are not fully visible; the test file diff is the authority.",
+          "Only the test diff is known; the source fix diff in _stattools.py (varacf 1/len(x) -> 1/nobs in the non-Bartlett branch, plus nobs computation) is described in the context but not shown, so the fixed-revision behaviour of the Bartlett confint path depends on the merged commit containing that change.",
+          "The nobs==0 ValueError guard requested by the reviewer is not shown implemented; it does not affect the test transition for the 200-of-400 NaN input.",
+          "Passages do not give input dtype; the default float64 from standard_normal is assumed."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "assert_almost_equal DECIMAL_3 for qstat tests; DECIMAL_8 for confint tests",
+          "reference_source": "results_corrgram.csv (Stata), columns Q1, acvar, acvar_lb, acvar_ub, referenced by the test setup",
+          "why": "The reference is an independent Stata computation with n=203 effective observations after one leading NaN is prepended to realgdp (n_raw=204), so the Stata values define the correct nobs."
+        },
+        "fails_on_buggy": "On da83c3b8e37f, acf uses nobs=len(x)=400 (or 204 in the class setup) including NaNs, so the Bartlett variance and Ljung-Box q-statistic are too small; the qstat assertion compares res_drop[2][:40] to Stata Q1 at DECIMAL_3 and the confint assertion compares centered half-widths to Stata acvar_lb/acvar_ub at DECIMAL_8, both raising AssertionError.",
+        "passes_on_fixed": "On the fixed revision nobs equals the non-missing count (203), the qstat and centered confint match results_corrgram.csv within the stated decimals, and all four tests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4996,
+        "output_tokens": 2941,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 10077,
+        "output_tokens": 2050,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

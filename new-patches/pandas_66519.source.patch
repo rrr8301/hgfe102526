@@ -1,0 +1,62 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 7880da9ca61b3..b931c27b1102a 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -397,6 +397,8 @@ Conversion
+ - Bug in :class:`DataFrame` constructor where ``NaT`` in a :class:`TimedeltaIndex` row was incorrectly inferred as ``datetime64`` instead of ``timedelta64`` (:issue:`23985`)
+ - Bug in :class:`DataFrame` constructor where constructing from a list of uniform-dtype arrays (e.g. pyarrow, :class:`CategoricalDtype`, nullable dtypes) lost the dtype (:issue:`49593`)
+ - Bug in :func:`pd.array` silently converting NaN to a nonsensical integer when given float data containing NaN and a NumPy integer dtype (:issue:`41724`)
++- Bug in dtype inference from ``object``-dtype data (e.g. :class:`Series` construction, :meth:`Series.map`, :meth:`DataFrame.infer_objects`) raising ``OverflowError`` instead of inferring ``object`` dtype when given an integer outside the ``float64`` range (:issue:`66519`)
++- Bug in dtype inference from ``object``-dtype data (e.g. :class:`Series` construction, :meth:`Series.map`, :meth:`DataFrame.infer_objects`) returning ``float64`` instead of ``object`` when a ``None`` came before an integer outside the ``int64``/``uint64`` range, or before a mix of signed and unsigned integers; these now infer the same dtype as the equivalent data without the ``None`` (:issue:`66519`)
+ - Fixed :func:`pandas.array` to preserve mask information when converting NumPy masked arrays, converting masked values to missing values (:issue:`63879`)
+ - Fixed bug in :class:`DataFrame` constructor where mutating the result could corrupt the source :class:`Series` or :class:`Index` when built with ``dtype="str"`` and ``infer_string=False`` (:issue:`63936`)
+ - Fixed bug in :meth:`DataFrame.from_records` where ``exclude`` was ignored when ``data`` was an iterator and ``nrows=0`` (:issue:`63774`)
+diff --git a/pandas/_libs/lib.pyx b/pandas/_libs/lib.pyx
+index b75c09a113034..e39308870bd44 100644
+--- a/pandas/_libs/lib.pyx
++++ b/pandas/_libs/lib.pyx
+@@ -2897,16 +2897,38 @@ def maybe_convert_objects(ndarray[object] objects,
+                 break
+         elif util.is_integer_object(val):
+             seen.int_ = True
++            # GH#66519 flag signedness inline rather than via seen.saw_int, so
++            #  that the out-of-range bail-outs reuse its range comparisons. The
++            #  bail-outs must also precede the casts below, which raise
++            #  OverflowError once |val| exceeds the float64 range.
++            if val < 0:
++                if val < oINT64_MIN:
++                    seen.object_ = True
++                    break
++                seen.sint_ = True
++            elif val > oINT64_MAX:
++                if val > oUINT64_MAX:
++                    seen.object_ = True
++                    break
++                seen.uint_ = True
++            elif isinstance(val, cnp.signedinteger):
++                seen.sint_ = True
++            elif isinstance(val, cnp.unsignedinteger):
++                seen.uint_ = True
++
+             floats[i] = <float64_t>val
+             complexes[i] = <double complex>val
+-            if not seen.null_ or convert_to_nullable_dtype:
+-                seen.saw_int(val)
+ 
+-                if ((seen.uint_ and seen.sint_) or
+-                        val > oUINT64_MAX or val < oINT64_MIN):
+-                    seen.object_ = True
+-                    break
++            if seen.uint_ and seen.sint_:
++                # GH#66519 either the values straddle INT64_MAX, so no integer
++                #  dtype holds both, or numpy scalars of both signednesses were
++                #  mixed, which GH#47294 already resolves to object. Checked
++                #  outside the null gate below so a None before either value
++                #  cannot hide the conflict.
++                seen.object_ = True
++                break
+ 
++            if not seen.null_ or convert_to_nullable_dtype:
+                 if seen.uint_:
+                     uints[i] = val
+                 elif seen.sint_:

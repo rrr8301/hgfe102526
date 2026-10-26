@@ -1,0 +1,112 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/scipy_24558_claude-haiku-5-5/mined/scipy__scipy_24558.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 24714,
+    "output_tokens": 5592,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 24558,
+      "reference": "https://github.com/scipy/scipy/pull/24558",
+      "buggy_commit": "dd01e7df62f0ebdbc25c3a59dd6c4d693c07bed9",
+      "fixed_commit": "95c67a9700ff2e1e0a3f5f48e39d209cb08d79b0",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7835,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce scipy#24558: scipy.linalg.sqrtm on singular nilpotent inputs returns huge finite values (~2.49e+291) instead of inf and emits no LinAlgWarning. The developer test test_gh24508 (parametrized over float32, float64, complex64, complex128) must fail on the buggy commit dd01e7df62f0 and pass on the fixed revision. Environment: Python 3.12, numpy 2.3.3, scipy 1.16.3 as reported in issue #24508, OpenBLAS 0.3.30, gcc 11.2 with gfortran; build from source is required because the fix lives in C sources (_matfuncs_sqrtm.c and _common_array_utils.h).",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "numpy==2.3.3",
+            "pytest",
+            "pybind11==2.13.6",
+            "cython==3.1.4",
+            "pythran==0.18.0",
+            "meson-python",
+            "ninja"
+          ],
+          "system_packages": [
+            "gcc",
+            "gfortran",
+            "libopenblas-dev",
+            "pkg-config"
+          ],
+          "build_commands": [
+            "git checkout dd01e7df62f0",
+            "git submodule update --init",
+            "pip install -r requirements/build.txt",
+            "pip install --no-build-isolation -e . (or spin build)"
+          ],
+          "pinned_because": [
+            "numpy 2.3.3 and scipy 1.16.3 are the versions reported in issue #24508; these are reported observations, not documented constraints",
+            "pybind11 2.13.6, cython 3.1.4, pythran 0.18.0 come from the issue's show_config build dependencies; numerically irrelevant, era-inferred only",
+            "OpenBLAS 0.3.30 from show_config; the LAPACK ?trsyl/dlanv2 path is where the garbage values originate"
+          ]
+        },
+        "test_command": "python -m pytest scipy/linalg/tests/test_matfuncs.py -k test_gh24508 -v",
+        "reproducing_test": "scipy/linalg/tests/test_matfuncs.py::TestSqrtm::test_gh24508 (parametrized dtyp in float32, float64, complex64, complex128)",
+        "success_criterion": "On buggy dd01e7df62f0 the test fails: sqrtm returns finite values (~2.49e+291) in res[0,1:] so np.isinf is false, and/or pytest.warns(LinAlgWarning, match='Matrix is singular.') fails because no warning is raised. On the fixed revision the test passes: a LinAlgWarning with the message 'Matrix is singular.' is emitted and res[0,1:] are all inf, for all four dtypes.",
+        "numerical_probe": "python -c \"import numpy as np, scipy.linalg as sl, warnings; warnings.simplefilter('always'); print(sl.sqrtm(np.array([[0,2,2],[0,0,0],[0,0,0]],dtype=np.float64)))\"",
+        "input_output_examples": [
+          {
+            "input": "scipy.linalg.sqrtm(np.array([[0, 2, 2], [0, 0, 0], [0, 0, 0]]))",
+            "buggy_output": "array([[0.00000000e+000, 2.49480039e+291, 2.49480039e+291], [0.00000000e+000, 0.00000000e+000, 0.00000000e+000], [0.00000000e+000, 0.00000000e+000, 0.00000000e+000]])",
+            "expected_output": "upper-right entries are inf, with a LinAlgWarning raised"
+          },
+          {
+            "input": "scipy.linalg.sqrtm([[0, 1], [0, 0]])",
+            "buggy_output": "array([[ 0., inf], [ 0.,  0.]]) with no warning",
+            "expected_output": "the same array with a LinAlgWarning: Matrix is singular. The result might be inaccurate or the array might not have a square root."
+          }
+        ],
+        "risks": [
+          "The failure is a wrong-value / missing-warning defect, so the transition depends on the warning being absent on buggy code; the test's pytest.warns will fail there for the right reason only if the warning path is not triggered by other code.",
+          "The n==3 Sylvester 1x2/2x1 branch in the C code is the only path the evidence covers; the test does not exercise other sizes, and no tolerance is stated, so the check is inf and warning, not closeness.",
+          "The 2.49e+291 value comes from LAPACK ?trsyl and dlanv2 behaviour; the issue author suspects dlanv2 does not return 0.0. Whether garbage appears depends on OpenBLAS/LAPACK build and on isSchur reading out of bounds, which relies on platform memory zeroing. A reference LAPACK or a different OpenBLAS build may not reproduce the large value even on the buggy commit, and an ASan/valgrind build would expose the undefined read instead.",
+          "Two dependency versions (numpy 2.3.3, scipy 1.16.3) are reported observations from the issue, not documented constraints; the build is against the buggy commit's own source, so the scipy version is determined by the checkout rather than pip. Using a different numpy ABI with the buggy build may change behaviour.",
+          "The test is parametrized over float32 and complex64; single precision trsyl paths (strsyl/ctrsyl) may behave differently from double, so a pass on float64 does not prove the single-precision branches transition.",
+          "The C fix is in shared array utilities, so an incremental rebuild may be needed after switching between buggy and fixed revisions; stale build artifacts could make both runs look the same."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "the developer test assertions: pytest.warns(LinAlgWarning, match='Matrix is singular.') and np.isinf(res[0,1:]).all()",
+          "why": "The developer test checks explicit inf entries and a warning rather than closeness, so no numeric tolerance applies."
+        },
+        "fails_on_buggy": "On dd01e7df62f0, sqrtm returns finite values of about 2.49e+291 in res[0,1:] and emits no LinAlgWarning. np.isinf(res[0,1:]).all() is False and pytest.warns fails with no warning recorded, so the test fails.",
+        "passes_on_fixed": "On the fixed revision, sqrtm sets INFINITY for the zero-diagonal Sylvester case and emits LinAlgWarning 'Matrix is singular...'. np.isinf holds for res[0,1:] and pytest.warns matches, for all four dtypes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5419,
+        "output_tokens": 2165,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 19295,
+        "output_tokens": 3427,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

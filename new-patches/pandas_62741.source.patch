@@ -1,0 +1,100 @@
+diff --git a/doc/source/whatsnew/v3.0.0.rst b/doc/source/whatsnew/v3.0.0.rst
+index 42eeff68712ec..c8c6bd799f5e7 100644
+--- a/doc/source/whatsnew/v3.0.0.rst
++++ b/doc/source/whatsnew/v3.0.0.rst
+@@ -1087,6 +1087,7 @@ I/O
+ - Bug in :meth:`HDFStore.select` causing queries on categorical string columns to return unexpected results (:issue:`57608`)
+ - Bug in :meth:`MultiIndex.factorize` incorrectly raising on length-0 indexes (:issue:`57517`)
+ - Bug in :meth:`read_csv` causing segmentation fault when ``encoding_errors`` is not a string. (:issue:`59059`)
++- Bug in :meth:`read_csv` for the ``c`` and ``python`` engines where parsing numbers with large exponents caused overflows. Now, numbers with large positive exponents are parsed as ``inf`` or ``-inf`` depending on the sign of the mantissa, while those with large negative exponents are parsed as ``0.0`` (:issue:`62617`, :issue:`38794`, :issue:`62740`)
+ - Bug in :meth:`read_csv` raising ``TypeError`` when ``index_col`` is specified and ``na_values`` is a dict containing the key ``None``. (:issue:`57547`)
+ - Bug in :meth:`read_csv` raising ``TypeError`` when ``nrows`` and ``iterator`` are specified without specifying a ``chunksize``. (:issue:`59079`)
+ - Bug in :meth:`read_csv` where the order of the ``na_values`` makes an inconsistency when ``na_values`` is a list non-string values. (:issue:`59303`)
+diff --git a/pandas/_libs/src/parser/tokenizer.c b/pandas/_libs/src/parser/tokenizer.c
+index a5cfd0e13ceec..de1fc3c295f34 100644
+--- a/pandas/_libs/src/parser/tokenizer.c
++++ b/pandas/_libs/src/parser/tokenizer.c
+@@ -1620,9 +1620,9 @@ double precise_xstrtod(const char *str, char **endptr, char decimal, char sci,
+   }
+ 
+   double number = 0.;
+-  int exponent = 0;
+-  int num_digits = 0;
+-  int num_decimals = 0;
++  long int exponent = 0;
++  long int num_digits = 0;
++  long int num_decimals = 0;
+ 
+   // Process string of digits.
+   while (isdigit_ascii(*p)) {
+@@ -1671,39 +1671,26 @@ double precise_xstrtod(const char *str, char **endptr, char decimal, char sci,
+     if (maybe_int != NULL)
+       *maybe_int = 0;
+ 
+-    // Handle optional sign
+-    negative = 0;
+-    switch (*++p) {
+-    case '-':
+-      negative = 1;
+-      PD_FALLTHROUGH; // Fall through to increment position.
+-    case '+':
+-      p++;
+-      break;
+-    }
++    // move past scientific notation
++    p++;
+ 
+-    // Process string of digits.
+-    num_digits = 0;
+-    int n = 0;
+-    while (num_digits < max_digits && isdigit_ascii(*p)) {
+-      n = n * 10 + (*p - '0');
+-      num_digits++;
+-      p++;
+-    }
++    char *tmp_ptr;
++    long int n = strtol(p, &tmp_ptr, 10);
+ 
+-    if (negative)
+-      exponent -= n;
+-    else
+-      exponent += n;
++    if (errno == ERANGE || checked_add(exponent, n, &exponent)) {
++      errno = 0;
++      exponent = n;
++    }
+ 
+     // If no digits after the 'e'/'E', un-consume it.
+-    if (num_digits == 0)
++    if (tmp_ptr == p)
+       p--;
++    else
++      p = tmp_ptr;
+   }
+ 
+   if (exponent > 308) {
+-    *error = ERANGE;
+-    return HUGE_VAL;
++    number = number == 0 ? 0 : number < 0 ? -HUGE_VAL : HUGE_VAL;
+   } else if (exponent > 0) {
+     number *= e[exponent];
+   } else if (exponent < -308) { // Subnormal
+@@ -1718,9 +1705,6 @@ double precise_xstrtod(const char *str, char **endptr, char decimal, char sci,
+     number /= e[-exponent];
+   }
+ 
+-  if (number == HUGE_VAL || number == -HUGE_VAL)
+-    *error = ERANGE;
+-
+   if (skip_trailing) {
+     // Skip trailing whitespace.
+     while (isspace_ascii(*p))
+@@ -1812,8 +1796,6 @@ double round_trip(const char *p, char **q, char decimal, char Py_UNUSED(sci),
+     *maybe_int = 0;
+   if (PyErr_Occurred() != NULL)
+     *error = -1;
+-  else if (r == Py_HUGE_VAL)
+-    *error = (int)Py_HUGE_VAL;
+   PyErr_Clear();
+ 
+   PyGILState_Release(gstate);

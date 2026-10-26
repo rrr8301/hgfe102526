@@ -1,0 +1,355 @@
+{
+  "repo": "statsmodels/statsmodels",
+  "pr_number": 10229,
+  "reference": "https://github.com/statsmodels/statsmodels/pull/10229",
+  "buggy_commit": "522283ef64247f8d465b766684f01631c34b1561",
+  "fixed_commit": "a0e465d212006e3de3af37958444d1f3b2d85ccb",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "numpy",
+        "constraint": null,
+        "documented": false,
+        "numerically_relevant": true,
+        "source": "Used in the reproducer: `import numpy as np` and `np.random.default_rng`, `np.append`, `np.column_stack`, `np.isnan`."
+      },
+      {
+        "name": "scipy",
+        "constraint": null,
+        "documented": false,
+        "numerically_relevant": true,
+        "source": "Used in the reproducer: `from scipy import stats` and reference values via `stats.norm.logcdf(z).sum()`; PR text references `scipy's log_ndtr`/`norm.logcdf`/`norm.logpdf`."
+      },
+      {
+        "name": "statsmodels",
+        "constraint": null,
+        "documented": false,
+        "numerically_relevant": true,
+        "source": "Used as `import statsmodels.api as sm` and `sm.Probit(y, X)`; PR/issue refer to tests like `pytest statsmodels/discrete/tests`."
+      }
+    ],
+    "installation_commands": [
+      "python -m pip install -i https://pypi.anaconda.org/scientific-python-nightly-wheels/simple statsmodels --upgrade --use-deprecated=legacy-resolver"
+    ],
+    "build_commands": [],
+    "test_commands": [
+      "pytest statsmodels/discrete/tests",
+      "pytest statsmodels/tools/tests/test_numdiff.py"
+    ],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: numpy \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: scipy \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: statsmodels \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "numpy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "Used in the reproducer: `import numpy as np` and `np.random.default_rng`, `np.append`, `np.column_stack`, `np.isnan`."
+      },
+      {
+        "package": "scipy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "Used in the reproducer: `from scipy import stats` and reference values via `stats.norm.logcdf(z).sum()`; PR text references `scipy's log_ndtr`/`norm.logcdf`/`norm.logpdf`."
+      },
+      {
+        "package": "statsmodels",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "Used as `import statsmodels.api as sm` and `sm.Probit(y, X)`; PR/issue refer to tests like `pytest statsmodels/discrete/tests`."
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "statsmodels.discrete.discrete_model.Probit",
+    "observed_behavior": "For extreme linear predictors (q*XB below about -8), Probit log-likelihood is computed as log(clip(cdf(z), FLOAT_EPS, 1)), producing a flat constant contribution log(eps) = -36.04 instead of the falling log(Phi(z)); the score uses the same clipped cdf in the Mills ratio so extreme observations contribute ~0 instead of a value growing like |z|; hessian/hessian_factor return nan below about z = -38. In the provided example, this yields wrong llf (-155.934 vs exact -1924.904), wrong-signed score ([-4.874, 7.393] vs exact [-64.891, -2393.273]), nan Hessian entries (np.isnan(...).any() == True), and bfgs fit ending at spurious params with nan bse (params [-0.036, 1.72], bse [nan, nan], llf -155.067 vs exact optimum params [-0.129, 0.077], llf -202.674).",
+    "expected_behavior": "Compute log-likelihood as log(Phi(z)) without clipping (use log_ndtr(z) instead of log(clip(cdf(z), FLOAT_EPS, 1))), compute Mills ratio in stable log space (exp(logpdf(z) - log_ndtr(z))) so inverse Mills ratio remains finite, and therefore avoid wrong llf/score sign and avoid nan Hessian for extreme z.",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "q * XB below about -8 (extreme misclassified observation) causes log(clip(cdf(z), FLOAT_EPS, 1)) to be flat at log(eps) = -36.04 instead of continuing to fall",
+      "hessian and hessian_factor do not clip and return nan below about z = -38",
+      "a single extreme, misclassified observation in the sample (via appending x=40.0 and y=0)",
+      "running Probit fit with gradient-based optimizer such as fit(method=\"bfgs\") can stop at spurious points due to wrong-signed score"
+    ],
+    "input_output_examples": [
+      {
+        "input": "params = [0.0, 1.5] on model Probit(y, X) where n=300, x = rng.standard_normal(300) with rng seed 1, y = (1.5*x + rng.standard_normal(n) > 0).astype(int), then x = append(x, 40.0), y = append(y, 0), and X = column_stack([ones(n+1), x]).",
+        "buggy_output": "model.loglike(params) = -155.934",
+        "expected_output": "Exact value -1924.904",
+        "value_kind": "float",
+        "source": "issue#10228 repro output"
+      },
+      {
+        "input": "Same setup as above, params = [0.0, 1.5].",
+        "buggy_output": "model.score(params) = [-4.874, 7.393]",
+        "expected_output": "Exact value [-64.891, -2393.273]",
+        "value_kind": "array",
+        "source": "issue#10228 repro output"
+      },
+      {
+        "input": "Same setup as above, params = [0.0, 1.5].",
+        "buggy_output": "np.isnan(model.hessian(params)).any() == True",
+        "expected_output": null,
+        "value_kind": "property",
+        "source": "issue#10228 repro output"
+      },
+      {
+        "input": "Same setup as above, res = model.fit(method=\"bfgs\", disp=0).",
+        "buggy_output": "res.params = [-0.036, 1.72], res.bse = [nan, nan], res.llf = -155.067",
+        "expected_output": "Exact optimum: params [-0.129, 0.077], llf -202.674",
+        "value_kind": "array",
+        "source": "issue#10228 repro output"
+      }
+    ],
+    "oracle_clues": [
+      "Problem statement quantifies the expected difference: log(Phi(z)) keeps falling (e.g., -53.2 at z=-10 and -804.6 at z=-40) while clipped computation is flat at log(eps) = -36.04 when q*XB below about -8.",
+      "Reference expected values in the repro are explicitly provided as \u201cexact\u201d for loglike, score, and the optimum llf/params for the given constructed dataset.",
+      "Correctness judgment uses scipy\u2019s log_ndtr/norm.logcdf and norm.logpdf/logpdf parts (per PR description), and derivative checks against scipy references; bfgs should converge to the same optimum as direct scipy.optimize.minimize of the exact log-likelihood with finite bse."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": null,
+    "precision": null,
+    "magnitude": "Extreme linear predictor regimes: q*XB below about -8 (log(clip(cdf(z), eps, 1)) flat at log(eps)) and below about -38 (log(cdf(z)) underflows to -inf; hessian returns nan where q*XB < -38; also reproduction uses z spanning -1e4..1e4 and includes an extreme x=40.0 misclassified observation).",
+    "tolerance": null,
+    "category_specific_evidence": [
+      "compute Probit loglike, score and hessian in log space because Probit previously evaluated log(clip(cdf(z), eps, 1)), which is flat at log(eps) for q*XB below about -8 while log(Phi(z)) keeps falling",
+      "log(cdf(z)) underflows to -inf below about -38; hessian did not clip and returned nan below z = -38",
+      "with an extreme misclassified observation this gave a wrong llf, a wrong-signed score, a nan Hessian and spurious bfgs optima with nan bse",
+      "The hessian is nan at any params where some q*XB < -38 (stated in issue reproduction discussion)",
+      "Reference/stable quantities are scipy's log_ndtr/norm.logcdf and norm.logpdf; match to R's pnorm(log.p=TRUE) and dnorm(log=TRUE) (PR description)",
+      "Test note: log_ndtr-based computation is exact and agrees with the stable reference; score_obs and hessian are asserted finite for z in [-1e4, 1e4] (test description)",
+      "Issue reproduction prints model.loglike(params) = -155.934 vs stats.norm.logcdf(z).sum() = -1924.904; model.score(params) = [-4.874  7.393] vs exact = [-64.891  -2393.273]; np.isnan(model.hessian(params)).any() = True",
+      "Issue reproduction after fit(method='bfgs'): res.params = [-0.036  1.72], res.bse = [nan nan], res.llf = -155.067 vs exact optimum params = [-0.129  0.077], llf = -202.674 (printed values)"
+    ],
+    "reproduction_risks": [
+      "If the extreme linear predictor regime is not triggered (e.g., q*XB not below about -8 and -38), the numerical pathology (flat loglike, underflow to -inf, nan Hessian) may not appear.",
+      "Using the same data construction (including x=40.0 appended and y appended with 0) and method/parameters (Probit, params=[0.0,1.5]) affects whether the incorrect llf/score/hessian NaNs and spurious bfgs optimum with nan bse are reproduced.",
+      "Omitting comparisons against the stable reference (stats.norm.logcdf(z).sum() and Mills ratio via log_ndtr/logpdf-log_ndtr) may hide the mathematical violation even if the model output is numerically unstable."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "issue",
+      "evidence_location": "issue:issue#10228"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "python -m pip install -i https://pypi.anaconda.org/scientific-python-nightly-wheels/simple statsmodels --upgrade --use-deprecated=legacy-resolver"
+      ],
+      "source": "issue",
+      "evidence_location": "issue:issue#10228"
+    },
+    {
+      "field": "environment.test_commands",
+      "value": [
+        "pytest statsmodels/discrete/tests",
+        "pytest statsmodels/tools/tests/test_numdiff.py"
+      ],
+      "source": "issue",
+      "evidence_location": "issue:issue#10228"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "numpy",
+      "source": "Used in the reproducer: `import numpy as np` and `np.random.default_rng`, `np.append`, `np.column_stack`, `np.isnan`.",
+      "evidence_location": "issue:issue#10228"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "scipy",
+      "source": "Used in the reproducer: `from scipy import stats` and reference values via `stats.norm.logcdf(z).sum()`; PR text references `scipy's log_ndtr`/`norm.logcdf`/`norm.logpdf`.",
+      "evidence_location": "issue:issue#10228"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "statsmodels",
+      "source": "Used as `import statsmodels.api as sm` and `sm.Probit(y, X)`; PR/issue refer to tests like `pytest statsmodels/discrete/tests`.",
+      "evidence_location": "issue:issue#10228"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "statsmodels.discrete.discrete_model.Probit",
+      "source": "issue",
+      "evidence_location": "issue:issue#10228"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "For extreme linear predictors (q*XB below about -8), Probit log-likelihood is computed as log(clip(cdf(z), FLOAT_EPS, 1)), producing a flat constant contribution log(eps) = -36.04 instead of the falling log(Phi(z)); the score uses the same clipped cdf in the Mills ratio so extreme observations contribute ~0 instead of a value growing like |z|; hessian/hessian_factor return nan below about z = -38. In the provided example, this yields wrong llf (-155.934 vs exact -1924.904), wrong-signed score ([-4.874, 7.393] vs exact [-64.891, -2393.273]), nan Hessian entries (np.isnan(...).any() == True), and bfgs fit ending at spurious params with nan bse (params [-0.036, 1.72], bse [nan, nan], llf -155.067 vs exact optimum params [-0.129, 0.077], llf -202.674).",
+      "source": "issue",
+      "evidence_location": "issue:issue#10228"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "Compute log-likelihood as log(Phi(z)) without clipping (use log_ndtr(z) instead of log(clip(cdf(z), FLOAT_EPS, 1))), compute Mills ratio in stable log space (exp(logpdf(z) - log_ndtr(z))) so inverse Mills ratio remains finite, and therefore avoid wrong llf/score sign and avoid nan Hessian for extreme z.",
+      "source": "issue",
+      "evidence_location": "issue:issue#10228"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "issue",
+      "evidence_location": "issue:issue#10228"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 4,
+      "source": "issue",
+      "evidence_location": "issue:issue#10228"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 3,
+      "source": "issue",
+      "evidence_location": "issue:issue#10228"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 4,
+      "source": "issue",
+      "evidence_location": "issue:issue#10228"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "Extreme linear predictor regimes: q*XB below about -8 (log(clip(cdf(z), eps, 1)) flat at log(eps)) and below about -38 (log(cdf(z)) underflows to -inf; hessian returns nan where q*XB < -38; also reproduction uses z spanning -1e4..1e4 and includes an extreme x=40.0 misclassified observation).",
+      "source": "diff",
+      "evidence_location": "diff:statsmodels/discrete/discrete_model.py:3071-3077"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 8,
+      "source": "diff",
+      "evidence_location": "diff:statsmodels/discrete/discrete_model.py:3071-3077"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "diff",
+      "evidence_location": "diff:statsmodels/discrete/discrete_model.py:3071-3077"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "issue:issue#10228",
+        "readme:README.md",
+        "pr_body:PR#10229",
+        "readme:README.md",
+        "diff:statsmodels/discrete/discrete_model.py:3071-3077",
+        "commit:commits",
+        "pr_body:PR#10229",
+        "issue:issue#10228"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "issue:issue#10228",
+        "pr_body:PR#10229",
+        "commit:commits",
+        "issue:issue#10228",
+        "diff:statsmodels/discrete/discrete_model.py:3071-3077",
+        "discussion:PR#10229",
+        "pr_body:PR#10229",
+        "pr_body:PR#10229"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "diff:statsmodels/discrete/discrete_model.py:3071-3077",
+        "pr_body:PR#10229",
+        "issue:issue#10228",
+        "issue:issue#10228",
+        "test_diff:statsmodels/discrete/tests/test_discrete.py:4187-4259",
+        "commit:commits",
+        "discussion:PR#10229",
+        "diff:statsmodels/discrete/discrete_model.py:3132-3138"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 1.0,
+        "required_total": 2,
+        "required_present": 2,
+        "required_missing": [],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          },
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          }
+        ],
+        "present": [
+          "environment.test_commands",
+          "environment.dependencies"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 1.0,
+        "required_total": 5,
+        "required_present": 5,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 6870,
+    "output_tokens": 2024,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.0039040000000000004,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": []
+}

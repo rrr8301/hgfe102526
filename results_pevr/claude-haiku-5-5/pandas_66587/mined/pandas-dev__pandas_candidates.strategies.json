@@ -1,0 +1,112 @@
+{
+  "input": "pipeline_no_historic/pandas_66587/mined/pandas-dev__pandas_66587.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 23238,
+    "output_tokens": 6086,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66587,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66587",
+      "buggy_commit": "eac34231b720d3f9fa2130bc87dcfc607f2138c2",
+      "fixed_commit": "8fc770484c6bac9cc7adee691278d0743c9dde62",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 8603,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the groupby timedelta64 sum overflow in pandas at buggy commit eac34231b720 by building pandas from source and running the developer's added tests in pandas/tests/groupby/test_reductions.py; the transition is failing (wrapped value / NaT returned instead of OutOfBoundsTimedelta or -1 ns) on buggy and passing on the fixed revision.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain (gcc or clang)",
+            "git"
+          ],
+          "build_commands": [
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy, python-dateutil, tzdata and Cython have no documented version constraint and no era ceiling in the evidence, so no pin is asserted; versions are left to the build's default resolution, and the choice is unverified.",
+            "tzdata is only documented as required on Windows/Emscripten, so it is not pinned for Linux reproduction."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/groupby/test_reductions.py -k 'test_groupby_sum_timedelta_overflow or test_groupby_sum_int64_still_wraps' -v",
+        "reproducing_test": "pandas/tests/groupby/test_reductions.py::test_groupby_sum_timedelta_overflow, test_groupby_sum_timedelta_overflow_sentinel, test_groupby_sum_timedelta_overflow_na_result, test_groupby_sum_int64_still_wraps",
+        "success_criterion": "On the buggy revision eac34231b720, test_groupby_sum_timedelta_overflow and test_groupby_sum_timedelta_overflow_sentinel fail because pytest.raises(OutOfBoundsTimedelta) is not satisfied (no exception raised, wrapped Timedelta or NaT returned) and the order-independence assertion for [mx, mn, mx] does not match -1 ns; on the fixed revision all four tests pass, with test_groupby_sum_int64_still_wraps passing on both revisions since plain int64 behaviour is unchanged.",
+        "numerical_probe": "Series([pd.Timedelta.max]*2).groupby([0,0]).sum()[0] should raise OutOfBoundsTimedelta on fixed code and return Timedelta('-1 days +23:59:59.999999998') on buggy code.",
+        "input_output_examples": [
+          {
+            "input": "Series([Timedelta.max] * 2).groupby([0, 0]).sum()[0]",
+            "buggy_output": "Timedelta('-1 days +23:59:59.999999998')",
+            "expected_output": "OutOfBoundsTimedelta: overflow in timedelta operation"
+          },
+          {
+            "input": "Series([Timedelta.min, Timedelta(-1, \"ns\"), Timedelta.max]).groupby([0, 0, 0]).sum(skipna=False)[0]",
+            "buggy_output": "NaT",
+            "expected_output": "Timedelta(-1, 'ns') (-1 ns)"
+          },
+          {
+            "input": "Series([Timedelta.min, Timedelta(-1,'ns')]).groupby([0, 0]).sum()",
+            "buggy_output": "not stated in evidence",
+            "expected_output": "OutOfBoundsTimedelta with match 'overflow'"
+          }
+        ],
+        "risks": [
+          "The buggy behaviour is a 64-bit int64 accumulator wrap; it is not architecture-dependent in principle, but the expected index uses np.intp, so the int64 index assertions in the tests break on 32-bit Linux and Pyodide. Run on a 64-bit x86_64 or aarch64 Linux host.",
+          "The sentinel case depends on NPY_NAT being the int64 minimum; the evidence does not show any platform-specific sentinel difference, so this is assumed, not verified.",
+          "The fix's behaviour agrees with GH-66582 Series.sum exactness; if either PR changes sentinel handling, expectations may shift.",
+          "check_dtype=False in the order-independence test means the dtype of the expected value is not pinned by the evidence, so a dtype mismatch is not the failing signal to rely on.",
+          "The min_count/NA-result test expects NaT without raising; this path is not one the evidence shows failing on buggy code, so it may pass on both revisions.",
+          "The evidence does not state the PR date or the exact pandas build the tests were validated against; the environment versions are unpinned and may differ from the original observation environment.",
+          "Build from source requires Cython; the editable build is slow and needs a working C compiler, and failures there would prevent any transition from being observed."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "exact Python-int model of the timedelta accumulator, as cited in the evidence, and the explicit pytest.raises expectations in the developer tests",
+          "why": "Overflow raising and the -1 ns total are exact integer conditions in int64 nanoseconds, so no tolerance applies."
+        },
+        "fails_on_buggy": "On buggy eac34231b720, Series([Timedelta.max]*2).groupby([0,0]).sum() returns a wrapped Timedelta instead of raising, so pytest.raises(OutOfBoundsTimedelta) reports 'DID NOT RAISE' and the test fails; the sentinel test similarly fails on the raises check and on the [mx, mn, mx] result being NaT rather than -1 ns.",
+        "passes_on_fixed": "On the fixed revision the overflowing groups raise OutOfBoundsTimedelta with 'overflow in timedelta operation', in-range groups return the expected Timedelta values with intp index, the order-independent totals equal -1 ns, and plain int64 Series([2**62]*4) still wraps to 0."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6839,
+        "output_tokens": 1979,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 16399,
+        "output_tokens": 4107,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

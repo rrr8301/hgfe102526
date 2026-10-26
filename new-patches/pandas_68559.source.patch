@@ -1,0 +1,37 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index f7bd58a543954..2f4d5ba90d3e5 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -1148,6 +1148,7 @@ Sparse
+ - Bug in :meth:`DataFrame.median` and :meth:`DataFrame.sem` on :class:`SparseDtype` columns reporting a different subtype than the equivalent dense column when the result is a missing value (:issue:`68487`)
+ - Bug in :meth:`DataFrame.prod`, :meth:`DataFrame.median`, :meth:`DataFrame.var`, :meth:`DataFrame.std`, :meth:`DataFrame.sem`, :meth:`DataFrame.skew`, :meth:`DataFrame.kurt`, :meth:`DataFrame.describe`, and their :class:`Series` counterparts raising ``TypeError: cannot perform <op> with type Sparse[...]`` on :class:`SparseDtype` data; :meth:`SparseArray.prod`, :meth:`SparseArray.median`, :meth:`SparseArray.var`, :meth:`SparseArray.std`, :meth:`SparseArray.sem`, :meth:`SparseArray.skew`, and :meth:`SparseArray.kurt` now exist to match (:issue:`68194`)
+ - Bug in :meth:`Series.any`, :meth:`Series.all`, :meth:`DataFrame.any`, :meth:`DataFrame.all`, :meth:`SparseArray.any`, and :meth:`SparseArray.all` mishandling missing values on :class:`SparseDtype` data: with ``skipna=True`` a missing value was reduced for its own truthiness instead of being skipped, and with ``skipna=False`` missing values were dropped instead of reduced; :meth:`SparseArray.any` and :meth:`SparseArray.all` also raised a ``TypeError`` when called with the ``skipna`` argument (:issue:`68390`)
++- Bug in :meth:`Series.any`, :meth:`Series.all`, :meth:`DataFrame.any`, :meth:`DataFrame.all`, :meth:`SparseArray.any`, and :meth:`SparseArray.all` raising ``TypeError: boolean value of NA is ambiguous`` with ``skipna=False`` on numeric or ``timedelta64`` :class:`SparseDtype` data whose fill value is ``pd.NA``, which is what sparsifying a nullable numeric array produces (:issue:`68559`)
+ - Bug in :meth:`Series.any`, :meth:`Series.all`, :meth:`DataFrame.any`, :meth:`DataFrame.all`, :meth:`SparseArray.any`, and :meth:`SparseArray.all` returning a result on datetime64 :class:`SparseDtype` data instead of raising ``TypeError`` the way the dense equivalents do (:issue:`68438`)
+ - Bug in :meth:`Series.argmin`, :meth:`Series.argmax`, :meth:`Series.idxmin`, :meth:`Series.idxmax`, :meth:`DataFrame.idxmin`, :meth:`DataFrame.idxmax`, :meth:`SparseArray.argmin`, and :meth:`SparseArray.argmax` raising ``ValueError: attempt to get argmin of an empty sequence`` on :class:`SparseDtype` data with no non-missing stored values, when the non-missing ``fill_value`` occupies at least one position, instead of returning the first such position (:issue:`68462`)
+ - Bug in :meth:`Series.cumsum`, :meth:`Series.cumprod`, :meth:`Series.cummin`, :meth:`Series.cummax` and their :class:`DataFrame` counterparts raising ``NotImplementedError`` on :class:`SparseDtype` data (:issue:`68187`)
+diff --git a/pandas/core/arrays/sparse/array.py b/pandas/core/arrays/sparse/array.py
+index 87aa87e899aac..d7f1dea2c7508 100644
+--- a/pandas/core/arrays/sparse/array.py
++++ b/pandas/core/arrays/sparse/array.py
+@@ -1830,6 +1830,10 @@ def all(self, axis=None, *args, skipna: bool = True, **kwargs) -> bool:
+                 values = self._valid_sp_values
+             if isna(fill_value):
+                 fill_value = True
++        elif isna(fill_value):
++            # gaps count as what _densify puts there: the promoted NA. NaN and NaT
++            #  are truthy; a pd.NA survives the promotion and raises like dense
++            fill_value = maybe_promote(self.sp_values.dtype, fill_value)[1]
+ 
+         # not np.all(): an object pd.NA fill then raises like dense; see
+         #  test_any_all_na_fill_value
+@@ -1876,6 +1880,9 @@ def any(self, axis: AxisInt = 0, *args, skipna: bool = True, **kwargs) -> bool:
+                 values = self._valid_sp_values
+             if isna(fill_value):
+                 fill_value = False
++        elif isna(fill_value):
++            # see the fill-value note in all()
++            fill_value = maybe_promote(self.sp_values.dtype, fill_value)[1]
+ 
+         # not np.any(); see the note in all()
+         if self.sp_index.ngaps > 0 and fill_value:

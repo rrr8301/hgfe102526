@@ -1,0 +1,157 @@
+{
+  "input": "workspace/new-mine/xtensor-stack__xtensor_candidates.json",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "n_strategies": 2,
+  "usage_totals": {
+    "input_tokens": 2705,
+    "output_tokens": 4644,
+    "cache_read_tokens": 256,
+    "cache_write_tokens": 0,
+    "cost_usd": 0.007324,
+    "llm_calls": 2,
+    "peak_calls": 0,
+    "n_costed": 2,
+    "n_strategies": 2,
+    "cost_usd_per_strategy": 0.003662
+  },
+  "strategies": [
+    {
+      "reference": "https://github.com/xtensor-stack/xtensor/pull/2922",
+      "repo": "xtensor-stack/xtensor",
+      "pr_number": 2922,
+      "buggy_commit": "9575b39760960ed624c06367c16315761d7250c7",
+      "fixed_commit": "c3f71fbf9245f6618b2e3059ca8470dff444471e",
+      "is_numerical_bug": false,
+      "bug_type": "not_numerical",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the zero-length-axis defect in xt::roll (xtensor-stack/xtensor PR #2922) at buggy commit 9575b39760960ed624c06367c16315761d7250c7. xt::roll on arrays containing a zero-length axis enters an infinite loop (while (shift < 0) shift += flat_size with flat_size == 0) and then would hit shift %= 0 (UB); the fix in include/xtensor/misc/xmanipulation.hpp adds an early 'if (cpy.size() == 0) return cpy;'. The PR adds shape-checking assertions to test/test_xmanipulation.cpp using xarray<double>::from_shape({0}), {3,0}, {3,0,4}. Success = the new roll assertions never complete (hang/timeout) on the buggy commit, and pass after the fix.",
+        "input_output_examples": [
+          {
+            "input": "xt::roll(xt::xarray<double>::from_shape({0}), 5)",
+            "buggy_output": "No value returned: infinite loop at 'while (shift < 0) shift += flat_size' with flat_size == 0 (and shift %= 0 is UB); call hangs",
+            "expected_output": "An empty array whose .shape() == empty_1d.shape(), i.e. shape {0}",
+            "source": "test"
+          },
+          {
+            "input": "xt::roll(xt::xarray<double>::from_shape({3, 0}), 1, /*axis*/ 1)",
+            "buggy_output": "No value returned: the axis-1 length is 0, so flat_size/shift math collapses to 0 and the while loop never terminates; call hangs",
+            "expected_output": "An array whose .shape() == partial_empty.shape(), i.e. shape {3, 0}",
+            "source": "test"
+          },
+          {
+            "input": "xt::roll(xt::xarray<double>::from_shape({3, 0, 4}), 1, /*axis*/ 0)",
+            "buggy_output": "No value returned: array contains a zero-length axis, flat_size == 0 drives the while (shift < 0) loop to hang (shift %= 0 UB)",
+            "expected_output": "An array whose .shape() == mixed_empty.shape(), i.e. shape {3, 0, 4}",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "git checkout 9575b39760960ed624c06367c16315761d7250c7 (buggy revision) in the xtensor clone; keep submodules/deps present",
+          "C++ compiler with C++14 support (C++17 recommended); xtensor is header-only so no library build is required",
+          "CMake >= 3.x, plus the xtl dependency (and xsimd if XTENSOR_USE_XSIMD is enabled) available to the test build",
+          "GoogleTest available for the test target (bundled/fetched by xtensor's CMake test configuration)",
+          "Outer tooling must impose a wall-clock timeout, since the defect manifests as a hang rather than an assertion mismatch"
+        ],
+        "build_steps": [
+          "cmake -S . -B build -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release",
+          "cmake --build build --target test_xmanipulation -j"
+        ],
+        "reproduction_steps": [
+          "Confirm the working tree is at the buggy commit 9575b39760960ed624c06367c16315761d7250c7 with include/xtensor/misc/xmanipulation.hpp NOT containing the 'if (cpy.size() == 0) return cpy;' guard",
+          "Configure and build the test_xmanipulation target as above",
+          "Run the roll test in the test_xmanipulation binary (see test_command) under a timeout, e.g. 'timeout 120 ./build/test/test_xmanipulation --gtest_filter=<roll test>'",
+          "Observe that the new EXPECT_EQ assertions for xarray<double>::from_shape({0}), {3,0} and {3,0,4} are never reached/reported because xt::roll spins forever in 'while (shift < 0) shift += flat_size;' with flat_size == 0",
+          "Record the timeout/hang as the failing behaviour; do not modify source (this task is reproduction only)"
+        ],
+        "test_command": "timeout 120 ./build/test/test_xmanipulation --gtest_filter=<roll-test-name>",
+        "test_selector": "xmanipulation test that calls xt::roll (name inferred as xmanipulation.roll; if unsure use --gtest_filter=*roll* or run the whole test_xmanipulation binary)",
+        "expected_buggy_behavior": "The roll test hangs (times out): xt::roll on an array with a zero-length axis loops forever in 'while (shift < 0) shift += flat_size;' because flat_size == 0, so no EXPECT_EQ is ever evaluated/reported and the test binary does not terminate normally.",
+        "expected_fixed_behavior": "With the early-return guard on cpy.size() == 0, xt::roll returns immediately for empty/zero-length-axis inputs; all three EXPECT_EQ shape checks pass (shape {0}, {3,0}, {3,0,4}) and the test exits successfully.",
+        "success_criterion": "On the buggy commit, the roll test fails by hanging/timing out (no passing result within the timeout); on the fixed commit c3f71fbf9245f6618b2e3059ca8470dff444471e the same test passes, proving the reproduction targets exactly this defect.",
+        "risks_or_ambiguities": [
+          "The diff only shows the tail of the enclosing TEST block; the exact test name is not in the evidence (assumed xmanipulation.roll). Use --gtest_filter=*roll* or run the full binary if the selector does not match.",
+          "The bug is a hang/infinite loop, not an assertion value mismatch, so the reproduction harness must apply a timeout; otherwise the runner may hang indefinitely instead of reporting FAIL.",
+          "Q3/Q4 build-and-test evidence is empty; the cmake/BUILD_TESTS commands are the standard xtensor test workflow and are inferred, not quoted from the mined evidence.",
+          "Dependency versions (xtl, xsimd, GoogleTest) and the exact CMake test target name are not given; xtensor requires xtl and may need network access to fetch GoogleTest.",
+          "PR body notes shift %= 0 is undefined behaviour, so on some toolchains/optimisation levels the failure could manifest as a crash or garbage rather than a clean hang.",
+          "mixed_empty ({3,0,4}, roll on axis 0 of length 3, shift 1) may not itself trigger the flat_size==0 loop path, but the added guard covers it; it is included in the PR test anyway."
+        ],
+        "confidence": 0.62
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1399,
+        "output_tokens": 3020,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.004604
+      }
+    },
+    {
+      "reference": "https://github.com/xtensor-stack/xtensor/pull/2907",
+      "repo": "xtensor-stack/xtensor",
+      "pr_number": 2907,
+      "buggy_commit": "2b01100feae099fe3f9476c62e2f1edebeed9aa5",
+      "fixed_commit": "8adbd1c774f45e7b317b73d6ca191751248f4a0e",
+      "is_numerical_bug": false,
+      "bug_type": "not_numerical",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce a container rank-mismatch buffer overflow in xtensor: assigning a higher-dimensional expression (xt::expand_dims(a, 0), shape {1,2}) to a fixed-rank xtensor<float,1> (shape {2}) overflows the buffer instead of rejecting the assignment. The added test xassign.fixed_dimension_mismatch asserts a std::runtime_error is thrown; on the buggy commit no exception is thrown (release: stack smashing), so the test fails/crashes.",
+        "input_output_examples": [
+          {
+            "input": "auto a = xt::xtensor<float, 1>::from_shape({2}); a = xt::expand_dims(a, 0);",
+            "buggy_output": "No std::runtime_error thrown; resize truncates the assignee shape {1,2} -> {1} and then copies 2 elements into a 1-element buffer, causing a buffer overflow / stack smashing (release builds).",
+            "expected_output": "A std::runtime_error is thrown because the number of dimensions of the expression (2) does not match the fixed rank of the tensor (1).",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Linux x86_64 with a C++14/17 compiler (gcc or clang) and CMake >= 3.x.",
+          "Clone the repository and check out the buggy commit 2b01100feae099fe3f9476c62e2f1edebeed9aa5.",
+          "Ensure gtest is available (xtensor tests link against googletest); configure with -DXTENSOR_BUILD_TESTS=ON.",
+          "Configure a release build (CMAKE_BUILD_TYPE=Release / NDEBUG) so the internal XTENSOR_ASSERT is disabled and the overflow is reached instead of trapping early."
+        ],
+        "build_steps": [
+          "mkdir -p build && cd build",
+          "cmake .. -DCMAKE_BUILD_TYPE=Release -DXTENSOR_BUILD_TESTS=ON",
+          "cmake --build . --target test_xtest -j$(nproc)  (build the gtest suite that contains test/test_xassign.cpp)"
+        ],
+        "reproduction_steps": [
+          "Apply the reproducing-test diff to the buggy checkout: add `#include \"xtensor/misc/xmanipulation.hpp\"` to test/test_xassign.cpp and append the TEST(xassign, fixed_dimension_mismatch) block that does `auto a = xt::xtensor<float, 1>::from_shape({2}); XT_ASSERT_THROW(a = xt::expand_dims(a, 0), std::runtime_error);`.",
+          "Do NOT modify include/xtensor/containers/xcontainer.hpp \u2014 the fix must remain unapplied.",
+          "Rebuild the test_xtest target so the new test is compiled into the suite.",
+          "Run the gtest filter for the new test and observe the failure/crash at this buggy revision.",
+          "Optionally rebuild with AddressSanitizer (-fsanitize=address) to make the buffer overflow explicit instead of a silent stack-smashing abort."
+        ],
+        "test_command": "./build/test/test_xtest --gtest_filter=xassign.fixed_dimension_mismatch",
+        "test_selector": "xassign.fixed_dimension_mismatch",
+        "expected_buggy_behavior": "The assignment `a = xt::expand_dims(a, 0)` does not throw std::runtime_error on the buggy commit. The container resizes to a truncated shape and copies the source dimensions into the smaller destination, causing a buffer overflow / stack smashing; XT_ASSERT_THROW fails (or the process aborts) instead of a clean exception.",
+        "expected_fixed_behavior": "The number of dimensions is validated before assignment, so `a = xt::expand_dims(a, 0)` throws std::runtime_error; XT_ASSERT_THROW(std::runtime_error) passes and the test succeeds without any memory corruption.",
+        "success_criterion": "At buggy commit 2b01100 the test xassign.fixed_dimension_mismatch FAILS \u2014 no std::runtime_error is thrown (and/or the process crashes with a buffer overflow) \u2014 while at fixed commit 8adbd1c the same test PASSES because the assignment throws std::runtime_error.",
+        "risks_or_ambiguities": [
+          "The test does not exist at the buggy commit; test/test_xassign.cpp must be manually patched with the PR's hunk before the test can be run.",
+          "The evidence contains no concrete build config commands (Q4 empty); cmake target names (test_xtest) and gtest filter syntax are inferred from xtensor conventions, not verbatim evidence.",
+          "Under NDEBUG the bug manifests as a crash/buffer overflow rather than a thrown exception, so a clean 'FAIL' may appear as SIGSEGV/SIGABRT; ASAN may be needed for a deterministic observation.",
+          "The bug is a memory-safety/container-logic defect, not a numerical one (is_numerical_bug=false), so there are no floating-point expected values to compare.",
+          "Dependency versions (gtest, cmake, compiler) are not specified in the mined evidence."
+        ],
+        "confidence": 0.7
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1306,
+        "output_tokens": 1624,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.00272
+      }
+    }
+  ]
+}

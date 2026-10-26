@@ -1,0 +1,331 @@
+{
+  "repo": "numpy/numpy",
+  "pr_number": 27148,
+  "reference": "https://github.com/numpy/numpy/pull/27148",
+  "buggy_commit": "7e5dc822ef2231d5919c2514fb8c8a749b344857",
+  "fixed_commit": "251f7e11fc5316cfd75e223e6b78d5298ef8e38b",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": "3.12.2",
+    "dependencies": [
+      {
+        "name": "numpy",
+        "constraint": "1.26.4 (as stated in issue for the environment that observed the behaviour)",
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "issue#27142: \"numpy 1.26.4\""
+      },
+      {
+        "name": "pytest",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md: \"NumPy requires `pytest` and `hypothesis`.\""
+      },
+      {
+        "name": "hypothesis",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "README.md: \"NumPy requires `pytest` and `hypothesis`.\""
+      }
+    ],
+    "installation_commands": [],
+    "build_commands": [],
+    "test_commands": [
+      "python -c \"import numpy, sys; sys.exit(numpy.test() is False)\""
+    ],
+    "system_packages": [],
+    "era_constraints": [
+      "explicit: numpy 1.26.4 (as stated in issue for the environment that observed the behaviour)  [numerically relevant]",
+      "unbounded: pytest \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: hypothesis \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "numpy",
+        "documented_constraint": "1.26.4 (as stated in issue for the environment that observed the behaviour)",
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "explicit",
+        "source": "issue#27142: \"numpy 1.26.4\""
+      },
+      {
+        "package": "pytest",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md: \"NumPy requires `pytest` and `hypothesis`.\""
+      },
+      {
+        "package": "hypothesis",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "README.md: \"NumPy requires `pytest` and `hypothesis`.\""
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "numpy.histogram",
+    "observed_behavior": "When the data values fall into a very small numeric range near floating-point precision and many bins are requested, `np.histogram` can return bin edges with zero width (identical subsequent bin edges). In the provided example, `lims` is `array([1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.])`, and `np.diff(lims)` contains many `0.00000000e+00` entries (including at least one nonzero value `2.22044605e-16`), producing logically inconsistent \u201czero-width bin\u201d distributions where bins can still receive counts (e.g., counts array has nonzero entries despite repeated edges).",
+    "expected_behavior": "Instead of returning unlogical bin distributions with non-finite-sized (zero-width) bins, `np.histogram` should raise a `ValueError` if the calculated bins do not all have a finite size, with the message indicating too many bins for the data range and that it cannot create `{n_equal_bins}` finite-sized bins.",
+    "manifestation": "exception",
+    "trigger_conditions": [
+      "Many bins requested within a small value region near floating-point precision so that it may not be possible to create enough distinct bin edges due to limited numeric precision.",
+      "In particular: using `a = np.array([1, 1+2e-16] * 10)` and `np.histogram(a, bins=10)` can yield repeated bin edges and zero-width bins in the pre-fix behavior.",
+      "The issue/PR targets the case where bin edges produced have some non-increasing sequence (`bin_edges[:-1] >= bin_edges[1:]`), i.e., bins would have width 0."
+    ],
+    "input_output_examples": [
+      {
+        "input": "a = np.array([1, 1+2e-16] * 10); np.histogram(a, bins=10)",
+        "buggy_output": "counts = array([ 0, 10,  0,  0,  0,  0,  0,  0,  0, 10]); lims = array([1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.]); np.diff(lims) includes many zeros and at least one value `2.22044605e-16` (with the rest `0.00000000e+00`).",
+        "expected_output": "Raise `ValueError` with message starting: `Too many bins for data range. Cannot create 10 finite-sized bins.`",
+        "value_kind": "exception",
+        "source": "issue:issue#27142 and pr_body/commit diff showing the new raise condition"
+      },
+      {
+        "input": "np.array([2.0, 2.0 + 2e-16]).ptp()",
+        "buggy_output": "Produces `0` due to precision limits putting all values to the same number.",
+        "expected_output": "There is special handling for histograms of all the same number (chooses suitable bins), but this special handling is not triggered when there are even tiny differences in the numbers.",
+        "value_kind": "integer",
+        "source": "discussion:PR#27148"
+      }
+    ],
+    "oracle_clues": [
+      "The PR changes behavior to: `if np.any(bin_edges[:-1] >= bin_edges[1:]): raise ValueError('Too many bins for data range. Cannot create {n_equal_bins} finite-sized bins.')`.",
+      "The reported pre-fix example shows `counts` has nonzero entries while `lims` are all ones, and `np.diff(lims)` contains many exact zeros (bin widths of 0)."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": null,
+    "precision": "floating point precision limits cause values to be rounded to the same number; special handling is only triggered when there are no (even tiny) differences due to floating point precision",
+    "magnitude": "small value region / small range close to numeric precision (example values near 1 with difference 2e-16)",
+    "tolerance": null,
+    "category_specific_evidence": [
+      "np.histogram can produce zero-width bins if the data values are in a small range close to numeric precision (issue statement).",
+      "Reproducer example: a = np.array([1, 1+2e-16] * 10); np.histogram(a, bins=10) returns lims = array([1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.]) and np.diff(lims) contains zeros and one value 2.22044605e-16, demonstrating essentially zero-width bins.",
+      "For histogram bin edge calculation, limited numeric precision can prevent enough distinct bin edges when many bins are requested in a small value region; prior behavior returned identical subsequent bin edges (bin width of 0) possibly with counts.",
+      "Test expecting failure: arr = np.array([1, 1 + 2e-16] * 10) with pytest.raises(ValueError, match=\"Too many bins for data range\") when calling histogram(arr, bins=10."
+    ],
+    "reproduction_risks": [
+      "Using floating point values that do not create the same rounding behavior as shown may avoid the zero/near-zero bin width condition.",
+      "Different bin counts ('bins=10' specifically) or different value ranges away from the ~2e-16 separation may change whether edges become non-finite/identical and thus whether the error is triggered."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.language_version",
+      "value": "3.12.2",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.test_commands",
+      "value": [
+        "python -c \"import numpy, sys; sys.exit(numpy.test() is False)\""
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "numpy",
+      "source": "issue#27142: \"numpy 1.26.4\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "pytest",
+      "source": "README.md: \"NumPy requires `pytest` and `hypothesis`.\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "hypothesis",
+      "source": "README.md: \"NumPy requires `pytest` and `hypothesis`.\"",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "numpy.histogram",
+      "source": "discussion",
+      "evidence_location": "discussion:PR#27148"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "When the data values fall into a very small numeric range near floating-point precision and many bins are requested, `np.histogram` can return bin edges with zero width (identical subsequent bin edges). In the provided example, `lims` is `array([1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.])`, and `np.diff(lims)` contains many `0.00000000e+00` entries (including at least one nonzero value `2.22044605e-16`), producing logically inconsistent \u201czero-width bin\u201d distributions where bins can still receive counts (e.g., counts array has nonzero entries despite repeated edges).",
+      "source": "discussion",
+      "evidence_location": "discussion:PR#27148"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "Instead of returning unlogical bin distributions with non-finite-sized (zero-width) bins, `np.histogram` should raise a `ValueError` if the calculated bins do not all have a finite size, with the message indicating too many bins for the data range and that it cannot create `{n_equal_bins}` finite-sized bins.",
+      "source": "discussion",
+      "evidence_location": "discussion:PR#27148"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "exception",
+      "source": "discussion",
+      "evidence_location": "discussion:PR#27148"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 3,
+      "source": "discussion",
+      "evidence_location": "discussion:PR#27148"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 2,
+      "source": "discussion",
+      "evidence_location": "discussion:PR#27148"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 2,
+      "source": "discussion",
+      "evidence_location": "discussion:PR#27148"
+    },
+    {
+      "field": "numerical_characteristics.precision",
+      "value": "floating point precision limits cause values to be rounded to the same number; special handling is only triggered when there are no (even tiny) differences due to floating point precision",
+      "source": "discussion",
+      "evidence_location": "discussion:PR#27148"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "small value region / small range close to numeric precision (example values near 1 with difference 2e-16)",
+      "source": "discussion",
+      "evidence_location": "discussion:PR#27148"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 4,
+      "source": "discussion",
+      "evidence_location": "discussion:PR#27148"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 2,
+      "source": "discussion",
+      "evidence_location": "discussion:PR#27148"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "issue:issue#27142",
+        "readme:README.md",
+        "pr_body:PR#27148",
+        "commit:commits",
+        "diff:numpy/lib/_histograms_impl.py:450-459",
+        "issue:issue#27142",
+        "issue:issue#27142"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "discussion:PR#27148",
+        "pr_body:PR#27148",
+        "commit:commits",
+        "issue:issue#27142",
+        "issue:issue#27142",
+        "diff:numpy/lib/_histograms_impl.py:450-459",
+        "issue:issue#27142",
+        "discussion:PR#27148"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "discussion:PR#27148",
+        "test_diff:numpy/lib/tests/test_histograms.py:270-276",
+        "pr_body:PR#27148",
+        "commit:commits",
+        "issue:issue#27142",
+        "issue:issue#27142",
+        "diff:numpy/lib/_histograms_impl.py:450-459",
+        "test_diff:numpy/lib/tests/test_histograms.py:395-405"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 1.0,
+        "required_total": 2,
+        "required_present": 2,
+        "required_missing": [],
+        "expected_missing": [
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          }
+        ],
+        "present": [
+          "environment.test_commands",
+          "environment.dependencies",
+          "environment.language_version"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 1.0,
+        "required_total": 5,
+        "required_present": 5,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 5560,
+    "output_tokens": 1519,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.0030110000000000002,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": []
+}

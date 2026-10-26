@@ -1,0 +1,1509 @@
+[
+  {
+    "slug": "pandas_68039",
+    "bug_type": "accuracy",
+    "image": "python:3.11",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported input/output examples were never observed on both revisions, so the values themselves are unverified",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "not_observed",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import io\nimport struct\nimport numpy as np\nimport pandas as pd\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"struct.pack_into(\\\"<d\\\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)[\\\"datecol\\\"]\", \"struct.pack_into(\\\"<d\\\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)[\\\"datecol\\\"]\", [], \"pd.Series(np.array([\\\"2019-08-01T13:45:37\\\", \\\"NaT\\\"], dtype=\\\"M8[s]\\\"), name=\\\"datecol\\\")\"], [\"struct.pack_into(\\\"<d\\\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)[\\\"datecol\\\"]\", \"struct.pack_into(\\\"<d\\\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)[\\\"datecol\\\"]\", [], \"pd.Series(np.array([\\\"1959-12-31T12:00:00\\\", \\\"NaT\\\"], dtype=\\\"M8[s]\\\"), name=\\\"datecol\\\")\"], [\"struct.pack_into(\\\"<d\\\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)\", \"struct.pack_into(\\\"<d\\\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)\", [], \"raises OutOfBoundsDatetime matching \\\"Out of bounds SAS date value\\\"\"], [\"struct.pack_into(\\\"<d\\\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)\", \"struct.pack_into(\\\"<d\\\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)\", [], \"raises OutOfBoundsDatetime matching \\\"Out of bounds SAS date value\\\"\"], [\"PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\\\"sas7bdat\\\")\", \"PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\\\"sas7bdat\\\")\", [], \"2019-08-01 12:00:00 (fraction preserved at second precision)\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "sas7bdat_datetime_report_cases": "import io, struct, numpy as np, pandas as pd\nfrom pathlib import Path\n\np = Path('pandas/tests/io/sas/data/dates_null.sas7bdat')\nbase = p.read_bytes()\n\ncases = [\n  ('frac_timepos', 21762 + (13*3600 + 45*60 + 37)/86400),\n  ('frac_timeneg', -0.5),\n  ('day_too_large_neg', -(2.0**63 / 86400)),\n  ('day_too_large_pos', (2.0**63 / 86400)),\n  ('pr_example_half_day', 21762.5),\n]\n\n# Emit one probe record per case.\n\ndef run_case(name, val):\n    data = bytearray(base)\n    struct.pack_into('<d', data, 65816, float(val))\n    try:\n        df = pd.read_sas(io.BytesIO(data), format='sas7bdat', encoding=None)\n        s = df['datecol']\n        # Record both dtype and exact scalar string (NaT -> NaT).\n        rec = {\n            'case': name,\n            'value': s.iloc[0],\n            'dtype': str(s.dtype),\n            'series_repr': str(s.to_numpy()),\n        }\n        return ('ok', rec)\n    except Exception as e:\n        # Capture exception type and message; OutOfBoundsDatetime is expected on fixed.\n        return ('exc', {\n            'case': name,\n            'exc_type': type(e).__name__,\n            'exc_msg': str(e),\n        })\n\nfor name, val in cases:\n    status, rec = run_case(name, val)\n    # Use probe() calls so the harness records structured values.\n    probe(f'{name}:{status}', rec)\n",
+        "described_examples": "import io, os, struct\nimport pandas as pd\n\n# Load the existing SAS7BDAT fixture bytes.\npath = os.path.join('tests','io','sas','data','dates_null.sas7bdat')\nwith open(path, 'rb') as f:\n    base = bytearray(f.read())\n\n\ndef run_one(desc, value):\n    data = bytearray(base)\n    try:\n        struct.pack_into('<d', data, 65816, value)\n        out = pd.read_sas(io.BytesIO(data), format='sas7bdat', encoding=None)\n        # For the first two descriptions, index \"datecol\"; for the other two, return full object.\n        if desc.endswith('[\"datecol\"]'):\n            out = out['datecol']\n        probe(desc, out)\n    except Exception as e:\n        probe_exception(desc, e)\n\n\n# 1\nrun_one('struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]',\n        21762 + (13*3600 + 45*60 + 37)/86400)\n\n# 2\nrun_one('struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]',\n        -0.5)\n\n# 3\nrun_one('struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)',\n        -(2.0**63 / 86400))\n\n# 4\nrun_one('struct.pack_into(\"<d\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)',\n        (2.0**63 / 86400))"
+      },
+      "fixed": {
+        "sas7bdat_datetime_report_cases": "import io, struct, numpy as np, pandas as pd\nfrom pathlib import Path\n\np = Path('pandas/tests/io/sas/data/dates_null.sas7bdat')\nbase = p.read_bytes()\n\ncases = [\n  ('frac_timepos', 21762 + (13*3600 + 45*60 + 37)/86400),\n  ('frac_timeneg', -0.5),\n  ('day_too_large_neg', -(2.0**63 / 86400)),\n  ('day_too_large_pos', (2.0**63 / 86400)),\n  ('pr_example_half_day', 21762.5),\n]\n\ndef run_case(name, val):\n    data = bytearray(base)\n    struct.pack_into('<d', data, 65816, float(val))\n    try:\n        df = pd.read_sas(io.BytesIO(data), format='sas7bdat', encoding=None)\n        s = df['datecol']\n        rec = {\n            'case': name,\n            'value': s.iloc[0],\n            'dtype': str(s.dtype),\n            'series_repr': str(s.to_numpy()),\n        }\n        return ('ok', rec)\n    except Exception as e:\n        return ('exc', {\n            'case': name,\n            'exc_type': type(e).__name__,\n            'exc_msg': str(e),\n        })\n\nfor name, val in cases:\n    status, rec = run_case(name, val)\n    probe(f'{name}:{status}', rec)\n",
+        "sas7bdat_datetime_report_cases_summary_check": "# This probe re-runs the same cases and records a compact summary\n# so the verdict can directly see a difference without parsing complex objects.\nimport io, struct, pandas as pd\nfrom pathlib import Path\n\np = Path('pandas/tests/io/sas/data/dates_null.sas7bdat')\nbase = p.read_bytes()\n\ndef get(val):\n    data = bytearray(base)\n    struct.pack_into('<d', data, 65816, float(val))\n    df = pd.read_sas(io.BytesIO(data), format='sas7bdat', encoding=None)\n    return df['datecol'].iloc[0]\n\ndef get_exc(val):\n    data = bytearray(base)\n    struct.pack_into('<d', data, 65816, float(val))\n    try:\n        df = pd.read_sas(io.BytesIO(data), format='sas7bdat', encoding=None)\n        return ('ok', df['datecol'].iloc[0])\n    except Exception as e:\n        return ('exc', type(e).__name__, str(e))\n\n# fractional time-of-day should preserve 13:45:37 on fixed\nv1 = 21762 + (13*3600 + 45*60 + 37)/86400\nr1 = get_exc(v1)\n\n# day negative half should become 1959-12-31T12:00:00 on fixed\nv2 = -0.5\nr2 = get_exc(v2)\n\n# too-large magnitude should raise OutOfBoundsDatetime on fixed\nv3 = -(2.0**63 / 86400)\nr3 = get_exc(v3)\n\nprobe('fixed_summary', {\n    'frac_timepos_status': r1[0], 'frac_timepos': str(r1[-1]),\n    'frac_timeneg_status': r2[0], 'frac_timeneg': str(r2[-1]),\n    'too_large_neg_status': r3[0], 'too_large_neg_exc': (r3[1] if len(r3)>1 else None),\n})\n",
+        "reported_examples": "import io\nimport struct\nimport numpy as np\nimport pandas as pd\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"struct.pack_into(\\\"<d\\\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)[\\\"datecol\\\"]\", \"struct.pack_into(\\\"<d\\\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)[\\\"datecol\\\"]\", [], \"pd.Series(np.array([\\\"2019-08-01T13:45:37\\\", \\\"NaT\\\"], dtype=\\\"M8[s]\\\"), name=\\\"datecol\\\")\"], [\"struct.pack_into(\\\"<d\\\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)[\\\"datecol\\\"]\", \"struct.pack_into(\\\"<d\\\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)[\\\"datecol\\\"]\", [], \"pd.Series(np.array([\\\"1959-12-31T12:00:00\\\", \\\"NaT\\\"], dtype=\\\"M8[s]\\\"), name=\\\"datecol\\\")\"], [\"struct.pack_into(\\\"<d\\\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)\", \"struct.pack_into(\\\"<d\\\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)\", [], \"raises OutOfBoundsDatetime matching \\\"Out of bounds SAS date value\\\"\"], [\"struct.pack_into(\\\"<d\\\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)\", \"struct.pack_into(\\\"<d\\\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\\\"sas7bdat\\\", encoding=None)\", [], \"raises OutOfBoundsDatetime matching \\\"Out of bounds SAS date value\\\"\"], [\"PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\\\"sas7bdat\\\")\", \"PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\\\"sas7bdat\\\")\", [], \"2019-08-01 12:00:00 (fraction preserved at second precision)\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import io, os, struct\nimport pandas as pd\n\n# Load the existing SAS7BDAT fixture bytes.\npath = os.path.join('tests','io','sas','data','dates_null.sas7bdat')\nwith open(path, 'rb') as f:\n    base = bytearray(f.read())\n\n\ndef run_one(desc, value):\n    data = bytearray(base)\n    try:\n        struct.pack_into('<d', data, 65816, value)\n        out = pd.read_sas(io.BytesIO(data), format='sas7bdat', encoding=None)\n        # For the first two descriptions, index \"datecol\"; for the other two, return full object.\n        if desc.endswith('[\"datecol\"]'):\n            out = out['datecol']\n        probe(desc, out)\n    except Exception as e:\n        probe_exception(desc, e)\n\n\n# 1\nrun_one('struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]',\n        21762 + (13*3600 + 45*60 + 37)/86400)\n\n# 2\nrun_one('struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]',\n        -0.5)\n\n# 3\nrun_one('struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)',\n        -(2.0**63 / 86400))\n\n# 4\nrun_one('struct.pack_into(\"<d\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)',\n        (2.0**63 / 86400))"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported input/output examples were never observed on both revisions, so the values themselves are unverified",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "not_observed",
+      "success_criterion": "On the buggy commit 3c6130a49a735ffbc6e34616170a9a829cc73a4b (with only the PR test diff applied, source unchanged), the selected pytest invocation FAILS on test_fractional_date_keeps_time_of_day and test_date_too_large_to_scale_to_seconds_raises with the documented wrong values/NaT-vs-exception, and the same command PASSES unchanged once the fix commit ab7c682a4c11c89faa787bb1a920d53be79d08ed is applied.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 2,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 2,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": false,
+            "buggy_values": {
+              "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "struct.pack_into(\"<d\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'"
+            },
+            "fixed_values": {
+              "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "struct.pack_into(\"<d\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'"
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": [
+                "Timestamp('2019-08-01 13:45:37')",
+                "NaT"
+              ],
+              "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": [
+                "Timestamp('1959-12-31 12:00:00')",
+                "NaT"
+              ],
+              "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "struct.pack_into(\"<d\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\"sas7bdat\")": "__error__: NameError: name 'PR' is not defined"
+            },
+            "fixed_values": {
+              "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": [
+                "Timestamp('2019-08-01 13:45:37')",
+                "NaT"
+              ],
+              "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": [
+                "Timestamp('1959-12-31 12:00:00')",
+                "NaT"
+              ],
+              "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "struct.pack_into(\"<d\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\"sas7bdat\")": "__error__: NameError: name 'PR' is not defined"
+            }
+          },
+          {
+            "label": "sas7bdat_datetime_report_cases",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (length mismatch: 0 vs 1)"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (length mismatch: 0 vs 1)"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "frac_timepos:ok": {
+                "case": "frac_timepos",
+                "value": "Timestamp('2019-08-01 00:00:00')",
+                "dtype": "datetime64[s]",
+                "series_repr": "['2019-08-01T00:00:00'                 'NaT']"
+              },
+              "frac_timeneg:ok": {
+                "case": "frac_timeneg",
+                "value": "Timestamp('1960-01-01 00:00:00')",
+                "dtype": "datetime64[s]",
+                "series_repr": "['1960-01-01T00:00:00'                 'NaT']"
+              },
+              "day_too_large_neg:exc": {
+                "case": "day_too_large_neg",
+                "exc_type": "OutOfBoundsDatetime",
+                "exc_msg": "Out of bounds second timestamp"
+              },
+              "day_too_large_pos:exc": {
+                "case": "day_too_large_pos",
+                "exc_type": "OutOfBoundsDatetime",
+                "exc_msg": "Out of bounds second timestamp: 292277026596-12-06 00:00:00"
+              },
+              "pr_example_half_day:ok": {
+                "case": "pr_example_half_day",
+                "value": "Timestamp('2019-08-01 00:00:00')",
+                "dtype": "datetime64[s]",
+                "series_repr": "['2019-08-01T00:00:00'                 'NaT']"
+              }
+            },
+            "fixed_values": {
+              "frac_timepos:ok": {
+                "case": "frac_timepos",
+                "value": "Timestamp('2019-08-01 13:45:37')",
+                "dtype": "datetime64[s]",
+                "series_repr": "['2019-08-01T13:45:37'                 'NaT']"
+              },
+              "frac_timeneg:ok": {
+                "case": "frac_timeneg",
+                "value": "Timestamp('1959-12-31 12:00:00')",
+                "dtype": "datetime64[s]",
+                "series_repr": "['1959-12-31T12:00:00'                 'NaT']"
+              },
+              "day_too_large_neg:exc": {
+                "case": "day_too_large_neg",
+                "exc_type": "OutOfBoundsDatetime",
+                "exc_msg": "Out of bounds SAS date value: -106751991167300.64; no SAS date can be this large, so the file is corrupt or the column is not a date"
+              },
+              "day_too_large_pos:exc": {
+                "case": "day_too_large_pos",
+                "exc_type": "OutOfBoundsDatetime",
+                "exc_msg": "Out of bounds SAS date value: 106751991167300.64; no SAS date can be this large, so the file is corrupt or the column is not a date"
+              },
+              "pr_example_half_day:ok": {
+                "case": "pr_example_half_day",
+                "value": "Timestamp('2019-08-01 12:00:00')",
+                "dtype": "datetime64[s]",
+                "series_repr": "['2019-08-01T12:00:00'                 'NaT']"
+              }
+            }
+          },
+          {
+            "label": "sas7bdat_datetime_report_cases_summary_check",
+            "outcome": "unpaired",
+            "buggy": null,
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": null,
+            "fixed_status": "ok",
+            "values_differ": null,
+            "buggy_values": null,
+            "fixed_values": {
+              "fixed_summary": {
+                "frac_timepos_status": "ok",
+                "frac_timepos": "2019-08-01 13:45:37",
+                "frac_timeneg_status": "ok",
+                "frac_timeneg": "1959-12-31 12:00:00",
+                "too_large_neg_status": "exc",
+                "too_large_neg_exc": "OutOfBoundsDatetime"
+              }
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+            "expected_output": "pd.Series(np.array([\"2019-08-01T13:45:37\", \"NaT\"], dtype=\"M8[s]\"), name=\"datecol\")",
+            "expected_value": [
+              "Timestamp('2019-08-01 13:45:37')",
+              "NaT"
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "2019-08-01 00:00:00 - the M8[D] cast truncated the fraction, dropping the 13:45:37 time of day",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+            "expected_output": "pd.Series(np.array([\"1959-12-31T12:00:00\", \"NaT\"], dtype=\"M8[s]\"), name=\"datecol\")",
+            "expected_value": [
+              "Timestamp('1959-12-31 12:00:00')",
+              "NaT"
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "1960-01-01 - truncation toward zero made this pre-1960 date a whole day late (time 12:00 also lost)",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+            "expected_output": "raises OutOfBoundsDatetime matching \"Out of bounds SAS date value\"",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "no exception: the value passes the old >= 2.0**63 guard, scales to exactly float(iNaT) and is read as NaT on the date column - silently missing data",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "struct.pack_into(\"<d\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+            "expected_output": "raises OutOfBoundsDatetime matching \"Out of bounds SAS date value\"",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "no OutOfBoundsDatetime with message \"Out of bounds SAS date value\" at the buggy guard (value is below the 2.0**63 limit, so the new guard does not fire)",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\"sas7bdat\")",
+            "expected_output": "2019-08-01 12:00:00 (fraction preserved at second precision)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "2019-08-01 00:00:00 (the .5 day = 12:00 fraction truncated away)",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\"sas7bdat\")",
+              "observed": "__error__: NameError: name 'PR' is not defined",
+              "evaluation_error": "NameError: name 'PR' is not defined",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\"sas7bdat\")",
+              "observed": "__error__: NameError: name 'PR' is not defined",
+              "evaluation_error": "NameError: name 'PR' is not defined",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 6,
+            "n_failed": 2,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 1,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata",
+            "numpy<3",
+            "cython>=3.1.0",
+            "meson>=1.2.3",
+            "meson-python>=0.18.0",
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1",
+            "pytest-cov",
+            "pytest-localserver",
+            "pytest-cython>=0.4.0"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-09-04T15:36:20-07:00",
+        "fixed_commit_date": "2026-09-04T17:01:31-07:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-09-04T17:01:31-07:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.1",
+              "pyparsing": "3.3.2",
+              "meson-python": "0.20.0",
+              "meson": "1.12.0",
+              "wheel": "0.48.0",
+              "cython": "3.3.0",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.0",
+              "cython": "cython==3.3.0"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1771.g3c6130a49a.dirty) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in ./.venv/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1771.g3c6130a49a.dirty) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in ./.venv/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1771.g3c6130a49a.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1771.g3c6130a49a.dirty-cp311-cp311-linux_x86_64.whl size=16020632 sha256=d50af87e929c0873feb87e1d16bd5f6c1a1a55db3d2f85b698ad5c8457d7b796\n  Stored in directory: /tmp/pip-ephem-wheel-cache-sva_bfvw/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1771.g3c6130a49a.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.1",
+              "pyparsing": "3.3.2",
+              "meson-python": "0.20.0",
+              "meson": "1.12.0",
+              "wheel": "0.48.0",
+              "cython": "3.3.0",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.0",
+              "cython": "cython==3.3.0"
+            },
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1772.gab7c682a4c) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in ./.venv/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1772.gab7c682a4c) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in ./.venv/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1772.gab7c682a4c) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1772.gab7c682a4c-cp311-cp311-linux_x86_64.whl size=16020484 sha256=6b9b01c1e9571f71ce3fabf7ec5abba0b1db4ef13e7bb2cd4d27e024c111fde1\n  Stored in directory: /tmp/pip-ephem-wheel-cache-7lp8lpxa/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1772.gab7c682a4c\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 2,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 2,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 4,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": false,
+            "buggy_values": {
+              "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "struct.pack_into(\"<d\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'"
+            },
+            "fixed_values": {
+              "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "struct.pack_into(\"<d\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'"
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": [
+                "Timestamp('2019-08-01 13:45:37')",
+                "NaT"
+              ],
+              "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": [
+                "Timestamp('1959-12-31 12:00:00')",
+                "NaT"
+              ],
+              "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "struct.pack_into(\"<d\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\"sas7bdat\")": "__error__: NameError: name 'PR' is not defined"
+            },
+            "fixed_values": {
+              "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": [
+                "Timestamp('2019-08-01 13:45:37')",
+                "NaT"
+              ],
+              "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]": [
+                "Timestamp('1959-12-31 12:00:00')",
+                "NaT"
+              ],
+              "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "struct.pack_into(\"<d\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\"sas7bdat\")": "__error__: NameError: name 'PR' is not defined"
+            }
+          },
+          {
+            "label": "sas7bdat_datetime_report_cases",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (length mismatch: 0 vs 1)"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (length mismatch: 0 vs 1)"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "frac_timepos:ok": {
+                "case": "frac_timepos",
+                "value": "Timestamp('2019-08-01 00:00:00')",
+                "dtype": "datetime64[s]",
+                "series_repr": "['2019-08-01T00:00:00'                 'NaT']"
+              },
+              "frac_timeneg:ok": {
+                "case": "frac_timeneg",
+                "value": "Timestamp('1960-01-01 00:00:00')",
+                "dtype": "datetime64[s]",
+                "series_repr": "['1960-01-01T00:00:00'                 'NaT']"
+              },
+              "day_too_large_neg:exc": {
+                "case": "day_too_large_neg",
+                "exc_type": "OutOfBoundsDatetime",
+                "exc_msg": "Out of bounds second timestamp"
+              },
+              "day_too_large_pos:exc": {
+                "case": "day_too_large_pos",
+                "exc_type": "OutOfBoundsDatetime",
+                "exc_msg": "Out of bounds second timestamp: 292277026596-12-06 00:00:00"
+              },
+              "pr_example_half_day:ok": {
+                "case": "pr_example_half_day",
+                "value": "Timestamp('2019-08-01 00:00:00')",
+                "dtype": "datetime64[s]",
+                "series_repr": "['2019-08-01T00:00:00'                 'NaT']"
+              }
+            },
+            "fixed_values": {
+              "frac_timepos:ok": {
+                "case": "frac_timepos",
+                "value": "Timestamp('2019-08-01 13:45:37')",
+                "dtype": "datetime64[s]",
+                "series_repr": "['2019-08-01T13:45:37'                 'NaT']"
+              },
+              "frac_timeneg:ok": {
+                "case": "frac_timeneg",
+                "value": "Timestamp('1959-12-31 12:00:00')",
+                "dtype": "datetime64[s]",
+                "series_repr": "['1959-12-31T12:00:00'                 'NaT']"
+              },
+              "day_too_large_neg:exc": {
+                "case": "day_too_large_neg",
+                "exc_type": "OutOfBoundsDatetime",
+                "exc_msg": "Out of bounds SAS date value: -106751991167300.64; no SAS date can be this large, so the file is corrupt or the column is not a date"
+              },
+              "day_too_large_pos:exc": {
+                "case": "day_too_large_pos",
+                "exc_type": "OutOfBoundsDatetime",
+                "exc_msg": "Out of bounds SAS date value: 106751991167300.64; no SAS date can be this large, so the file is corrupt or the column is not a date"
+              },
+              "pr_example_half_day:ok": {
+                "case": "pr_example_half_day",
+                "value": "Timestamp('2019-08-01 12:00:00')",
+                "dtype": "datetime64[s]",
+                "series_repr": "['2019-08-01T12:00:00'                 'NaT']"
+              }
+            }
+          },
+          {
+            "label": "sas7bdat_datetime_report_cases_summary_check",
+            "outcome": "unpaired",
+            "buggy": null,
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": null,
+            "fixed_status": "ok",
+            "values_differ": null,
+            "buggy_values": null,
+            "fixed_values": {
+              "fixed_summary": {
+                "frac_timepos_status": "ok",
+                "frac_timepos": "2019-08-01 13:45:37",
+                "frac_timeneg_status": "ok",
+                "frac_timeneg": "1959-12-31 12:00:00",
+                "too_large_neg_status": "exc",
+                "too_large_neg_exc": "OutOfBoundsDatetime"
+              }
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 5,
+        "n_judged": 0,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 5,
+        "n_contested": 0,
+        "unobserved": [
+          "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+          "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+          "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+          "struct.pack_into(\"<d\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+          "PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\"sas7bdat\")"
+        ],
+        "verdict": "not_observed",
+        "examples": [
+          {
+            "input": "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+            "expected_output": "pd.Series(np.array([\"2019-08-01T13:45:37\", \"NaT\"], dtype=\"M8[s]\"), name=\"datecol\")",
+            "expected_value": [
+              "Timestamp('2019-08-01 13:45:37')",
+              "NaT"
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "2019-08-01 00:00:00 - the M8[D] cast truncated the fraction, dropping the 13:45:37 time of day",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+            "expected_output": "pd.Series(np.array([\"1959-12-31T12:00:00\", \"NaT\"], dtype=\"M8[s]\"), name=\"datecol\")",
+            "expected_value": [
+              "Timestamp('1959-12-31 12:00:00')",
+              "NaT"
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "1960-01-01 - truncation toward zero made this pre-1960 date a whole day late (time 12:00 also lost)",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+            "expected_output": "raises OutOfBoundsDatetime matching \"Out of bounds SAS date value\"",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "no exception: the value passes the old >= 2.0**63 guard, scales to exactly float(iNaT) and is read as NaT on the date column - silently missing data",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "struct.pack_into(\"<d\", data, 65816, 2.0**63 / 86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+            "expected_output": "raises OutOfBoundsDatetime matching \"Out of bounds SAS date value\"",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "no OutOfBoundsDatetime with message \"Out of bounds SAS date value\" at the buggy guard (value is below the 2.0**63 limit, so the new guard does not fire)",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)",
+              "observed": "__error__: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "evaluation_error": "FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\"sas7bdat\")",
+            "expected_output": "2019-08-01 12:00:00 (fraction preserved at second precision)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "2019-08-01 00:00:00 (the .5 day = 12:00 fraction truncated away)",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\"sas7bdat\")",
+              "observed": "__error__: NameError: name 'PR' is not defined",
+              "evaluation_error": "NameError: name 'PR' is not defined",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "PR#68039 description example: SAS day count 21762.5 read with pd.read_sas(format=\"sas7bdat\")",
+              "observed": "__error__: NameError: name 'PR' is not defined",
+              "evaluation_error": "NameError: name 'PR' is not defined",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 6,
+          "n_failed": 2,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 1,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "On the buggy commit 3c6130a49a735ffbc6e34616170a9a829cc73a4b (with only the PR test diff applied, source unchanged), the selected pytest invocation FAILS on test_fractional_date_keeps_time_of_day and test_date_too_large_to_scale_to_seconds_raises with the documented wrong values/NaT-vs-exception, and the same command PASSES unchanged once the fix commit ab7c682a4c11c89faa787bb1a920d53be79d08ed is applied."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata",
+          "numpy<3",
+          "cython>=3.1.0",
+          "meson>=1.2.3",
+          "meson-python>=0.18.0",
+          "pytest>=8.3.4",
+          "pytest-xdist>=3.6.1",
+          "pytest-cov",
+          "pytest-localserver",
+          "pytest-cython>=0.4.0"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-09-04T15:36:20-07:00",
+      "fixed_commit_date": "2026-09-04T17:01:31-07:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-09-04T17:01:31-07:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.1",
+            "pyparsing": "3.3.2",
+            "meson-python": "0.20.0",
+            "meson": "1.12.0",
+            "wheel": "0.48.0",
+            "cython": "3.3.0",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.0",
+            "cython": "cython==3.3.0"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1771.g3c6130a49a.dirty) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in ./.venv/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1771.g3c6130a49a.dirty) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in ./.venv/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1771.g3c6130a49a.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1771.g3c6130a49a.dirty-cp311-cp311-linux_x86_64.whl size=16020632 sha256=d50af87e929c0873feb87e1d16bd5f6c1a1a55db3d2f85b698ad5c8457d7b796\n  Stored in directory: /tmp/pip-ephem-wheel-cache-sva_bfvw/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1771.g3c6130a49a.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.1",
+            "pyparsing": "3.3.2",
+            "meson-python": "0.20.0",
+            "meson": "1.12.0",
+            "wheel": "0.48.0",
+            "cython": "3.3.0",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.0",
+            "cython": "cython==3.3.0"
+          },
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.2 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1772.gab7c682a4c) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.9.0 in ./.venv/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1772.gab7c682a4c) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in ./.venv/lib/python3.11/site-packages (from python-dateutil>=2.9.0->pandas==3.1.0.dev0+1772.gab7c682a4c) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1772.gab7c682a4c-cp311-cp311-linux_x86_64.whl size=16020484 sha256=6b9b01c1e9571f71ce3fabf7ec5abba0b1db4ef13e7bb2cd4d27e024c111fde1\n  Stored in directory: /tmp/pip-ephem-wheel-cache-7lp8lpxa/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1772.gab7c682a4c\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 9,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the pandas SAS7BDAT date scaling/precision bug on the buggy commit and confirm it is fixed on the fixed commit using the newly added tests and reported examples.",
+          "milestones": [
+            "buggy_env_and_failures_observed [buggy] \u2014 Build/run the reproducing SAS7BDAT tests on the buggy revision and demonstrate that at least the fractional-day precision and out-of-bounds behavior are wrong. (2 steps, verify: steps_succeeded, test_ran, test_fails)",
+            "buggy_examples_value_regressions [buggy] \u2014 Use the report\u2019s own input/output examples to directly capture the buggy datetime conversions on the buggy revision. (1 steps, verify: steps_succeeded, examples_reproduced, probe_ran, probe_shows_defect)",
+            "fixed_env_and_tests_pass [fixed] \u2014 Run the same targeted pytest cases on the fixed revision and show they pass. (1 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "fixed_examples_match_expected [fixed] \u2014 Check the report\u2019s own input/output examples on the fixed revision to confirm the correct values/exceptions. (1 steps, verify: steps_succeeded, examples_reproduced, probe_ran, probe_clean)",
+            "revisions_differ [fixed] \u2014 Conclude that buggy and fixed revisions differ on the reproduced behavior. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "ls -l pandas/tests/io/sas/data/dates_null.sas7bdat",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.13
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs pandas.tests.io.sas.test_sas7bdat -k \"test_date_too_large_to_scale_to_seconds_raises or test_fractional_date_keeps_time_of_day or test_null_date\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 2.06
+      },
+      {
+        "verification": {
+          "milestone": "buggy_env_and_failures_observed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`python -I -m pytest --pyargs pandas.tests.io.sas.test_sas7bdat -k \"test_date_too` exited 1: 11/site-packages/pandas/tests/io/sas/test_sas7bdat.py::test_fractional_date_keeps_time_of_day[-0.5-1959-12-31T12:00:00]\n================= 4 failed, 1 passed, 272 deselected in 1.05s =================="
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failed milestone by directly probing the SAS7BDAT datetime conversions from the report\u2019s examples on both buggy and fixed revisions (without relying on the flaky/newly-added reproducing tests).",
+          "milestones": [
+            "buggy_examples_value_regressions [buggy] \u2014 Evaluate the report\u2019s SAS7BDAT datetime conversion examples on the buggy revision and record the produced outputs (including truncation/NaT vs exceptions). (2 steps, verify: steps_succeeded, probe_ran)",
+            "fixed_examples_value_regressions [fixed] \u2014 Evaluate the same report\u2019s SAS7BDAT datetime conversion examples on the fixed revision and record the produced outputs. (1 steps, verify: steps_succeeded, probe_ran)",
+            "revisions_differ_on_examples [fixed] \u2014 Conclude the buggy and fixed revisions differ on the reproduced SAS7BDAT datetime behavior from the report\u2019s examples. (2 steps, verify: steps_succeeded, examples_reproduced)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "ls -l pandas/tests/io/sas/data/dates_null.sas7bdat",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.13
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "sas7bdat_daycount_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(sas7bdat_daycount_examples) \u2014 Run a numerical probe that patches dates_null.sas7bdat with the report\u2019s day-count doubles and calls pd.read_sas, recording the datecol values and whether OutOfBoundsDatetime is raised."
+      },
+      {
+        "verification": {
+          "milestone": "buggy_examples_value_regressions",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(sas7bdat_daycount_examples) \u2014 Run a numerical probe that patches dates_null.sas7bdat with the report\u2019s day-count doubles and calls pd.read_sas, recording the datecol values and whether OutOfBoundsDatetime is raised. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Establish, without relying on the flaky new reproducing tests, that the SAS7BDAT datetime conversion examples in the report produce buggy values on the buggy revision and the corrected values (including proper exceptions) on the fixed revision.",
+          "milestones": [
+            "probe_reported_sas7bdat_examples_bug_fixed [buggy] \u2014 Run the report's SAS7BDAT datetime conversion example inputs/outputs as executable expressions against both buggy and fixed revisions, and record the produced outputs/exceptions. (2 steps, verify: steps_succeeded, examples_reproduced, probe_ran)",
+            "probe_reported_sas7bdat_examples_fixed [fixed] \u2014 Run the same report example reproductions against the fixed revision and record outputs for direct comparison to the buggy run. (2 steps, verify: steps_succeeded, examples_reproduced, probe_ran)",
+            "revisions_differ_on_reported_examples [fixed] \u2014 Confirm that buggy and fixed revisions differ on the reproduced SAS7BDAT datetime behavior from the report examples (wrong truncation/NaT on buggy vs correct second-precision timestamps and OutOfBoundsDatetime on fixed). (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "ls -l pandas/tests/io/sas/data/dates_null.sas7bdat",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.13
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "probe_reported_sas7bdat_examples_bug_fixed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/5 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 5 never evaluated \u2014 the preamble does not bind everything they need: struct.pack_into(\"<d\", data, 65816, 21762 + (13*3600 + 45*60 + 37)/86400) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]; struct.pack_into(\"<d\", data, 65816, -0.5) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)[\"datecol\"]; struct.pack_into(\"<d\", data, 65816, -(2.0**63 / 86400)) into tests/io/sas/data/dates_null.sas7bdat, then pd.read_sas(io.BytesIO(data), format=\"sas7bdat\", encoding=None)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the SAS7BDAT datetime conversion defect from the report by directly executing equivalent byte-patching expressions on buggy and fixed revisions (including the OutOfBoundsDatetime cases), without relying on the flaky/failed report-example harness.",
+          "milestones": [
+            "probe_reported_sas7bdat_examples_bug_fixed [buggy] \u2014 Run a custom probe that patches the SAS7BDAT dates_null.sas7bdat bytes with the report's day-count values, reads them via pd.read_sas, and records the resulting scalar/exception outcomes on both buggy and fixed revisions. (2 steps, verify: steps_succeeded, probe_ran)",
+            "probe_reported_sas7bdat_examples_fixed [fixed] \u2014 Run the same patch/read reproducer probe on the fixed revision using the identical probe label and code, capturing the corrected timestamps/exceptions. (1 steps, verify: steps_succeeded, probe_ran)",
+            "revisions_differ_on_reported_sas7bdat_examples [fixed] \u2014 Show that buggy and fixed revisions differ on at least one of the report's SAS7BDAT datetime conversion cases (wrong truncation vs preserved time and/or OutOfBoundsDatetime behavior). (1 steps, verify: steps_succeeded, probe_ran, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -c \"import pandas as pd, sys; print('pandas', pd.__version__); import io, struct; from pathlib import Path; p=Path('pandas/tests/io/sas/data/dates_null.sas7bdat'); data=bytearray(p.read_bytes()); struct.pack_into('<d', data, 65816, 21762.57); df=pd.read_sas(io.BytesIO(data), format='sas7bdat', encoding=None); print(df['datecol'].iloc[0]);\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.56
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "sas7bdat_datetime_report_cases",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "values do not match the reference (length mismatch: 0 vs 1)"
+        ],
+        "expected": [
+          1
+        ],
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "probe_reported_sas7bdat_examples_bug_fixed",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "sas7bdat_datetime_report_cases",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "values do not match the reference (length mismatch: 0 vs 1)"
+        ],
+        "expected": [
+          1
+        ],
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "probe_reported_sas7bdat_examples_fixed",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "sas7bdat_datetime_report_cases_summary_check",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "revisions_differ_on_reported_sas7bdat_examples",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": false,
+              "detail": "no difference established (transition fail->missing, numeric persistent)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs pandas.tests.io.sas.test_sas7bdat -k test_date_too_large_to_scale_to_seconds_raises -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.17
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs pandas.tests.io.sas.test_sas7bdat -k test_date_too_large_to_scale_to_seconds_raises -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.12
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_date_too_large_to_scale_to_seconds_raises",
+          "command": "python -I -m pytest --pyargs pandas.tests.io.sas.test_sas7bdat -k test_date_too_large_to_scale_to_seconds_raises -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "pandas",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_date_too_large_to_scale_to_seconds_raises",
+              "command": "python -I -m pytest --pyargs pandas.tests.io.sas.test_sas7bdat -k test_date_too_large_to_scale_to_seconds_raises -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 11)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 11)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 5,
+            "recorded": 5,
+            "error": null,
+            "could_not_evaluate": 5
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 5,
+            "recorded": 5,
+            "error": null,
+            "could_not_evaluate": 5
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: FileNotFoundError: [Errno 2] No such file or directory: 'tests/io/sas/data/dates_null.sas7bdat'"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "status": "exception",
+        "kept_earlier_run": true
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "status": "exception",
+        "kept_earlier_run": true
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "status": "exception",
+        "kept_earlier_run": true
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "status": "exception",
+        "kept_earlier_run": true
+      },
+      {
+        "described_examples": {
+          "n_described": 4,
+          "buggy": {
+            "status": "exception",
+            "n_records": 4,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "exception",
+            "n_records": 4,
+            "target_reached": true
+          },
+          "repaired": 2,
+          "unusable": {
+            "buggy": "every record came from the probe's own failure: __error__: IndexError: 2",
+            "fixed": "every record came from the probe's own failure: __error__: IndexError: 2"
+          }
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "not_observed",
+        "examples": "0/0"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported input/output examples were never observed on both revisions, so the values themselves are unverified"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 9,
+      "input_tokens": 26037,
+      "output_tokens": 7093,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.014074
+    }
+  }
+]

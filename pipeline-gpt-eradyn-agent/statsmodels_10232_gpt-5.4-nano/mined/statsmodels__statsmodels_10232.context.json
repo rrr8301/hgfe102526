@@ -1,0 +1,344 @@
+{
+  "repo": "statsmodels/statsmodels",
+  "pr_number": 10232,
+  "reference": "https://github.com/statsmodels/statsmodels/pull/10232",
+  "buggy_commit": "e7f76fec5421daa85e697bb2afbbe1cd220fd65f",
+  "fixed_commit": "3beaeeb147df215616297de655a57f2508df19af",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": "3.10.12",
+    "dependencies": [
+      {
+        "name": "numpy",
+        "constraint": "2.5.2 (as used in the PR run notes)",
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "PR#10232 body: \"macOS arm64 / Apple M3, Python 3.12, numpy 2.5.2, Cython 3.3.0; ... run against the 0.15.0 wheel\""
+      },
+      {
+        "name": "Cython",
+        "constraint": "3.3.0 (as used in the PR run notes)",
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "PR#10232 body: \"macOS arm64 / Apple M3, Python 3.12, numpy 2.5.2, Cython 3.3.0\""
+      }
+    ],
+    "installation_commands": [
+      "python -m pip install -i https://pypi.anaconda.org/scientific-python-nightly-wheels/simple statsmodels --upgrade --use-deprecated=legacy-resolver"
+    ],
+    "build_commands": [
+      "(Evidence only) Compile the .pyx standalone with cython -3 + clang (as stated in PR#10232 run notes): \"the `.pyx` was compiled standalone with `cython -3` + clang\"",
+      "(Evidence only) Re-run cython compilation using Cython 3.3.0 if matching the PR notes: \"Cython 3.3.0; the `.pyx` was compiled standalone with `cython -3` + clang\""
+    ],
+    "test_commands": [
+      "ruff check statsmodels/nonparametric"
+    ],
+    "system_packages": [
+      "clang (implied by \"compiled standalone with cython -3 + clang\" in PR#10232 run notes)"
+    ],
+    "era_constraints": [
+      "explicit: numpy 2.5.2 (as used in the PR run notes)  [numerically relevant]",
+      "explicit: Cython 3.3.0 (as used in the PR run notes)  [numerically relevant]"
+    ],
+    "numerical_backend": "numpy fft and a Cython code in statsmodels (linbin.pyx)",
+    "dependency_constraints": [
+      {
+        "package": "numpy",
+        "documented_constraint": "2.5.2 (as used in the PR run notes)",
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "explicit",
+        "source": "PR#10232 body: \"macOS arm64 / Apple M3, Python 3.12, numpy 2.5.2, Cython 3.3.0; ... run against the 0.15.0 wheel\""
+      },
+      {
+        "package": "Cython",
+        "documented_constraint": "3.3.0 (as used in the PR run notes)",
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "explicit",
+        "source": "PR#10232 body: \"macOS arm64 / Apple M3, Python 3.12, numpy 2.5.2, Cython 3.3.0\""
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "statsmodels.nonparametric.linbin.fast_linbin",
+    "observed_behavior": "With `KDEUnivariate(x).fit(fft=True, cut=0)`, the underlying `fast_linbin` binning mis-handles observations in the last bin (and the first two bins), producing incorrect bin counts; for the #9556 example the FFT density integrates to 0.8317 instead of ~1.0. Additionally, the original code could write out of bounds (touching `gcnts[M]`), causing a crash (malloc checksum error/abort).",
+    "expected_behavior": "The `fit` should run without crashing, and the FFT-based density should integrate to 1. For `fast_linbin`, bin counts should sum to the number of in-range observations (`nobs`) and match a reference linear binning (KernSmooth linbin) so that counts and moments are preserved.",
+    "manifestation": "crash",
+    "trigger_conditions": [
+      "`KDEUnivariate(endog).fit(fft=True, cut=0)` with some unique values; #9556 example uses `x = [24.0, 43.0, 27.0, 15.0, 37.0, 8.82]` (bad) and a related value `8.8` (good)",
+      "An observation falling in the last bin (`li == M - 1`), where the split `gcnts[li + 1] += rem` writes to `gcnts[M]` (out of bounds)",
+      "`cut=0` so the largest observation maps to `li == M - 1`; depending on rounding `rem` is a small nonzero number",
+      "With `trunc == 0`, a tail case adds to `gcnts[M]` directly (out of bounds)",
+      "Also in the original loop, observations with `li > 1 and li_i < M` meant observations in the first two bins were silently dropped; for the #9556 data the bin counts sum was 4.99999999999994 instead of 6"
+    ],
+    "input_output_examples": [
+      {
+        "input": "x = [24.0, 43.0, 27.0, 15.0, 37.0, 8.82] ; kde = sm.nonparametric.KDEUnivariate(x) ; kde.fit(fft=True, cut=0)",
+        "buggy_output": "Process abort with `malloc: Incorrect checksum for freed object ...` and `Corrupt value: 0x3d30000000000000` followed by `abort`",
+        "expected_output": "Fit should run without crashing for the same setup",
+        "value_kind": "exception",
+        "source": "ISSUE #9556 repro and expected-output text in the provided passages"
+      },
+      {
+        "input": "For #9556 data (same `x` as above) with `cut=0`",
+        "buggy_output": "FFT density integrates to 0.8317 (and bin counts sum to 4.99999999999994 instead of 6)",
+        "expected_output": "FFT density integrates to 0.9979 (and bin counts sum to 6)",
+        "value_kind": "float",
+        "source": "commit message and PR#10232 test/verification notes"
+      },
+      {
+        "input": "x = [0, 0.3, 1.0], a=0, b=1, M=5",
+        "buggy_output": "bin counts `[0, 0, 0, 0, 1]`",
+        "expected_output": "bin counts `[1, 0.8, 0.2, 0, 1]`",
+        "value_kind": "array",
+        "source": "PR#10232 verification notes"
+      }
+    ],
+    "oracle_clues": [
+      "Original behavior described as an out-of-bounds write when an observation falls in the last bin: for `li == M - 1` the split writes to `gcnts[M]` (one element past the end).",
+      "With `cut=0` the largest observation maps to `li == M - 1`, and depending on rounding `rem` can be a small nonzero number added just past a freed-or-live heap allocation; boundscheck builds raise `\"Out of bounds on buffer access\"`.",
+      "Counts correctness: \u201ccounts sum to nobs\u201d and FFT density integrates to 1 within tolerance 0.01. The fix reports: counts sum changed from 4.99999999999994 to 6 and density integration from 0.8317 to 0.9979.",
+      "Numerical reference: rewrite matches KernSmooth linbin; on 200 random cases max abs difference of `1.1e-13` to reference, and counts sum correctly. (The passages mention this as a verification of the fix, not the buggy behavior.)"
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": null,
+    "precision": null,
+    "magnitude": null,
+    "tolerance": null,
+    "category_specific_evidence": [
+      "KDEUnivariate(x).fit(fft=True, cut=0) crashes for some unique values of endog; example input x = [24.0, 43.0, 27.0, 15.0, 37.0, 8.82] triggers crash, while x = [24.0, 43.0, 27.0, 15.0, 37.0, 8.8] runs without crashing.",
+      "For the triggering array x = np.array([24.0, 43.0, 27.0, 15.0, 37.0, 8.82]), with a=x.min(), b=x.max(), and cut=0: lxi = (x - a) / ((b - a) / 511). The evidence states: \u201clxi[1] = 511.00000000000006  ->  li = 511 = M - 1, rem = 5.7e-14  ->  gcnts[512] += 5.7e-14\u201d.",
+      "The diff explains the violated numerical boundary/grid assignment property: \u201cX[i] == b, up to rounding in lxi; all of the weight belongs to the last grid point and gcnts[M] is out of bounds\u201d, and adjusts logic so that when li_i >= M - 1, weight is accumulated into gcnts[M-1] instead of gcnts[M].",
+      "The fix rationale includes: \u201cobservations in [a, b] are split between the two enclosing grid points, an observation on the upper boundary is assigned to the last grid point\u201d.",
+      "The issue-specific numerical artifacts include the concrete floating-point rounding rem = 5.7e-14 and lxi[1] = 511.00000000000006 (i.e., slight over 511 due to rounding), leading to out-of-bounds access gcnts[512] in the reported reproducer context."
+    ],
+    "reproduction_risks": [
+      "Reproduction may fail or not crash depending on floating-point rounding behavior of lxi/li computations; evidence shows a specific near-boundary value lxi[1] = 511.00000000000006 causing rem = 5.7e-14 and an attempted update gcnts[512].",
+      "Using the \u201cgood\u201d variant x ending in 8.8 instead of 8.82 may avoid the crash, so exact data values matter.",
+      "Crash trigger may depend on how unique values map to the FFT/bin grid through (x-a)/((b-a)/511), especially near the upper boundary X=b where rounding can make li hit M-1 and rem becomes a tiny positive value."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "environment.language_version",
+      "value": "3.10.12",
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "environment.numerical_backend",
+      "value": "numpy fft and a Cython code in statsmodels (linbin.pyx)",
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "python -m pip install -i https://pypi.anaconda.org/scientific-python-nightly-wheels/simple statsmodels --upgrade --use-deprecated=legacy-resolver"
+      ],
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "environment.build_commands",
+      "value": [
+        "(Evidence only) Compile the .pyx standalone with cython -3 + clang (as stated in PR#10232 run notes): \"the `.pyx` was compiled standalone with `cython -3` + clang\"",
+        "(Evidence only) Re-run cython compilation using Cython 3.3.0 if matching the PR notes: \"Cython 3.3.0; the `.pyx` was compiled standalone with `cython -3` + clang\""
+      ],
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "environment.test_commands",
+      "value": [
+        "ruff check statsmodels/nonparametric"
+      ],
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "environment.system_packages",
+      "value": [
+        "clang (implied by \"compiled standalone with cython -3 + clang\" in PR#10232 run notes)"
+      ],
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "numpy",
+      "source": "PR#10232 body: \"macOS arm64 / Apple M3, Python 3.12, numpy 2.5.2, Cython 3.3.0; ... run against the 0.15.0 wheel\"",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "Cython",
+      "source": "PR#10232 body: \"macOS arm64 / Apple M3, Python 3.12, numpy 2.5.2, Cython 3.3.0\"",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "statsmodels.nonparametric.linbin.fast_linbin",
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "With `KDEUnivariate(x).fit(fft=True, cut=0)`, the underlying `fast_linbin` binning mis-handles observations in the last bin (and the first two bins), producing incorrect bin counts; for the #9556 example the FFT density integrates to 0.8317 instead of ~1.0. Additionally, the original code could write out of bounds (touching `gcnts[M]`), causing a crash (malloc checksum error/abort).",
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "The `fit` should run without crashing, and the FFT-based density should integrate to 1. For `fast_linbin`, bin counts should sum to the number of in-range observations (`nobs`) and match a reference linear binning (KernSmooth linbin) so that counts and moments are preserved.",
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "crash",
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 5,
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 4,
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 3,
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 5,
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "issue",
+      "evidence_location": "issue:issue#9556"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "issue:issue#9556",
+        "readme:README.md",
+        "pr_body:PR#10232",
+        "readme:README.md",
+        "commit:commits",
+        "diff:statsmodels/nonparametric/linbin.pyx:33-52",
+        "issue:issue#9556",
+        "issue:issue#9556"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "issue:issue#9556",
+        "issue:issue#9556",
+        "pr_body:PR#10232",
+        "commit:commits",
+        "diff:statsmodels/nonparametric/linbin.pyx:33-52",
+        "discussion:PR#10232",
+        "issue:issue#9556",
+        "pr_body:PR#10232"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "issue:issue#9556",
+        "issue:issue#9556",
+        "pr_body:PR#10232",
+        "diff:statsmodels/nonparametric/linbin.pyx:33-52",
+        "test_diff:statsmodels/nonparametric/tests/test_kde.py:15-21",
+        "commit:commits",
+        "discussion:PR#10232",
+        "issue:issue#9556"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 1.0,
+        "required_total": 2,
+        "required_present": 2,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "environment.test_commands",
+          "environment.dependencies",
+          "environment.language_version",
+          "environment.build_commands"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 1.0,
+        "required_total": 5,
+        "required_present": 5,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 5824,
+    "output_tokens": 2210,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.003927,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": []
+}

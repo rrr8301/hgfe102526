@@ -1,0 +1,52 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 40e5ae78bfd6a..1e8b2a735ab69 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -912,6 +912,7 @@ I/O
+ - Fixed bug in :meth:`DataFrame.to_hdf` and :meth:`HDFStore.put` where writing an object to a key silently deleted any nested keys stored beneath it (:issue:`17267`)
+ - Fixed bug in :meth:`DataFrame.to_hdf` raising ``TypeError`` when the index had a non-tick :class:`DateOffset` ``freq`` (e.g. ``DateOffset(years=1)``) (:issue:`45790`)
+ - Fixed bug in :meth:`DataFrame.to_hdf` with ``format="table"`` where a :class:`TimedeltaIndex` was reconstructed as a :class:`PeriodIndex` (when ``freq`` was set) or an integer :class:`Index` (otherwise) on read-back (:issue:`21466`)
++- Fixed bug in :meth:`HDFStore.select` where a ``<`` or ``<=`` ``where`` query on a ``datetime64`` or ``timedelta64`` column also matched the rows holding ``NaT`` (:issue:`68031`)
+ - Fixed bug in :meth:`HDFStore.select` where a ``where`` combining a row condition with an ``==``/``!=`` filter on a data column of more than 31 values (e.g. ``"index>0 & col=big_list"``) silently returned extra rows that did not match the filter when read with ``iterator=True`` or ``chunksize`` (:issue:`12953`)
+ - Fixed bug in :meth:`HDFStore.select` where a ``where`` query using ``!=`` against a list of two or more values (e.g. ``"col != [2, 3]"``) silently returned every row instead of excluding the listed ones; a single-value list was unaffected (:issue:`68030`)
+ - Fixed bug in :meth:`HDFStore.select` where an ``==``/``!=`` filter on a timezone-aware datetime data column of more than 31 values silently returned the wrong rows (typically none) on a plain read, because the timezone was dropped before the filter was applied (:issue:`12953`)
+diff --git a/pandas/core/computation/pytables.py b/pandas/core/computation/pytables.py
+index 76b0deed12288..dbd75da711bf1 100644
+--- a/pandas/core/computation/pytables.py
++++ b/pandas/core/computation/pytables.py
+@@ -22,6 +22,7 @@
+ from pandas._libs.tslibs import (
+     Timedelta,
+     Timestamp,
++    iNaT,
+ )
+ from pandas.errors import UndefinedVariableError
+ 
+@@ -226,11 +227,11 @@ def ordered(self):
+     def generate(self, v) -> str:
+         """create and return the op string for this TermValue"""
+         val = v.tostring(self.encoding)
++        lhs = self.lhs.value
+         if v.truncated:
+             # The requested value fell strictly between `val` and the next
+             # storable one, so no row can equal it. Compare against `val` with
+             # an adjusted operator rather than against the value we truncated to.
+-            lhs = self.lhs.value
+             if self.op == "==":
+                 # matches nothing
+                 return f"(({lhs} > {val}) & ({lhs} <= {val}))"
+@@ -239,7 +240,13 @@ def generate(self, v) -> str:
+                 return f"(({lhs} <= {val}) | ({lhs} > {val}))"
+             op = "<=" if self.op in ("<", "<=") else ">"
+             return f"({lhs} {op} {val})"
+-        return f"({self.lhs.value} {self.op} {val})"
++        kind = ensure_decoded(self.kind) or ""
++        if self.op in ("<", "<=") and kind.startswith(("datetime", "timedelta")):
++            # datetime64/timedelta64 columns are stored as int64 with NaT as
++            # iNaT, which sorts below every real value, so an unguarded "less
++            # than" would match the NaT rows. ">"/">=" need no such guard.
++            return f"(({lhs} != {iNaT}) & ({lhs} {self.op} {val}))"
++        return f"({lhs} {self.op} {val})"
+ 
+     def convert_value(self, conv_val) -> TermValue:
+         """

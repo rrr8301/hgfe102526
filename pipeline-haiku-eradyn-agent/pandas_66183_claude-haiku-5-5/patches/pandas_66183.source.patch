@@ -1,0 +1,79 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index a2670cda48d19..7edd10ace9071 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -444,6 +444,7 @@ Groupby/resample/rolling
+ - Bug in :meth:`.DataFrameGroupBy.apply` with ``as_index=False`` where applying on an empty :class:`DataFrame` returned inconsistent index metadata compared to non-empty results (:issue:`48135`)
+ - Bug in :meth:`.DataFrameGroupBy.cumprod`, :meth:`.DataFrameGroupBy.cummin`, and :meth:`.DataFrameGroupBy.cummax` (and Series variants) returning ``Float64`` instead of preserving the nullable integer dtype (e.g. ``Int64``) when the group key contains ``NA`` (:issue:`65550`)
+ - Bug in :meth:`.GroupBy.any` and :meth:`.GroupBy.all` returning ``NaN`` with ``float64`` dtype for unobserved categorical groups on NumPy ``bool`` data instead of the boolean identity value with ``bool`` dtype (:issue:`65100`)
++- Bug in :meth:`.GroupBy.quantile` returning incorrect results for groups containing a non-null ``NaN`` value (e.g. from a pyarrow or masked float array), and returning the Unix epoch instead of ``NaT`` for all-``NaT`` datetime-like groups on some platforms (:issue:`64330`)
+ - Bug in :meth:`.Resampler.agg` raising ``ValueError`` with a dict of aggregations when applied to a :meth:`DataFrame.groupby` with ``as_index=False`` (:issue:`52397`)
+ - Bug in :meth:`.Rolling.corr` and :meth:`.Rolling.cov` computing incorrect results on degenerate windows (:issue:`24019`)
+ - Bug in :meth:`.Rolling.skew` and :meth:`.Rolling.kurt` (and their :class:`GroupBy` counterparts) returning ``0.0`` and ``-3.0`` respectively for degenerate windows or groups; these now return ``NaN`` (:issue:`62864`)
+diff --git a/pandas/_libs/groupby.pyx b/pandas/_libs/groupby.pyx
+index f16dac834807c..4a0deb9ead556 100644
+--- a/pandas/_libs/groupby.pyx
++++ b/pandas/_libs/groupby.pyx
+@@ -1453,11 +1453,17 @@ def group_quantile(
+             end = ends[i]
+ 
+             # Count non-NA elements in this group using direct indexing
+-            # (avoids memoryview slicing, which is not nogil-safe).
++            # (avoids memoryview slicing, which is not nogil-safe). A float
++            # NaN that is not flagged by ``mask`` (e.g. a non-null NaN in a
++            # pyarrow/masked float array, GH#64330) must be treated as NA too:
++            # it would corrupt kth_smallest_c's ordering comparisons below.
+             grp_size = end - start
+             non_na_sz = 0
+             for j in range(grp_size):
+                 if mask[start + j] == 0:
++                    if numeric_t is float32_t or numeric_t is float64_t:
++                        if values[start + j] != values[start + j]:
++                            continue
+                     non_na_sz += 1
+ 
+             if non_na_sz == 0:
+@@ -1467,10 +1473,10 @@ def group_quantile(
+                     else:
+                         out[i, k] = NaN
+             else:
+-                # Copy non-NA values into a temporary mutable buffer.
+-                # Pre-filtering NAs means kth_smallest_c's comparisons are
+-                # always valid (no NaN/NaT values), so is_datetimelike needs
+-                # no special handling here.
++                # Copy non-NA values into a temporary mutable buffer. NAs are
++                # pre-filtered (using the same condition as the count above) so
++                # that kth_smallest_c's comparisons are always valid (no NaN/NaT
++                # values), meaning is_datetimelike needs no special handling.
+                 tmp = <numeric_t*>malloc(non_na_sz * sizeof(numeric_t))
+                 if tmp is NULL:
+                     raise MemoryError()
+@@ -1478,6 +1484,9 @@ def group_quantile(
+                 j = 0
+                 for k in range(grp_size):
+                     if mask[start + k] == 0:
++                        if numeric_t is float32_t or numeric_t is float64_t:
++                            if values[start + k] != values[start + k]:
++                                continue
+                         tmp[j] = values[start + k]
+                         j += 1
+ 
+diff --git a/pandas/core/arrays/datetimelike.py b/pandas/core/arrays/datetimelike.py
+index a0c4b9abb200e..5920a627bd86b 100644
+--- a/pandas/core/arrays/datetimelike.py
++++ b/pandas/core/arrays/datetimelike.py
+@@ -1747,7 +1747,13 @@ def _groupby_quantile(
+         else:
+             out = out.reshape(ncols, ngroups * nqs)  # type: ignore[assignment]
+ 
+-        out = out.astype("i8").view(self._ndarray.dtype)
++        # All-NA groups come back as NaN; casting NaN to i8 is platform
++        # dependent (0 on some architectures), so map them to iNaT explicitly.
++        na_mask = np.isnan(out)
++        out[na_mask] = 0
++        out = out.astype("i8")
++        out[na_mask] = iNaT
++        out = out.view(self._ndarray.dtype)
+         return self._from_backing_data(out)
+ 
+ 

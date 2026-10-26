@@ -1,0 +1,105 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 89363938498c4..4d14aa91c20e0 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -425,6 +425,7 @@ Datetimelike
+ - Bug in ``day_of_week``, :meth:`Timestamp.weekday` and :meth:`Timestamp.day_name` returning a wrong weekday, or raising ``OverflowError``, for second-resolution datetimes with a year beyond ``2**31`` (:issue:`66549`)
+ - Bug in adding a :class:`BusinessDay` offset to a :class:`DatetimeIndex` or :class:`Series` where an out-of-bounds result silently wrapped to an unrelated date, and a result landing exactly on the ``NaT`` sentinel came back as a missing value, instead of raising ``OverflowError`` (:issue:`66552`)
+ - Bug in adding a :class:`BusinessDay` offset with ``n`` of magnitude ``2**31`` or more to a :class:`DatetimeIndex` or :class:`Series` silently shifting by a wrapped number of business days, e.g. ``n=2**32`` behaving like ``n=0`` (:issue:`66549`)
++- Bug in adding a :class:`DateOffset` to a :class:`DatetimeIndex` or :class:`Series` where a result landing exactly on the ``NaT`` sentinel came back as a missing value, and where promoting the values to the offset's finer resolution silently wrapped to an unrelated date, instead of raising as the equivalent :class:`Timedelta` operations already did (:issue:`66552`)
+ - Bug in adding a :class:`DateOffset` with a ``milliseconds`` component to a :class:`Timestamp` returning a microsecond-resolution result, inconsistent with the millisecond-resolution result of the equivalent :class:`DatetimeIndex` and :class:`Series` operations (:issue:`64806`)
+ - Bug in adding a :class:`Week` offset to a :class:`DatetimeIndex` or :class:`Series` where an out-of-bounds result silently wrapped to an unrelated date, and a result landing exactly on the ``NaT`` sentinel came back as a missing value, instead of raising ``OverflowError`` (:issue:`66552`)
+ - Bug in adding a :class:`Week` offset with ``n`` of magnitude ``2**31`` or more to a :class:`DatetimeIndex` or :class:`Series` silently shifting by a wrapped number of weeks, e.g. ``n=2**32`` behaving like ``n=0`` (:issue:`66549`)
+diff --git a/pandas/_libs/tslibs/offsets.pyx b/pandas/_libs/tslibs/offsets.pyx
+index 0c5a3beeeab91..b14f51e90610a 100644
+--- a/pandas/_libs/tslibs/offsets.pyx
++++ b/pandas/_libs/tslibs/offsets.pyx
+@@ -65,6 +65,7 @@ from pandas._libs.tslibs.dtypes cimport (
+     c_OFFSET_TO_PERIOD_FREQSTR,
+     c_PERIOD_AND_OFFSET_DEPR_FREQSTR,
+     c_PERIOD_TO_OFFSET_FREQSTR,
++    npy_unit_to_abbrev,
+     npy_unit_to_attrname,
+     periods_per_day,
+ )
+@@ -75,6 +76,7 @@ from pandas._libs.tslibs.nattype cimport (
+ from pandas._libs.tslibs.np_datetime cimport (
+     NPY_DATETIMEUNIT,
+     add_overflowsafe,
++    astype_overflowsafe,
+     dts_to_iso_string,
+     get_unit_from_dtype,
+     import_pandas_datetime,
+@@ -1917,6 +1919,31 @@ def delta_to_tick(delta: timedelta) -> Tick:
+ 
+ # --------------------------------------------------------------------
+ 
++
++cdef ndarray _add_timedelta_overflowsafe(ndarray dt64arr, _Timedelta delta):
++    """
++    Add a Timedelta to a datetime64 ndarray, raising instead of wrapping.
++
++    Matching numpy, the operands are cast to the finer of the two units. Unlike
++    numpy, both that cast and the addition itself raise, and a sum landing on
++    the NaT sentinel is rejected rather than passed off as missing (GH#66552).
++    """
++    cdef:
++        NPY_DATETIMEUNIT reso = get_unit_from_dtype(dt64arr.dtype)
++
++    if reso < delta._creso:
++        dt64arr = astype_overflowsafe(
++            dt64arr, np.dtype(f"M8[{npy_unit_to_abbrev(delta._creso)}]")
++        )
++    elif reso > delta._creso:
++        delta = delta._as_creso(reso)
++
++    i8result = add_overflowsafe(
++        dt64arr.view("i8"), np.array(delta._value, dtype="i8")
++    )
++    return i8result.view(dt64arr.dtype)
++
++
+ cdef class RelativeDeltaOffset(BaseOffset):
+     """
+     DateOffset subclass backed by a dateutil relativedelta object.
+@@ -2103,7 +2130,7 @@ cdef class RelativeDeltaOffset(BaseOffset):
+         if months:
+             shifted = shift_months(dt64other.view("i8"), months, reso=reso)
+             dt64other = shifted.view(dtarr.dtype)
+-        return dt64other + delta
++        return _add_timedelta_overflowsafe(dt64other, delta)
+ 
+     def is_on_offset(self, dt: datetime) -> bool:
+         """
+diff --git a/pandas/core/arrays/datetimes.py b/pandas/core/arrays/datetimes.py
+index 174c46f951157..3c96f248b3ed7 100644
+--- a/pandas/core/arrays/datetimes.py
++++ b/pandas/core/arrays/datetimes.py
+@@ -801,13 +801,10 @@ def _add_offset(self, offset: BaseOffset) -> Self:
+             and isinstance(offset, RelativeDeltaOffset)
+             and not offset._use_relativedelta
+         ):
+-            res_values = self._ndarray + offset._pd_timedelta
+-            # GH#64806 offset._pd_timedelta may have finer resolution than
+-            # self, promoting res_values to a finer unit; derive the dtype
+-            # from the promoted values rather than assuming self.dtype's unit.
+-            res_unit = cast("TimeUnit", np.datetime_data(res_values.dtype)[0])
+-            res_dtype = tz_to_dtype(self.tz, res_unit)
+-            result = type(self)._simple_new(res_values, dtype=res_dtype)
++            # GH#64806 _add_timedeltalike_scalar casts to the finer of the two
++            # resolutions, so the result keeps offset._pd_timedelta's unit when
++            # that is finer than self's.
++            result = self._add_timedeltalike_scalar(offset._pd_timedelta)
+             if offset.normalize:
+                 result = result.normalize()
+             return result
+@@ -820,7 +817,8 @@ def _add_offset(self, offset: BaseOffset) -> Self:
+         try:
+             res_values = offset._apply_array(values._ndarray)
+             if res_values.dtype.kind == "i":
+-                res_values = res_values.view(values.dtype)
++                # values is tz-naive here, so its dtype is the ndarray's
++                res_values = res_values.view(values._ndarray.dtype)
+         except NotImplementedError:
+             if config["mode"]["performance_warnings"]:
+                 warnings.warn(

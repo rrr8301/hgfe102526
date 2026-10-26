@@ -1,0 +1,90 @@
+{
+  "input": "pipeline-gpt-5.4-nano/jax_24074_gpt-5.4-nano/mined/jax-ml__jax_24074.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 12073,
+    "output_tokens": 2843,
+    "cost_usd": 0.005969,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "jax-ml/jax",
+      "pr_number": 24074,
+      "reference": "https://github.com/jax-ml/jax/pull/24074",
+      "buggy_commit": "437d7d88b992c9f511a3019823104d176e84064f",
+      "fixed_commit": "5b839ff3c63cd5d1372671220c3befd0e1c49d21",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 5612,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the jax.numpy.polyfit covariance bug for multiple right-hand sides (num_rhs>1) using the project\u2019s own updated test parameterization that includes num_rhs=[1,5]. The buggy revision fails because polyfit\u2019s cov=True/full=False covariance output uses only the first residual, producing the wrong covariance shape/content across rhs; the fixed revision returns one covariance matrix per rhs.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12.6",
+          "pip_packages": [],
+          "system_packages": [],
+          "build_commands": [
+            "# Create env (example; adjust to your CI/container)\nconda create -n jax-bug-polyfit python=3.12.6 -y\nconda activate jax-bug-polyfit\nconda install -c conda-forge numpy=2.1.1 -y\n# Install matching JAX/JAXLIB versions for the bug-triggering revisions\npip install -U pip\n# Install jax at the buggy revision\npip install -e .  # ensure it builds against the local checkout first\n# For the buggy/fixed transition, checkout the exact revisions and build each\npython -c \"import jax, jaxlib, numpy as np; print('jax', jax.__version__, 'jaxlib', jaxlib.__version__, 'numpy', np.__version__)\""
+          ],
+          "pinned_because": [
+            "Language/toolchain: Python 3.12.6 as provided in the evidence.",
+            "Numerically relevant deps pinned: jax 0.4.34.dev20241002+e212c7733 (buggy/fixed are within this series/PR), jaxlib 0.4.33, numpy 2.1.1.",
+            "The bug is numerically relevant and depends on code paths in jax.numpy.polynomial.polyfit; using the same versions reduces cross-version drift in residual/covariance broadcasting."
+          ]
+        },
+        "test_command": "python -m pytest -q tests/lax_numpy_test.py -k testPolyfit",
+        "reproducing_test": "tests/lax_numpy_test.py::TestLaxNumpy::testPolyfit (the updated test with @sample_product including num_rhs=[1, 5])",
+        "success_criterion": "On the buggy revision (commit 437d7d88b992), running the project test selection `pytest -k testPolyfit` fails for the `testPolyfit` case where `cov=True` and `full=False` with `num_rhs=5` (multiple rhs). On the fixed revision (the PR\u2019s merged commit/patch applied), the same test passes because polyfit computes covariance for each rhs (broadcasting/using all residuals), rather than effectively using only the first residual/C slice.",
+        "numerical_probe": "Use the existing test\u2019s logic (no separate manual inspection): the assertion compares jnp.polyfit against numpy.polyfit for cov=True cases across multiple rhs, and the mismatch occurs when cov=True & full=False & num_rhs>1 on the buggy revision.",
+        "input_output_examples": [
+          {
+            "input": "x: np.arange(10).astype('float32')",
+            "buggy_output": "jnp.polyfit(x, y, 1, cov=True)[1] produces only one covariance slice (effectively behaving like only the first rhs residual is used), and the returned C has shape corresponding to (n,n,1) / not one matrix per rhs.",
+            "expected_output": "For multiple rhs (y shaped (len(x), num_rhs) with num_rhs=3 in the issue example), numpy.polyfit returns one covariance matrix per rhs; jnp.polyfit should match this (one n\u00d7n covariance per rhs)."
+          }
+        ],
+        "risks": [
+          "This defect is conditional on `cov=True` and `full=False` (the issue also mentions full=True but the described failure is specifically around cov=True/full=False C). Ensure the test selection includes those combinations.",
+          "The failure mode requires multiple rhs (`num_rhs=5` or any num_rhs>1). If you set num_rhs=1, the bug may not trigger.",
+          "Results can be sensitive to dtype and conditioning; keep the test\u2019s provided dtype/shape sampling and the evidence\u2019s float32 likelihood.",
+          "Platform/toolchain risk: if JAX is built for/with a different backend (CPU vs GPU/TPU) or with different matmul precision defaults, there is a small chance the exact failure presentation differs; however, the test uses JAX\u2019s default_matmul_precision('float32') context and should transition if the underlying broadcasting/cov-residual logic is fixed.",
+          "If your local checkout does not include the PR\u2019s test change (the addition of `num_rhs=[1, 5]`), you may not reproduce the failure via this exact test command; you must use the repo state containing the updated test diff. The evidence shows this test change, so match it. "
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": "numpy.polyfit (within the same test via np_fun)",
+          "why": "The project test is described as comparing numpy vs jax results for polyfit across parameter products. The exact assertion type/tolerance mechanism is not included in the evidence context, so the oracle precision spec is not reconstructed; rely on the test\u2019s own comparison."
+        },
+        "fails_on_buggy": "When `testPolyfit` runs with `cov=True` and `full=False` and `num_rhs=5`, the buggy revision returns covariance output `C` that is computed as if only the first residual/right-hand-side were used; this causes a mismatch against numpy.polyfit\u2019s per-rhs covariance, leading the assertion inside `testPolyfit` to fail.",
+        "passes_on_fixed": "With the fix applied, `testPolyfit` with `cov=True` and `full=False` and `num_rhs=5` matches numpy.polyfit by expanding/broadcasting the residual-derived scaling factor across rhs so that each rhs gets its own covariance matrix/slice."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 2794,
+        "output_tokens": 1221,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002085
+      },
+      "miner_usage": {
+        "input_tokens": 9279,
+        "output_tokens": 1622,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.003884,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

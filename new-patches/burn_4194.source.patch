@@ -1,0 +1,996 @@
+diff --git a/crates/burn-import/src/burn/codegen.rs b/crates/burn-import/src/burn/codegen.rs
+index 144ddfe1b3a..63b4e27996e 100644
+--- a/crates/burn-import/src/burn/codegen.rs
++++ b/crates/burn-import/src/burn/codegen.rs
+@@ -1,6 +1,7 @@
+ use proc_macro2::TokenStream;
+ use quote::quote;
+ 
++use onnx_ir::ir::DType;
+ use onnx_ir::node::padding::{PaddingConfig1d, PaddingConfig2d, PaddingConfig3d};
+ 
+ // ============================================================================
+@@ -115,3 +116,34 @@ impl ToTokens for PaddingConfig3d {
+         }
+     }
+ }
++
++/// DType for specifying tensor element types in generated code.
++///
++/// Note: Flex32 and QFloat are intentionally not supported as they are Burn-specific
++/// runtime types that cannot come from ONNX models. Flex32 is a GPU optimization type
++/// and QFloat requires quantization schemes not representable in ONNX.
++impl ToTokens for DType {
++    fn to_tokens(&self) -> TokenStream {
++        match self {
++            DType::F16 => quote! { burn::tensor::DType::F16 },
++            DType::BF16 => quote! { burn::tensor::DType::BF16 },
++            DType::F32 => quote! { burn::tensor::DType::F32 },
++            DType::F64 => quote! { burn::tensor::DType::F64 },
++            DType::I8 => quote! { burn::tensor::DType::I8 },
++            DType::I16 => quote! { burn::tensor::DType::I16 },
++            DType::I32 => quote! { burn::tensor::DType::I32 },
++            DType::I64 => quote! { burn::tensor::DType::I64 },
++            DType::U8 => quote! { burn::tensor::DType::U8 },
++            DType::U16 => quote! { burn::tensor::DType::U16 },
++            DType::U32 => quote! { burn::tensor::DType::U32 },
++            DType::U64 => quote! { burn::tensor::DType::U64 },
++            DType::Bool => quote! { burn::tensor::DType::Bool },
++            // Flex32 and QFloat are Burn-specific runtime types not present in ONNX models
++            _ => panic!(
++                "Unsupported dtype for ONNX code generation: {:?}. \
++                 Flex32 and QFloat are Burn-specific runtime types.",
++                self
++            ),
++        }
++    }
++}
+diff --git a/crates/burn-import/src/burn/node/add.rs b/crates/burn-import/src/burn/node/add.rs
+index 8c9d0e5e29a..66b6f798f03 100644
+--- a/crates/burn-import/src/burn/node/add.rs
++++ b/crates/burn-import/src/burn/node/add.rs
+@@ -65,12 +65,29 @@ impl NodeCodegen for onnx_ir::node::arithmetic::AddNode {
+                     result
+                 }
+             },
+-            (ArgType::Shape(_), ArgType::Tensor(_)) => quote! {
+-                Tensor::<B, 1, burn::tensor::Int>::from_data(&#lhs as &[_], &*self.device).add(#rhs)
+-            },
+-            (ArgType::Tensor(_), ArgType::Shape(_)) => quote! {
+-                #lhs.add(Tensor::<B, 1, burn::tensor::Int>::from_data(&#rhs as &[_], &*self.device))
+-            },
++            (ArgType::Shape(_), ArgType::Tensor(tensor_type)) => {
++                // Use from_data_dtype to ensure the dtype matches the tensor's dtype,
++                // not the backend's default IntElem type
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#lhs as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ).add(#rhs)
++                }
++            }
++            (ArgType::Tensor(tensor_type), ArgType::Shape(_)) => {
++                // Use from_data_dtype to ensure the dtype matches the tensor's dtype
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    #lhs.add(Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#rhs as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ))
++                }
++            }
+         };
+ 
+         quote! {
+diff --git a/crates/burn-import/src/burn/node/bitshift.rs b/crates/burn-import/src/burn/node/bitshift.rs
+index ea5c4bc377d..f3dd1f0421a 100644
+--- a/crates/burn-import/src/burn/node/bitshift.rs
++++ b/crates/burn-import/src/burn/node/bitshift.rs
+@@ -29,9 +29,10 @@ impl NodeCodegen for onnx_ir::bitshift::BitShiftNode {
+                 }
+                 (ArgType::Scalar(_), ArgType::Tensor(_)) => {
+                     // For scalar << tensor, broadcast scalar to tensor first
++                    // Use full_like to preserve rhs's dtype
+                     quote! {
+                         {
+-                            let _scalar_tensor = Tensor::full(#rhs.shape(), #lhs, &#rhs.device());
++                            let _scalar_tensor = #rhs.full_like(#lhs);
+                             _scalar_tensor.bitwise_left_shift(#rhs)
+                         }
+                     }
+@@ -50,9 +51,10 @@ impl NodeCodegen for onnx_ir::bitshift::BitShiftNode {
+                 }
+                 (ArgType::Scalar(_), ArgType::Tensor(_)) => {
+                     // For scalar >> tensor, broadcast scalar to tensor first
++                    // Use full_like to preserve rhs's dtype
+                     quote! {
+                         {
+-                            let _scalar_tensor = Tensor::full(#rhs.shape(), #lhs, &#rhs.device());
++                            let _scalar_tensor = #rhs.full_like(#lhs);
+                             _scalar_tensor.bitwise_right_shift(#rhs)
+                         }
+                     }
+@@ -170,7 +172,7 @@ mod tests {
+         assert_snapshot!(code, @r"
+         pub fn forward(&self, lhs: i32, rhs: Tensor<B, 2, Int>) -> Tensor<B, 2, Int> {
+             let output = {
+-                let _scalar_tensor = Tensor::full(rhs.shape(), lhs, &rhs.device());
++                let _scalar_tensor = rhs.full_like(lhs);
+                 _scalar_tensor.bitwise_left_shift(rhs)
+             };
+             output
+@@ -191,7 +193,7 @@ mod tests {
+         assert_snapshot!(code, @r"
+         pub fn forward(&self, lhs: i32, rhs: Tensor<B, 2, Int>) -> Tensor<B, 2, Int> {
+             let output = {
+-                let _scalar_tensor = Tensor::full(rhs.shape(), lhs, &rhs.device());
++                let _scalar_tensor = rhs.full_like(lhs);
+                 _scalar_tensor.bitwise_right_shift(rhs)
+             };
+             output
+diff --git a/crates/burn-import/src/burn/node/cast.rs b/crates/burn-import/src/burn/node/cast.rs
+index 7872ad6e95e..21d46c17fe8 100644
+--- a/crates/burn-import/src/burn/node/cast.rs
++++ b/crates/burn-import/src/burn/node/cast.rs
+@@ -115,26 +115,31 @@ impl NodeCodegen for onnx_ir::cast::CastNode {
+ 
+                 match &self.config.to {
+                     dtype if dtype.is_float() => {
+-                        // Emit f32 tensor; Float64 target collapses to f32 at runtime side.
++                        let dtype_tokens = self.config.to.to_tokens();
++                        // Use f64 intermediate for precision, then from_data_dtype
++                        // to convert to the exact target dtype
+                         quote! {
+                             let #output = {
+                                 let shape_array = #input as [i64; #rank];
+-                                let float_array: [f32; #rank] = shape_array.map(|x| x as f32);
+-                                Tensor::<B, 1>::from_data(
++                                let float_array: [f64; #rank] = shape_array.map(|x| x as f64);
++                                Tensor::<B, 1>::from_data_dtype(
+                                     TensorData::from(float_array),
+-                                    &self.device
++                                    &self.device,
++                                    #dtype_tokens
+                                 )
+                             };
+                         }
+                     }
+                     dtype if dtype.is_bool() => {
++                        let dtype_tokens = self.config.to.to_tokens();
+                         quote! {
+                             let #output = {
+                                 let shape_array = #input as [i64; #rank];
+                                 let bool_array: [bool; #rank] = shape_array.map(|x| x != 0);
+-                                Tensor::<B, 1, Bool>::from_data(
++                                Tensor::<B, 1, Bool>::from_data_dtype(
+                                     TensorData::from(bool_array),
+-                                    &self.device
++                                    &self.device,
++                                    #dtype_tokens
+                                 )
+                             };
+                         }
+diff --git a/crates/burn-import/src/burn/node/constant_of_shape.rs b/crates/burn-import/src/burn/node/constant_of_shape.rs
+index 0e6becba6b0..87029b50c2e 100644
+--- a/crates/burn-import/src/burn/node/constant_of_shape.rs
++++ b/crates/burn-import/src/burn/node/constant_of_shape.rs
+@@ -98,8 +98,29 @@ impl NodeCodegen for onnx_ir::node::constant_of_shape::ConstantOfShapeNode {
+                         }
+                     }
+                 } else {
+-                    quote! {
+-                        let #output = Tensor::full(#shape_expr, #value, &*self.device);
++                    // Use from_data_dtype with reshape and expand to ensure correct dtype
++                    let dtype_tokens = tensor.dtype.to_tokens();
++                    // Create shape of ones for reshape: [1, 1, ..., 1] with tensor.rank dimensions
++                    let ones: Vec<_> = (0..tensor.rank).map(|_| quote! { 1 }).collect();
++
++                    // Create tensor with explicit dtype, reshape to correct rank, then expand
++                    if tensor.dtype.is_float() {
++                        quote! {
++                            let #output = Tensor::<B, 1>::from_data_dtype(
++                                burn::tensor::TensorData::from([#value as f64]),
++                                &*self.device,
++                                #dtype_tokens
++                            ).reshape([#(#ones),*]).expand(#shape_expr);
++                        }
++                    } else {
++                        // Int types
++                        quote! {
++                            let #output = Tensor::<B, 1, Int>::from_data_dtype(
++                                burn::tensor::TensorData::from([#value as i64]),
++                                &*self.device,
++                                #dtype_tokens
++                            ).reshape([#(#ones),*]).expand(#shape_expr);
++                        }
+                     }
+                 }
+             }
+@@ -263,7 +284,16 @@ mod tests {
+         let code = codegen_forward_default(&node);
+         assert_snapshot!(code, @r"
+         pub fn forward(&self, target_shape: [i64; 1]) -> Tensor<B, 3> {
+-            let filled = Tensor::full([2usize, 3usize, 4usize], 1.5f32, &*self.device);
++            let filled = Tensor::<
++                B,
++                1,
++            >::from_data_dtype(
++                    burn::tensor::TensorData::from([1.5f32 as f64]),
++                    &*self.device,
++                    burn::tensor::DType::F32,
++                )
++                .reshape([1, 1, 1])
++                .expand([2usize, 3usize, 4usize]);
+             filled
+         }
+         ");
+@@ -283,7 +313,16 @@ mod tests {
+         let code = codegen_forward_default(&node);
+         assert_snapshot!(code, @r"
+         pub fn forward(&self, dims: [i64; 1]) -> Tensor<B, 2> {
+-            let matrix = Tensor::full([10usize, 20usize], 0.5f64, &*self.device);
++            let matrix = Tensor::<
++                B,
++                1,
++            >::from_data_dtype(
++                    burn::tensor::TensorData::from([0.5f64 as f64]),
++                    &*self.device,
++                    burn::tensor::DType::F64,
++                )
++                .reshape([1, 1])
++                .expand([10usize, 20usize]);
+             matrix
+         }
+         ");
+@@ -303,7 +342,17 @@ mod tests {
+         let code = codegen_forward_default(&node);
+         assert_snapshot!(code, @r"
+         pub fn forward(&self, size: [i64; 1]) -> Tensor<B, 2, Int> {
+-            let grid = Tensor::full([5usize, 5usize], 7i32, &*self.device);
++            let grid = Tensor::<
++                B,
++                1,
++                Int,
++            >::from_data_dtype(
++                    burn::tensor::TensorData::from([7i32 as i64]),
++                    &*self.device,
++                    burn::tensor::DType::I32,
++                )
++                .reshape([1, 1])
++                .expand([5usize, 5usize]);
+             grid
+         }
+         ");
+@@ -323,7 +372,17 @@ mod tests {
+         let code = codegen_forward_default(&node);
+         assert_snapshot!(code, @r"
+         pub fn forward(&self, length: [i64; 1]) -> Tensor<B, 1, Int> {
+-            let vector = Tensor::full([8usize], 100i64, &*self.device);
++            let vector = Tensor::<
++                B,
++                1,
++                Int,
++            >::from_data_dtype(
++                    burn::tensor::TensorData::from([100i64 as i64]),
++                    &*self.device,
++                    burn::tensor::DType::I64,
++                )
++                .reshape([1])
++                .expand([8usize]);
+             vector
+         }
+         ");
+@@ -384,7 +443,16 @@ mod tests {
+         let code = codegen_forward_default(&node);
+         assert_snapshot!(code, @r"
+         pub fn forward(&self, size: [i64; 1]) -> Tensor<B, 2> {
+-            let zeros = Tensor::full([2usize, 2usize], 0.0f32, &*self.device);
++            let zeros = Tensor::<
++                B,
++                1,
++            >::from_data_dtype(
++                    burn::tensor::TensorData::from([0.0f32 as f64]),
++                    &*self.device,
++                    burn::tensor::DType::F32,
++                )
++                .reshape([1, 1])
++                .expand([2usize, 2usize]);
+             zeros
+         }
+         ");
+@@ -409,7 +477,16 @@ mod tests {
+         let code = codegen_forward_default(&node);
+         assert_snapshot!(code, @r"
+         pub fn forward(&self, dynamic_shape: [i64; 1]) -> Tensor<B, 3> {
+-            let tensor = Tensor::full(dynamic_shape, 2.5f32, &*self.device);
++            let tensor = Tensor::<
++                B,
++                1,
++            >::from_data_dtype(
++                    burn::tensor::TensorData::from([2.5f32 as f64]),
++                    &*self.device,
++                    burn::tensor::DType::F32,
++                )
++                .reshape([1, 1, 1])
++                .expand(dynamic_shape);
+             tensor
+         }
+         ");
+@@ -432,7 +509,17 @@ mod tests {
+         let code = codegen_forward_default(&node);
+         assert_snapshot!(code, @r"
+         pub fn forward(&self, shape_param: [i64; 1]) -> Tensor<B, 2, Int> {
+-            let data = Tensor::full(shape_param, 255i64, &*self.device);
++            let data = Tensor::<
++                B,
++                1,
++                Int,
++            >::from_data_dtype(
++                    burn::tensor::TensorData::from([255i64 as i64]),
++                    &*self.device,
++                    burn::tensor::DType::I64,
++                )
++                .reshape([1, 1])
++                .expand(shape_param);
+             data
+         }
+         ");
+@@ -501,7 +588,16 @@ mod tests {
+         let code = codegen_forward_default(&node);
+         assert_snapshot!(code, @r"
+         pub fn forward(&self, runtime_shape: [i64; 1]) -> Tensor<B, 3> {
+-            let zeros = Tensor::full(runtime_shape, 0.0f32, &*self.device);
++            let zeros = Tensor::<
++                B,
++                1,
++            >::from_data_dtype(
++                    burn::tensor::TensorData::from([0.0f32 as f64]),
++                    &*self.device,
++                    burn::tensor::DType::F32,
++                )
++                .reshape([1, 1, 1])
++                .expand(runtime_shape);
+             zeros
+         }
+         ");
+diff --git a/crates/burn-import/src/burn/node/div.rs b/crates/burn-import/src/burn/node/div.rs
+index b261d6b8513..3963663abf4 100644
+--- a/crates/burn-import/src/burn/node/div.rs
++++ b/crates/burn-import/src/burn/node/div.rs
+@@ -79,12 +79,26 @@ impl NodeCodegen for onnx_ir::node::arithmetic::DivNode {
+                     result
+                 }
+             },
+-            (ArgType::Shape(_), ArgType::Tensor(_)) => quote! {
+-                Tensor::<B, 1, burn::tensor::Int>::from_data(&#lhs as &[_], &*self.device).div(#rhs)
+-            },
+-            (ArgType::Tensor(_), ArgType::Shape(_)) => quote! {
+-                #lhs.div(Tensor::<B, 1, burn::tensor::Int>::from_data(&#rhs as &[_], &*self.device))
+-            },
++            (ArgType::Shape(_), ArgType::Tensor(tensor_type)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#lhs as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ).div(#rhs)
++                }
++            }
++            (ArgType::Tensor(tensor_type), ArgType::Shape(_)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    #lhs.div(Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#rhs as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ))
++                }
++            }
+         };
+ 
+         quote! {
+diff --git a/crates/burn-import/src/burn/node/equal.rs b/crates/burn-import/src/burn/node/equal.rs
+index 77d83e46c3d..0070d06ee72 100644
+--- a/crates/burn-import/src/burn/node/equal.rs
++++ b/crates/burn-import/src/burn/node/equal.rs
+@@ -45,18 +45,32 @@ impl NodeCodegen for onnx_ir::comparison::EqualNode {
+                     result
+                 }
+             },
+-            (ArgType::Shape(_), ArgType::Tensor(_)) => quote! {
+-                {
+-                    let shape_tensor = Tensor::<B, 1, Int>::from_data(#lhs_value.as_slice(), &*self.device);
+-                    shape_tensor.equal(#rhs_value)
++            (ArgType::Shape(_), ArgType::Tensor(tensor_type)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    {
++                        let shape_tensor = Tensor::<B, 1, Int>::from_data_dtype(
++                            burn::tensor::TensorData::from(#lhs_value.as_slice()),
++                            &*self.device,
++                            #dtype_tokens
++                        );
++                        shape_tensor.equal(#rhs_value)
++                    }
+                 }
+-            },
+-            (ArgType::Tensor(_), ArgType::Shape(_)) => quote! {
+-                {
+-                    let shape_tensor = Tensor::<B, 1, Int>::from_data(#rhs_value.as_slice(), &*self.device);
+-                    #lhs_value.equal(shape_tensor)
++            }
++            (ArgType::Tensor(tensor_type), ArgType::Shape(_)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    {
++                        let shape_tensor = Tensor::<B, 1, Int>::from_data_dtype(
++                            burn::tensor::TensorData::from(#rhs_value.as_slice()),
++                            &*self.device,
++                            #dtype_tokens
++                        );
++                        #lhs_value.equal(shape_tensor)
++                    }
+                 }
+-            },
++            }
+             _ => panic!(
+                 "Comparison is supported for tensor to tensor, scalar to scalar, shape to shape, and shape to tensor only"
+             ),
+diff --git a/crates/burn-import/src/burn/node/greater.rs b/crates/burn-import/src/burn/node/greater.rs
+index eae07c5c48b..30645309e49 100644
+--- a/crates/burn-import/src/burn/node/greater.rs
++++ b/crates/burn-import/src/burn/node/greater.rs
+@@ -42,12 +42,26 @@ impl NodeCodegen for onnx_ir::comparison::GreaterNode {
+                 // L > R == R < L
+                 quote! { #rhs_value.lower_elem(#lhs_value) }
+             }
+-            (ArgType::Shape(_), ArgType::Tensor(_)) => quote! {
+-                Tensor::<B, 1, burn::tensor::Int>::from_data(&#lhs_value as &[_], &*self.device).greater(#rhs_value)
+-            },
+-            (ArgType::Tensor(_), ArgType::Shape(_)) => quote! {
+-                #lhs_value.greater(Tensor::<B, 1, burn::tensor::Int>::from_data(&#rhs_value as &[_], &*self.device))
+-            },
++            (ArgType::Shape(_), ArgType::Tensor(tensor_type)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#lhs_value as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ).greater(#rhs_value)
++                }
++            }
++            (ArgType::Tensor(tensor_type), ArgType::Shape(_)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    #lhs_value.greater(Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#rhs_value as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ))
++                }
++            }
+             (lhs, rhs) => panic!("greater is not supported for {lhs:?} > {rhs:?}"),
+         };
+ 
+diff --git a/crates/burn-import/src/burn/node/greater_equal.rs b/crates/burn-import/src/burn/node/greater_equal.rs
+index 57bd24838c1..d8e5499c9be 100644
+--- a/crates/burn-import/src/burn/node/greater_equal.rs
++++ b/crates/burn-import/src/burn/node/greater_equal.rs
+@@ -42,12 +42,26 @@ impl NodeCodegen for onnx_ir::comparison::GreaterOrEqualNode {
+                 // L >= R == R <= L
+                 quote! { #rhs_value.lower_equal_elem(#lhs_value) }
+             }
+-            (ArgType::Shape(_), ArgType::Tensor(_)) => quote! {
+-                Tensor::<B, 1, burn::tensor::Int>::from_data(&#lhs_value as &[_], &*self.device).greater_equal(#rhs_value)
+-            },
+-            (ArgType::Tensor(_), ArgType::Shape(_)) => quote! {
+-                #lhs_value.greater_equal(Tensor::<B, 1, burn::tensor::Int>::from_data(&#rhs_value as &[_], &*self.device))
+-            },
++            (ArgType::Shape(_), ArgType::Tensor(tensor_type)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#lhs_value as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ).greater_equal(#rhs_value)
++                }
++            }
++            (ArgType::Tensor(tensor_type), ArgType::Shape(_)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    #lhs_value.greater_equal(Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#rhs_value as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ))
++                }
++            }
+             (lhs, rhs) => panic!("greater_equal is not supported for {lhs:?} > {rhs:?}"),
+         };
+ 
+diff --git a/crates/burn-import/src/burn/node/lower.rs b/crates/burn-import/src/burn/node/lower.rs
+index 39bfe849e95..f389f579284 100644
+--- a/crates/burn-import/src/burn/node/lower.rs
++++ b/crates/burn-import/src/burn/node/lower.rs
+@@ -42,12 +42,26 @@ impl NodeCodegen for onnx_ir::comparison::LessNode {
+                 // L < R == R > L
+                 quote! { #rhs_value.greater_elem(#lhs_value) }
+             }
+-            (ArgType::Shape(_), ArgType::Tensor(_)) => quote! {
+-                Tensor::<B, 1, burn::tensor::Int>::from_data(&#lhs_value as &[_], &*self.device).lower(#rhs_value)
+-            },
+-            (ArgType::Tensor(_), ArgType::Shape(_)) => quote! {
+-                #lhs_value.lower(Tensor::<B, 1, burn::tensor::Int>::from_data(&#rhs_value as &[_], &*self.device))
+-            },
++            (ArgType::Shape(_), ArgType::Tensor(tensor_type)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#lhs_value as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ).lower(#rhs_value)
++                }
++            }
++            (ArgType::Tensor(tensor_type), ArgType::Shape(_)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    #lhs_value.lower(Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#rhs_value as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ))
++                }
++            }
+             (lhs, rhs) => panic!("lower is not supported for {lhs:?} > {rhs:?}"),
+         };
+ 
+diff --git a/crates/burn-import/src/burn/node/lower_equal.rs b/crates/burn-import/src/burn/node/lower_equal.rs
+index 293bb2e2006..d3f795851bd 100644
+--- a/crates/burn-import/src/burn/node/lower_equal.rs
++++ b/crates/burn-import/src/burn/node/lower_equal.rs
+@@ -42,12 +42,26 @@ impl NodeCodegen for onnx_ir::comparison::LessOrEqualNode {
+                 // L <= R == R >= L
+                 quote! { #rhs_value.greater_equal_elem(#lhs_value) }
+             }
+-            (ArgType::Shape(_), ArgType::Tensor(_)) => quote! {
+-                Tensor::<B, 1, burn::tensor::Int>::from_data(&#lhs_value as &[_], &*self.device).lower_equal(#rhs_value)
+-            },
+-            (ArgType::Tensor(_), ArgType::Shape(_)) => quote! {
+-                #lhs_value.lower_equal(Tensor::<B, 1, burn::tensor::Int>::from_data(&#rhs_value as &[_], &*self.device))
+-            },
++            (ArgType::Shape(_), ArgType::Tensor(tensor_type)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#lhs_value as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ).lower_equal(#rhs_value)
++                }
++            }
++            (ArgType::Tensor(tensor_type), ArgType::Shape(_)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    #lhs_value.lower_equal(Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#rhs_value as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ))
++                }
++            }
+             (lhs, rhs) => panic!("lower_equal is not supported for {lhs:?} > {rhs:?}"),
+         };
+ 
+diff --git a/crates/burn-import/src/burn/node/lstm.rs b/crates/burn-import/src/burn/node/lstm.rs
+index 3b678f6ca54..f826c886555 100644
+--- a/crates/burn-import/src/burn/node/lstm.rs
++++ b/crates/burn-import/src/burn/node/lstm.rs
+@@ -212,6 +212,10 @@ fn collect_lstm_snapshots(
+ }
+ 
+ /// Create a TensorSnapshot from TensorData.
++///
++/// Converts the data to the target dtype to preserve the original precision.
++/// This is important because intermediate tensor operations use f64 for precision,
++/// but we need to store the data in the original dtype (e.g., F16, F32).
+ fn create_snapshot_from_data(
+     data: burn::tensor::TensorData,
+     path: &str,
+@@ -222,6 +226,10 @@ fn create_snapshot_from_data(
+     use burn_store::TensorSnapshotError;
+     use std::rc::Rc;
+ 
++    // Convert data back to the original dtype
++    // This is necessary because we use f64 for intermediate operations to preserve precision
++    let data = data.convert_dtype(dtype);
++
+     let shape = data.shape.clone();
+     let path_stack: Vec<String> = path.split('.').map(String::from).collect();
+     let container_stack = vec![format!("Struct:{}", container_type)];
+diff --git a/crates/burn-import/src/burn/node/mul.rs b/crates/burn-import/src/burn/node/mul.rs
+index 83368eba2af..0cb7a5f2cb6 100644
+--- a/crates/burn-import/src/burn/node/mul.rs
++++ b/crates/burn-import/src/burn/node/mul.rs
+@@ -65,12 +65,26 @@ impl NodeCodegen for onnx_ir::node::arithmetic::MulNode {
+                     result
+                 }
+             },
+-            (ArgType::Shape(_), ArgType::Tensor(_)) => quote! {
+-                Tensor::<B, 1, burn::tensor::Int>::from_data(&#lhs as &[_], &*self.device).mul(#rhs)
+-            },
+-            (ArgType::Tensor(_), ArgType::Shape(_)) => quote! {
+-                #lhs.mul(Tensor::<B, 1, burn::tensor::Int>::from_data(&#rhs as &[_], &*self.device))
+-            },
++            (ArgType::Shape(_), ArgType::Tensor(tensor_type)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#lhs as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ).mul(#rhs)
++                }
++            }
++            (ArgType::Tensor(tensor_type), ArgType::Shape(_)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    #lhs.mul(Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#rhs as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ))
++                }
++            }
+         };
+ 
+         quote! {
+diff --git a/crates/burn-import/src/burn/node/reshape.rs b/crates/burn-import/src/burn/node/reshape.rs
+index aab458d8735..7e183b1df01 100644
+--- a/crates/burn-import/src/burn/node/reshape.rs
++++ b/crates/burn-import/src/burn/node/reshape.rs
+@@ -92,15 +92,17 @@ impl NodeCodegen for onnx_ir::reshape::ReshapeNode {
+                                     }
+                                 }
+                             }
+-                            ArgType::Tensor(_) => {
++                            ArgType::Tensor(output_tensor) => {
+                                 // Convert Shape to Tensor first, then reshape
+                                 let shape_values = shape_values.to_tokens();
++                                let dtype_tokens = output_tensor.dtype.to_tokens();
+                                 quote! {
+                                     let #output = {
+                                         let shape_array = #input_name as [i64; #input_rank];
+-                                        Tensor::<B, 1, Int>::from_data(
++                                        Tensor::<B, 1, Int>::from_data_dtype(
+                                             TensorData::from(shape_array),
+-                                            &self.device
++                                            &self.device,
++                                            #dtype_tokens
+                                         )
+                                     }.reshape(#shape_values);
+                                 }
+@@ -113,17 +115,38 @@ impl NodeCodegen for onnx_ir::reshape::ReshapeNode {
+ 
+                         match &output_arg.ty {
+                             ArgType::Tensor(tensor_type) => {
+-                                // Create a 1-element tensor from scalar using Tensor::full,
++                                // Create a 1-element tensor from scalar with explicit dtype,
+                                 // then reshape to target shape (which must also be 1 element total)
+-                                use crate::burn::TensorKind;
+                                 let shape_values = shape_values.to_tokens();
+                                 let output_rank = tensor_type.rank;
+-                                let ones: Vec<_> = (0..output_rank).map(|_| quote! { 1 }).collect();
+-                                let kind: TensorKind = tensor_type.dtype.into();
++                                let dtype_tokens = tensor_type.dtype.to_tokens();
+ 
+-                                quote! {
+-                                    let #output = Tensor::<B, #output_rank, #kind>::full([#(#ones),*], #input_name, &*self.device)
+-                                        .reshape(#shape_values);
++                                if tensor_type.dtype.is_float() {
++                                    quote! {
++                                        let #output = Tensor::<B, #output_rank>::from_data_dtype(
++                                            burn::tensor::TensorData::from([#input_name as f64]),
++                                            &*self.device,
++                                            #dtype_tokens
++                                        ).reshape(#shape_values);
++                                    }
++                                } else if tensor_type.dtype.is_int() || tensor_type.dtype.is_uint()
++                                {
++                                    quote! {
++                                        let #output = Tensor::<B, #output_rank, Int>::from_data_dtype(
++                                            burn::tensor::TensorData::from([#input_name as i64]),
++                                            &*self.device,
++                                            #dtype_tokens
++                                        ).reshape(#shape_values);
++                                    }
++                                } else {
++                                    // Bool
++                                    quote! {
++                                        let #output = Tensor::<B, #output_rank, Bool>::from_data_dtype(
++                                            burn::tensor::TensorData::from([#input_name != 0]),
++                                            &*self.device,
++                                            #dtype_tokens
++                                        ).reshape(#shape_values);
++                                    }
+                                 }
+                             }
+                             ArgType::Scalar(_) => {
+@@ -470,7 +493,15 @@ mod tests {
+         pub fn forward(&self, dims: [i64; 1]) -> Tensor<B, 1, Int> {
+             let tensor_dims = {
+                 let shape_array = dims as [i64; 1usize];
+-                Tensor::<B, 1, Int>::from_data(TensorData::from(shape_array), &self.device)
++                Tensor::<
++                    B,
++                    1,
++                    Int,
++                >::from_data_dtype(
++                    TensorData::from(shape_array),
++                    &self.device,
++                    burn::tensor::DType::I64,
++                )
+             }
+                 .reshape([3]);
+             tensor_dims
+@@ -609,7 +640,15 @@ mod tests {
+         let code = codegen_forward_default(&node);
+         assert_snapshot!(code, @r"
+         pub fn forward(&self, value: i64) -> Tensor<B, 1, Int> {
+-            let tensor_out = Tensor::<B, 1usize, Int>::full([1], value, &*self.device)
++            let tensor_out = Tensor::<
++                B,
++                1usize,
++                Int,
++            >::from_data_dtype(
++                    burn::tensor::TensorData::from([value as i64]),
++                    &*self.device,
++                    burn::tensor::DType::I64,
++                )
+                 .reshape([-1]);
+             tensor_out
+         }
+@@ -629,7 +668,15 @@ mod tests {
+         let code = codegen_forward_default(&node);
+         assert_snapshot!(code, @r"
+         pub fn forward(&self, val: f32) -> Tensor<B, 1> {
+-            let out = Tensor::<B, 1usize, Float>::full([1], val, &*self.device).reshape([1]);
++            let out = Tensor::<
++                B,
++                1usize,
++            >::from_data_dtype(
++                    burn::tensor::TensorData::from([val as f64]),
++                    &*self.device,
++                    burn::tensor::DType::F32,
++                )
++                .reshape([1]);
+             out
+         }
+         ");
+diff --git a/crates/burn-import/src/burn/node/sub.rs b/crates/burn-import/src/burn/node/sub.rs
+index c9b422a02c1..424e1441fcb 100644
+--- a/crates/burn-import/src/burn/node/sub.rs
++++ b/crates/burn-import/src/burn/node/sub.rs
+@@ -65,12 +65,26 @@ impl NodeCodegen for onnx_ir::node::arithmetic::SubNode {
+                     result
+                 }
+             },
+-            (ArgType::Shape(_), ArgType::Tensor(_)) => quote! {
+-                Tensor::<B, 1, burn::tensor::Int>::from_data(&#lhs as &[_], &*self.device).sub(#rhs)
+-            },
+-            (ArgType::Tensor(_), ArgType::Shape(_)) => quote! {
+-                #lhs.sub(Tensor::<B, 1, burn::tensor::Int>::from_data(&#rhs as &[_], &*self.device))
+-            },
++            (ArgType::Shape(_), ArgType::Tensor(tensor_type)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#lhs as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ).sub(#rhs)
++                }
++            }
++            (ArgType::Tensor(tensor_type), ArgType::Shape(_)) => {
++                let dtype_tokens = tensor_type.dtype.to_tokens();
++                quote! {
++                    #lhs.sub(Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from(&#rhs as &[i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ))
++                }
++            }
+         };
+ 
+         quote! {
+diff --git a/crates/burn-import/src/burn/node/unsqueeze.rs b/crates/burn-import/src/burn/node/unsqueeze.rs
+index e5293156b34..aa0139a4517 100644
+--- a/crates/burn-import/src/burn/node/unsqueeze.rs
++++ b/crates/burn-import/src/burn/node/unsqueeze.rs
+@@ -62,20 +62,38 @@ impl NodeCodegen for onnx_ir::unsqueeze::UnsqueezeNode {
+             (ArgType::Scalar(_scalar_type), ArgType::Tensor(output_tensor)) => {
+                 let scalar_name = arg_to_ident(input_arg);
+                 let output_rank = output_tensor.rank.to_tokens();
++                let dtype_tokens = output_tensor.dtype.to_tokens();
+ 
+-                // Determine the element type based on the output tensor type
++                // Create tensor from scalar with explicit dtype
+                 let tensor_creation = match &output_tensor.dtype {
+                     dtype if dtype.is_int() || dtype.is_uint() => {
+-                        let elem_conversion = quote! { #scalar_name.elem::<B::IntElem>() };
+-                        quote! { Tensor::<B, #output_rank, Int>::from_data([#elem_conversion], &self.device).unsqueeze() }
++                        // Cast to i64 for TensorData, then from_data_dtype converts to target dtype
++                        quote! {
++                            Tensor::<B, #output_rank, Int>::from_data_dtype(
++                                burn::tensor::TensorData::from([#scalar_name as i64]),
++                                &self.device,
++                                #dtype_tokens
++                            ).unsqueeze()
++                        }
+                     }
+                     dtype if dtype.is_float() => {
+-                        let elem_conversion = quote! { #scalar_name.elem::<B::FloatElem>() };
+-                        quote! { Tensor::<B, #output_rank>::from_data([#elem_conversion], &self.device).unsqueeze() }
++                        // Cast to f64 for TensorData, then from_data_dtype converts to target dtype
++                        quote! {
++                            Tensor::<B, #output_rank>::from_data_dtype(
++                                burn::tensor::TensorData::from([#scalar_name as f64]),
++                                &self.device,
++                                #dtype_tokens
++                            ).unsqueeze()
++                        }
+                     }
+                     dtype if dtype.is_bool() => {
+-                        let elem_conversion = quote! { #scalar_name != 0 };
+-                        quote! { Tensor::<B, #output_rank, Bool>::from_data([#elem_conversion], &self.device).unsqueeze() }
++                        quote! {
++                            Tensor::<B, #output_rank, Bool>::from_data_dtype(
++                                burn::tensor::TensorData::from([#scalar_name != 0]),
++                                &self.device,
++                                #dtype_tokens
++                            ).unsqueeze()
++                        }
+                     }
+                     _ => panic!("Unsupported tensor dtype: {:?}", output_tensor.dtype),
+                 };
+diff --git a/crates/burn-import/src/burn/node/where_op.rs b/crates/burn-import/src/burn/node/where_op.rs
+index fc65f926e7f..37c5037e88a 100644
+--- a/crates/burn-import/src/burn/node/where_op.rs
++++ b/crates/burn-import/src/burn/node/where_op.rs
+@@ -19,12 +19,13 @@ impl NodeCodegen for onnx_ir::where_op::WhereNode {
+         match &output_arg.ty {
+             ArgType::Tensor(out_tensor) => {
+                 let broadcast_rank = out_tensor.rank;
++                let target_dtype = out_tensor.dtype;
+ 
+-                // Get condition as tensor
+-                let cond = where_input_as_tensor(condition_arg, broadcast_rank, scope);
++                // Get condition as tensor (condition uses Bool dtype, not target dtype)
++                let cond = where_input_as_tensor(condition_arg, broadcast_rank, DType::Bool, scope);
+ 
+                 // Get y as tensor
+-                let y_tensor = where_input_as_tensor(y_arg, broadcast_rank, scope);
++                let y_tensor = where_input_as_tensor(y_arg, broadcast_rank, target_dtype, scope);
+ 
+                 // Check if x is a scalar - if so, use mask_fill
+                 if let ArgType::Scalar(_) = &x_arg.ty {
+@@ -34,7 +35,8 @@ impl NodeCodegen for onnx_ir::where_op::WhereNode {
+                     }
+                 } else {
+                     // x is tensor or shape - use mask_where
+-                    let x_tensor = where_input_as_tensor(x_arg, broadcast_rank, scope);
++                    let x_tensor =
++                        where_input_as_tensor(x_arg, broadcast_rank, target_dtype, scope);
+                     quote! {
+                         let #output = #y_tensor.mask_where(#cond, #x_tensor);
+                     }
+@@ -100,6 +102,7 @@ impl NodeCodegen for onnx_ir::where_op::WhereNode {
+ fn where_input_as_tensor(
+     arg: &Argument,
+     broadcast_rank: usize,
++    target_dtype: DType,
+     scope: &mut super::super::scope::ScopeAtPosition<'_>,
+ ) -> TokenStream {
+     match &arg.ty {
+@@ -117,18 +120,49 @@ fn where_input_as_tensor(
+             }
+         }
+         ArgType::Scalar(_) => {
+-            // Convert scalar to full tensor with broadcast_rank dimensions
++            // Convert scalar to tensor with shape [1, 1, ...] (broadcast_rank dimensions)
++            // Use from_data_dtype with reshape and expand to ensure correct dtype
+             let name = arg_to_ident(arg);
+             let shape_vec: Vec<_> = (0..broadcast_rank).map(|_| quote! { 1 }).collect();
+-            quote! {
+-                Tensor::from_data([[#(#shape_vec),*]; 1], &*self.device).mul_scalar(#name)
++            let dtype_tokens = target_dtype.to_tokens();
++
++            if target_dtype.is_float() {
++                quote! {
++                    Tensor::<B, 1>::from_data_dtype(
++                        burn::tensor::TensorData::from([#name as f64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ).reshape([#(#shape_vec),*])
++                }
++            } else if target_dtype.is_int() || target_dtype.is_uint() {
++                quote! {
++                    Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                        burn::tensor::TensorData::from([#name as i64]),
++                        &*self.device,
++                        #dtype_tokens
++                    ).reshape([#(#shape_vec),*])
++                }
++            } else {
++                // Bool
++                quote! {
++                    Tensor::<B, 1, burn::tensor::Bool>::from_data_dtype(
++                        burn::tensor::TensorData::from([#name != 0]),
++                        &*self.device,
++                        #dtype_tokens
++                    ).reshape([#(#shape_vec),*])
++                }
+             }
+         }
+         ArgType::Shape(_) => {
+-            // Convert shape to tensor (rank 1)
++            // Convert shape to tensor (rank 1) with explicit dtype to match target tensor
+             let name = arg_to_ident(arg);
++            let dtype_tokens = target_dtype.to_tokens();
+             let tensor = quote! {
+-                Tensor::<B, 1, burn::tensor::Int>::from_data(&#name as &[_], &*self.device)
++                Tensor::<B, 1, burn::tensor::Int>::from_data_dtype(
++                    burn::tensor::TensorData::from(&#name as &[i64]),
++                    &*self.device,
++                    #dtype_tokens
++                )
+             };
+ 
+             if broadcast_rank > 1 {
+diff --git a/crates/burn-import/src/burn/node_traits.rs b/crates/burn-import/src/burn/node_traits.rs
+index 7d3d3c15010..754a06a0155 100644
+--- a/crates/burn-import/src/burn/node_traits.rs
++++ b/crates/burn-import/src/burn/node_traits.rs
+@@ -175,9 +175,11 @@ pub fn arg_to_ident(arg: &Argument) -> proc_macro2::Ident {
+ // ============================================================================
+ 
+ /// The backend used for tensor transformations during import.
+-/// Uses the NdArray backend for CPU-based tensor operations during ONNX import.
++/// Uses the NdArray backend with f64 for CPU-based tensor operations during ONNX import.
++/// We use f64 to preserve maximum precision during intermediate operations,
++/// then convert back to the original dtype when creating snapshots.
+ #[cfg(feature = "onnx")]
+-pub type SerializationBackend = burn_ndarray::NdArray;
++pub type SerializationBackend = burn_ndarray::NdArray<f64>;
+ 
+ /// Create a lazy tensor snapshot from an ONNX argument.
+ ///
+diff --git a/crates/burn-store/src/applier.rs b/crates/burn-store/src/applier.rs
+index ae318054c3c..dafae53c85b 100644
+--- a/crates/burn-store/src/applier.rs
++++ b/crates/burn-store/src/applier.rs
+@@ -237,7 +237,7 @@ impl<B: Backend> Applier<B> {
+         }
+ 
+         self.applied.push(path);
+-        Some(Tensor::from_data(data, target_device))
++        Some(Tensor::from_data_dtype(data, target_device, snapshot.dtype))
+     }
+ }
+ 
+@@ -327,7 +327,7 @@ impl<B: Backend> ModuleMapper<B> for Applier<B> {
+ mod tests {
+     use super::*;
+     use burn_core::module::{ModuleMapper, Param, ParamId};
+-    use burn_tensor::Tensor;
++    use burn_tensor::{DType, Tensor, TensorData};
+ 
+     type TestBackend = burn_ndarray::NdArray;
+ 

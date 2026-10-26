@@ -1,0 +1,45 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 0514c99bf7812..f421563729f19 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -673,6 +673,7 @@ I/O
+ - :func:`read_csv` with ``engine="pyarrow"`` now raises an informative ``ValueError`` for a list-valued ``header`` (MultiIndex columns are not supported by this engine) instead of a cryptic ``TypeError`` (:issue:`66059`)
+ - :func:`read_csv` with ``memory_map=True`` and an in-memory buffer (e.g. ``BytesIO``) now raises a clear ``ValueError`` instead of a cryptic ``UnsupportedOperation: fileno`` (:issue:`45630`)
+ - :func:`read_json` with ``engine="pyarrow"`` now raises ``ValueError`` when passed an option the engine cannot apply -- such as ``typ="series"``, ``convert_dates``, ``keep_default_dates``, ``date_unit``, ``precise_float``, ``convert_axes``, ``encoding``, ``encoding_errors``, ``storage_options``, an explicit ``compression``, or a non-``ArrowDtype`` ``dtype`` -- instead of silently ignoring it and returning an incorrect result (:issue:`66144`)
++- :func:`read_sas` now raises ``OutOfBoundsDatetime`` for a SAS7BDAT date or datetime too far out of range to represent, instead of silently reading it as ``NaT``, and the error names the offending value rather than a date the file does not hold (:issue:`47339`)
+ - :func:`read_sas` now raises an informative ``ValueError`` for a SAS7BDAT file that changes the column layout it declared partway through, instead of parsing the rest of the file with metadata that no longer describes it -- reading past the end of a row and returning unrelated memory as data, reading every column from the wrong bytes, silently emptying a column to all-NaN, or padding the result with rows the file does not hold (:issue:`47339`)
+ - :func:`read_sas` now raises an informative ``ValueError`` for a SAS7BDAT file whose column metadata does not fit the rows it describes -- a column extending past the end of a row, or a numeric column wider than 8 bytes -- instead of reading or writing past the end of the row buffer and returning unrelated memory as data or crashing (:issue:`47339`)
+ - :func:`read_sas` now raises an informative ``ValueError`` for a SAS7BDAT file whose header declares a ``row_length`` larger than the page size, instead of segfaulting (:issue:`66475`)
+diff --git a/pandas/io/sas/sas7bdat.py b/pandas/io/sas/sas7bdat.py
+index 94c419e7c73ad..1ecaf3685d459 100644
+--- a/pandas/io/sas/sas7bdat.py
++++ b/pandas/io/sas/sas7bdat.py
+@@ -43,6 +43,7 @@
+ from pandas.compat import HAS_PYARROW
+ from pandas.errors import (
+     EmptyDataError,
++    OutOfBoundsDatetime,
+     Pandas4Warning,
+ )
+ from pandas.util._exceptions import find_stack_level
+@@ -195,6 +196,20 @@ def _convert_datetimes(sas_datetimes: pd.Series, unit: str) -> pd.Series:
+        Series of datetime64 dtype or datetime.datetime.
+     """
+     td = (_sas_origin - _unix_origin).as_unit("s")
++    # SAS's own date range tops out near 6e6 days, so a count this size is not
++    # a date the file could legitimately hold -- it is corrupt bytes, or a
++    # numeric column carrying a date format. Casting it does not overflow, it
++    # saturates: a negative one lands on the NaT sentinel and is read as
++    # missing, and a positive one does raise below, but naming the date the
++    # saturated cast landed on rather than anything the file holds.
++    too_large = np.abs(sas_datetimes._values) >= 2.0**63
++    if too_large.any():
++        value = sas_datetimes._values[too_large][0]
++        what = "date" if unit == "d" else "datetime"
++        raise OutOfBoundsDatetime(
++            f"Out of bounds SAS {what} value: {value}; no SAS {what} can be this "
++            f"large, so the file is corrupt or the column is not a {what}"
++        )
+     if unit == "s":
+         corrected = sas_datetimes._values + _sas_to_gregorian_correction(
+             sas_datetimes._values, unit="s"

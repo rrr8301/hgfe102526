@@ -1,0 +1,98 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_64809_gpt-5.4-nano/mined/pandas-dev__pandas_64809.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 14662,
+    "output_tokens": 4682,
+    "cost_usd": 0.008786,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 64809,
+      "reference": "https://github.com/pandas-dev/pandas/pull/64809",
+      "buggy_commit": "b9cc4a636d004c3343fb27610df7984748c249c3",
+      "fixed_commit": "7228fdd6736864734da9fd821b33cbb9cd0bc330",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 10321,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas accuracy bug GH#64809/related GH#56586 where adding non-vectorized CustomBusiness* offsets with a sub-unit `offset` to non-nano (datetime64[s]/[ms]) DatetimeIndex truncates/rounds because `_add_offset` coerces results back to `self.dtype`; the fixed revision chooses a finer `res_unit`/dtype based on `offset.offset` (e.g., microseconds) and therefore preserves the added precision.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "cython",
+            "python-dateutil",
+            "pytz"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "pip install .",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "pandas requires numpy/cython; exact versions are not provided in the evidence, so do not pin beyond installing what pandas declares."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/tseries/offsets/test_offsets.py -k \"test_add_dt64_non_nano_with_offset_parameter\"",
+        "reproducing_test": "pandas/tests/tseries/offsets/test_offsets.py::test_add_dt64_non_nano_with_offset_parameter",
+        "success_criterion": "On buggy commit b9cc4a636d00 the test `test_add_dt64_non_nano_with_offset_parameter` FAILS because `tm.assert_index_equal(result, expected)` detects incorrect values due to truncation/rounding to the original non-nano unit (dtype `datetime64[s]` or `datetime64[ms]`) instead of preserving sub-unit precision from `offset.offset`. On the fixed revision (PR #64809), the same assertion PASSES because `_add_offset` selects a finer `res_unit`/dtype (datetime64[us]) when the offset has a non-zero sub-unit parameter.",
+        "numerical_probe": "Create a DatetimeIndex with dtype unit 's' or 'ms', then add a non-vectorized offset class instance with `offset=Timedelta(microseconds=500)`; the assertion compares the full resulting index for exact match to an expected index constructed by elementwise `x + off` and forced to dtype `datetime64[us]`.",
+        "input_output_examples": [
+          {
+            "input": "dti = pd.date_range('2016-01-01', periods=3, freq='D', unit='s'); off = pd.offsets.CustomBusinessDay(offset=pd.Timedelta(microseconds=500)); result = dti + off",
+            "buggy_output": "Incorrectly truncated/rounded result due to coercion back to the DatetimeArray dtype corresponding to `self.unit` (s), losing the microsecond precision introduced by `offset.offset`.",
+            "expected_output": "Result should match `DatetimeIndex([x + off for x in dti], dtype='datetime64[us]')` (i.e., microsecond precision preserved)."
+          },
+          {
+            "input": "dti = pd.date_range('2016-01-01', periods=3, freq='D', unit='ms'); off = pd.offsets.CustomBusinessMonthBegin(offset=pd.Timedelta(microseconds=500)); result = dti + off",
+            "buggy_output": "Incorrectly truncated/rounded result due to coercion back to the DatetimeArray dtype corresponding to `self.unit` (ms), losing the microsecond precision introduced by `offset.offset`.",
+            "expected_output": "Result should match `DatetimeIndex([x + off for x in dti], dtype='datetime64[us]')` (i.e., microsecond precision preserved)."
+          }
+        ],
+        "risks": [
+          "The evidence does not specify the exact pandas fixed commit hash; ensure you run the test on the buggy revision b9cc4a636d00 and on the PR\u2019s fixed revision (e.g., merge commit or commit containing the `_add_offset` dtype/res_unit change).",
+          "This bug is specific to non-nano datetime64 units (DatetimeArray/DatetimeIndex with `unit` in {'s','ms'}) and non-vectorized CustomBusiness* offsets with a non-zero sub-unit `offset` parameter. Using nano or using `offset` without sub-unit precision may not trigger the failure.",
+          "Toolchain/platform constraints are not documented in the evidence. If the failure depends on compiled extension behavior (pandas has C/Cython), build pandas from source using the provided build commands to reproduce reliably. If a platform/toolchain differs materially (e.g., different compiler/OS), the transition may not occur.",
+          "The evidence does not include python version, NumPy version, or whether tests require optional dependencies; if CI in the target environment pins these, match those pins to maximize transition probability."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "The test constructs `expected = DatetimeIndex([x + off for x in dti], dtype='datetime64[us]')` and uses `tm.assert_index_equal` to require exact equality of the index values/dtype.",
+          "why": "Because the test expects the result to preserve microsecond precision and explicitly sets the expected dtype to datetime64[us]; truncation/rounding changes the datetime values and/or dtype, causing `tm.assert_index_equal` to fail."
+        },
+        "fails_on_buggy": "The buggy `_add_offset` path coerces `res_values` back to `dtype=self.dtype` (effectively the original non-nano unit), truncating microseconds introduced by `offset.offset`. Therefore `tm.assert_index_equal` fails when comparing `result` (truncated/rounded) to `expected` (constructed elementwise and cast to datetime64[us]).",
+        "passes_on_fixed": "The fixed `_add_offset` computes a finer `res_unit`/dtype based on `offset.offset` when it is non-zero (e.g., upgrades from s/ms to us when needed), so the resulting DatetimeIndex preserves the introduced sub-unit precision. Therefore `tm.assert_index_equal` passes for both unit='s' and unit='ms' and for each of the CustomBusinessDay/CustomBusinessMonthBegin/CustomBusinessMonthEnd offset classes."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3585,
+        "output_tokens": 1255,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002286
+      },
+      "miner_usage": {
+        "input_tokens": 11077,
+        "output_tokens": 3427,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.006500000000000001,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

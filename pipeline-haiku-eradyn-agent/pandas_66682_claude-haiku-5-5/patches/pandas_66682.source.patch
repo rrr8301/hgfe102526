@@ -1,0 +1,83 @@
+diff --git a/pandas/_libs/tslibs/np_datetime.pxd b/pandas/_libs/tslibs/np_datetime.pxd
+index caffc064e2c2a..79f3ea580399e 100644
+--- a/pandas/_libs/tslibs/np_datetime.pxd
++++ b/pandas/_libs/tslibs/np_datetime.pxd
+@@ -135,5 +135,7 @@ cdef int64_t convert_reso(
+     bint round_ok,
+ ) except? -1
+ 
+-cpdef cnp.ndarray add_overflowsafe(cnp.ndarray left, cnp.ndarray right)
++cpdef cnp.ndarray add_overflowsafe(
++    cnp.ndarray left, cnp.ndarray right, bint sentinel_ok=*
++)
+ cpdef cnp.ndarray mul_overflowsafe(cnp.ndarray left, cnp.ndarray right)
+diff --git a/pandas/_libs/tslibs/np_datetime.pyi b/pandas/_libs/tslibs/np_datetime.pyi
+index ab7cad150e4d0..f73c81db55762 100644
+--- a/pandas/_libs/tslibs/np_datetime.pyi
++++ b/pandas/_libs/tslibs/np_datetime.pyi
+@@ -27,6 +27,7 @@ def compare_mismatched_resolutions(
+ def add_overflowsafe(
+     left: npt.NDArray[np.int64],
+     right: npt.NDArray[np.int64],
++    sentinel_ok: bool = ...,
+ ) -> npt.NDArray[np.int64]: ...
+ def mul_overflowsafe(
+     left: npt.NDArray[np.int64],
+diff --git a/pandas/_libs/tslibs/np_datetime.pyx b/pandas/_libs/tslibs/np_datetime.pyx
+index 48e4bfcd3b4b5..066ec18c72633 100644
+--- a/pandas/_libs/tslibs/np_datetime.pyx
++++ b/pandas/_libs/tslibs/np_datetime.pyx
+@@ -841,12 +841,19 @@ cdef int64_t _convert_reso_with_dtstruct(
+ 
+ 
+ @cython.overflowcheck(True)
+-cpdef cnp.ndarray add_overflowsafe(cnp.ndarray left, cnp.ndarray right):
++cpdef cnp.ndarray add_overflowsafe(
++    cnp.ndarray left, cnp.ndarray right, bint sentinel_ok=False
++):
+     """
+     Overflow-safe addition for datetime64/timedelta64 dtypes.
+ 
+     `right` may either be zero-dim or of the same shape as `left`.
+ 
++    A sum landing exactly on NPY_DATETIME_NAT is rejected, since as a datetime64
++    or timedelta64 value it would be indistinguishable from a missing one. Pass
++    ``sentinel_ok=True`` where the result is a count rather than such a value,
++    so that NPY_DATETIME_NAT is a legitimate answer (GH#66552).
++
+     TODO(numpy>=2.5): numpy raises OverflowError natively for datetime64/
+     timedelta64 add and subtract (numpy GH-31378); remove this once the numpy
+     floor is >= 2.5.
+@@ -873,7 +880,7 @@ cpdef cnp.ndarray add_overflowsafe(cnp.ndarray left, cnp.ndarray right):
+                 res_value = NPY_DATETIME_NAT
+             else:
+                 res_value = lval + rval
+-                if res_value == NPY_DATETIME_NAT:
++                if res_value == NPY_DATETIME_NAT and not sentinel_ok:
+                     # GH#66549 int64 can hold this sum, but the value is the
+                     #  NaT sentinel, so it would be indistinguishable from a
+                     #  missing value downstream. Treat it as an overflow.
+diff --git a/pandas/core/arrays/datetimelike.py b/pandas/core/arrays/datetimelike.py
+index 1f2e61d65b360..354cbebe1e823 100644
+--- a/pandas/core/arrays/datetimelike.py
++++ b/pandas/core/arrays/datetimelike.py
+@@ -1246,8 +1246,17 @@ def _sub_periodlike(self, other: Period | PeriodArray) -> npt.NDArray[np.object_
+         self._check_compatible_with(other)
+ 
+         other_i8, o_mask = self._get_i8_values_and_mask(other)
+-        new_i8_data = add_overflowsafe(self.asi8, np.asarray(-other_i8, dtype="i8"))
+-        new_data = np.array([self.freq.base * x for x in new_i8_data])
++        # GH#66552 the difference is a count of periods, not an ordinal, so
++        #  INT64_MIN is a legitimate answer here and not the NaT sentinel.
++        new_i8_data = add_overflowsafe(
++            self.asi8, np.asarray(-other_i8, dtype="i8"), sentinel_ok=True
++        )
++        # multiply by python ints: numpy's scalar multiply spuriously reports
++        #  overflow for a np.int64 count of INT64_MIN on Windows
++        counts = new_i8_data.ravel().tolist()
++        new_data = np.array([self.freq.base * count for count in counts]).reshape(
++            new_i8_data.shape
++        )
+ 
+         if o_mask is None:
+             # i.e. Period scalar

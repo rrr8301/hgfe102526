@@ -1,0 +1,1805 @@
+[
+  {
+    "slug": "pandas_62813",
+    "bug_type": "special_value",
+    "image": "python:3.11",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/6 reported example(s))",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "not_reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "overflow_inference_examples": "import numpy as np, pandas as pd\nfrom io import StringIO\nimport pandas._libs.lib as lib\n\n# Helper to record exceptions deterministically\n\ndef run_or_exc(fn):\n    try:\n        return (\"ok\", fn())\n    except Exception as e:\n        return (\"exc\", type(e).__name__, str(e))\n\nrecords = []\n\ndef rec(name, val):\n    records.append((name, val))\n\n# 1) maybe_convert_numeric overflow scalar preserved? \narr = np.array([1<<65], dtype=object)\nrec('maybe_convert_numeric_overflow_pos', run_or_exc(lambda: lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)))\n\narr = np.array([-(1<<65)], dtype=object)\nrec('maybe_convert_numeric_overflow_neg', run_or_exc(lambda: lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)))\n\n# 2) string beyond range w/ coerce_numeric\narr = np.array([str(1<<65)], dtype=object)\nrec('maybe_convert_numeric_overflow_str_coerce', run_or_exc(lambda: lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)))\n\narr = np.array([f\"-{1<<65}\"], dtype=object)\nrec('maybe_convert_numeric_overflow_neg_str_coerce_false', run_or_exc(lambda: lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)))\n\n# 3) read_csv parsing for large int+fraction w/out explicit dtype\ncsv = \"value\\n42\\n18446744073709551616.5\\n\"  # 2**64 + 0.5\n\ndef parse_csv():\n    df = pd.read_csv(StringIO(csv))\n    s = df['value']\n    v = s.values\n    # reduce to a compact representation\n    if hasattr(v, 'dtype'):\n        return {'dtype': str(v.dtype), 'values': v.tolist()}\n    return {'dtype': None, 'values': list(v)}\nrec('read_csv_large_int_plus_half', run_or_exc(parse_csv))\n\n# 4) to_numeric really large scalar should (pre-fix behavior) raise\n# pick a large scalar; mirror report's 'really large' beyond int64 as string\nbig = str(1<<65)\n\ndef to_num():\n    return pd.to_numeric(big, errors=None)\nrec('to_numeric_large_string', run_or_exc(to_num))\n\n# Output all records\nprobe_out = {k:v for k,v in records}\nprobe(probe_out)\n",
+        "overflow_inference_examples_direct": "import numpy as np, pandas as pd\nfrom pandas._libs import lib\n\nbig = 1<<65\nnegbig = -(1<<65)\n\n# 1) maybe_convert_numeric on object arrays (coerce_numeric=False)\narr_pos_obj = np.array([big], dtype=object)\ntry:\n    r1 = lib.maybe_convert_numeric(arr_pos_obj, set(), coerce_numeric=False)\n    out1 = (type(r1), r1.dtype, r1)\nexcept Exception as e:\n    out1 = ('EXC', type(e).__name__, str(e))\n\narr_neg_obj = np.array([negbig], dtype=object)\ntry:\n    r2 = lib.maybe_convert_numeric(arr_neg_obj, set(), coerce_numeric=False)\n    out2 = (type(r2), r2.dtype, r2)\nexcept Exception as e:\n    out2 = ('EXC', type(e).__name__, str(e))\n\n# 2) maybe_convert_numeric on object arrays (coerce_numeric=True) for numeric string overflow\narr_pos_str = np.array([str(big)], dtype=object)\ntry:\n    r3 = lib.maybe_convert_numeric(arr_pos_str, set(), coerce_numeric=True)\n    out3 = (type(r3), getattr(r3,'dtype',None), r3)\nexcept Exception as e:\n    out3 = ('EXC', type(e).__name__, str(e))\n\narr_neg_str = np.array([f\"-{big}\"], dtype=object)\ntry:\n    r4 = lib.maybe_convert_numeric(arr_neg_str, set(), coerce_numeric=False)\n    out4 = (type(r4), getattr(r4,'dtype',None), r4)\nexcept Exception as e:\n    out4 = ('EXC', type(e).__name__, str(e))\n\n# 3) read_csv inference near/beyond int64 and with fractional suffix (2**64 + 0.5)\ncsv = 'value\\n42\\n18446744073709551616.5\\n'\nfrom io import StringIO\ntry:\n    df = pd.read_csv(StringIO(csv))\n    v = df['value'].values\n    out5 = ('OK', df['value'].dtype, v.tolist())\nexcept Exception as e:\n    out5 = ('EXC', type(e).__name__, str(e))\n\n# 4) to_numeric large scalar string; capture whether it raises\nval = str(1<<65)\ntry:\n    r6 = pd.to_numeric(val)\n    out6 = ('OK', type(r6).__name__, r6)\nexcept Exception as e:\n    out6 = ('EXC', type(e).__name__, str(e))\n\n# Emit values for the probe recorder\nprobe('maybe_overflow_pos_coerceFalse', out1)\nprobe('maybe_overflow_neg_coerceFalse', out2)\nprobe('maybe_overflow_pos_str_coerceTrue', out3)\nprobe('maybe_overflow_neg_str_coerceFalse', out4)\nprobe('read_csv_overflow_fraction', out5)\nprobe('to_numeric_large_scalar', out6)\n",
+        "reported_examples": "import numpy as np\nimport pandas as pd\nfrom pandas._libs import lib\nfrom io import StringIO\n\ncsv = \"a\\n42\\n18446744073709551616.5\"\nlarge_val = str((1 << 65) + 123)\n\n# Used by the probe to test numeric conversion edge-cases\narr = np.array([str(-(1 << 65))], dtype=object)\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)\", \"lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)\", [\"arr = np.array([1 << 65], dtype=object)\"], \"np.array([1 << 65], dtype=object)\"], [\"arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)\", \"lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)\", [\"arr = np.array([-(1 << 65)], dtype=object)\"], \"np.array([-(1 << 65)], dtype=object)\"], [\"arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)\", \"lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)\", [\"arr = np.array([str(1 << 65)], dtype=object)\"], \"np.array([1 << 65], dtype=float)\"], [\"arr = np.array([f\\\"-{1 << 65}\\\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)\", \"lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)\", [\"arr = np.array([f\\\"-{1 << 65}\\\"], dtype=object)\"], \"np.array([-(1 << 65)], dtype=object)\"], [\"pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float\", \"pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float\", [], \"value column detected as float64, values approximately [4.20000000e+01 1.84467441e+19] (same as the case with a preceding float)\"], [\"to_numeric on a really large string value beyond int64 (test_really_large_scalar, e.g. transform of large_val to str), errors=None\", \"None\", [], \"no raise; tm.assert_almost_equal(to_numeric(val, **kwargs), int(val))\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import pandas as pd\n\nname = \"pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float\"\n\ntry:\n    csv = \"col\\n42\\n18446744073709551616.5\\n\"\n    result = pd.read_csv(pd.io.common.StringIO(csv))\n    # record the returned DataFrame\n    probe(name, result)\nexcept Exception as e:\n    probe_exception(name, e)"
+      },
+      "fixed": {
+        "overflow_inference_examples": "import numpy as np, pandas as pd\nfrom io import StringIO\nimport pandas._libs.lib as lib\n\ndef run_or_exc(fn):\n    try:\n        return (\"ok\", fn())\n    except Exception as e:\n        return (\"exc\", type(e).__name__, str(e))\n\nrecords = []\n\ndef rec(name, val):\n    records.append((name, val))\n\narr = np.array([1<<65], dtype=object)\nrec('maybe_convert_numeric_overflow_pos', run_or_exc(lambda: lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)))\n\narr = np.array([-(1<<65)], dtype=object)\nrec('maybe_convert_numeric_overflow_neg', run_or_exc(lambda: lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)))\n\narr = np.array([str(1<<65)], dtype=object)\nrec('maybe_convert_numeric_overflow_str_coerce', run_or_exc(lambda: lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)))\n\narr = np.array([f\"-{1<<65}\"], dtype=object)\nrec('maybe_convert_numeric_overflow_neg_str_coerce_false', run_or_exc(lambda: lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)))\n\ncsv = \"value\\n42\\n18446744073709551616.5\\n\"\n\ndef parse_csv():\n    df = pd.read_csv(StringIO(csv))\n    s = df['value']\n    v = s.values\n    if hasattr(v, 'dtype'):\n        return {'dtype': str(v.dtype), 'values': v.tolist()}\n    return {'dtype': None, 'values': list(v)}\nrec('read_csv_large_int_plus_half', run_or_exc(parse_csv))\n\nbig = str(1<<65)\n\ndef to_num():\n    return pd.to_numeric(big, errors=None)\nrec('to_numeric_large_string', run_or_exc(to_num))\n\nprobe_out = {k:v for k,v in records}\nprobe(probe_out)\n",
+        "overflow_inference_examples_direct": "import numpy as np, pandas as pd\nfrom pandas._libs import lib\n\nbig = 1<<65\nnegbig = -(1<<65)\n\narr_pos_obj = np.array([big], dtype=object)\ntry:\n    r1 = lib.maybe_convert_numeric(arr_pos_obj, set(), coerce_numeric=False)\n    out1 = (type(r1), r1.dtype, r1)\nexcept Exception as e:\n    out1 = ('EXC', type(e).__name__, str(e))\n\narr_neg_obj = np.array([negbig], dtype=object)\ntry:\n    r2 = lib.maybe_convert_numeric(arr_neg_obj, set(), coerce_numeric=False)\n    out2 = (type(r2), r2.dtype, r2)\nexcept Exception as e:\n    out2 = ('EXC', type(e).__name__, str(e))\n\narr_pos_str = np.array([str(big)], dtype=object)\ntry:\n    r3 = lib.maybe_convert_numeric(arr_pos_str, set(), coerce_numeric=True)\n    out3 = (type(r3), getattr(r3,'dtype',None), r3)\nexcept Exception as e:\n    out3 = ('EXC', type(e).__name__, str(e))\n\narr_neg_str = np.array([f\"-{big}\"], dtype=object)\ntry:\n    r4 = lib.maybe_convert_numeric(arr_neg_str, set(), coerce_numeric=False)\n    out4 = (type(r4), getattr(r4,'dtype',None), r4)\nexcept Exception as e:\n    out4 = ('EXC', type(e).__name__, str(e))\n\ncsv = 'value\\n42\\n18446744073709551616.5\\n'\nfrom io import StringIO\ntry:\n    df = pd.read_csv(StringIO(csv))\n    v = df['value'].values\n    out5 = ('OK', df['value'].dtype, v.tolist())\nexcept Exception as e:\n    out5 = ('EXC', type(e).__name__, str(e))\n\nval = str(1<<65)\ntry:\n    r6 = pd.to_numeric(val)\n    out6 = ('OK', type(r6).__name__, r6)\nexcept Exception as e:\n    out6 = ('EXC', type(e).__name__, str(e))\n\nprobe('maybe_overflow_pos_coerceFalse', out1)\nprobe('maybe_overflow_neg_coerceFalse', out2)\nprobe('maybe_overflow_pos_str_coerceTrue', out3)\nprobe('maybe_overflow_neg_str_coerceFalse', out4)\nprobe('read_csv_overflow_fraction', out5)\nprobe('to_numeric_large_scalar', out6)\n",
+        "reported_examples": "import numpy as np\nimport pandas as pd\nfrom pandas._libs import lib\nfrom io import StringIO\n\ncsv = \"a\\n42\\n18446744073709551616.5\"\nlarge_val = str((1 << 65) + 123)\n\n# Used by the probe to test numeric conversion edge-cases\narr = np.array([str(-(1 << 65))], dtype=object)\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)\", \"lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)\", [\"arr = np.array([1 << 65], dtype=object)\"], \"np.array([1 << 65], dtype=object)\"], [\"arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)\", \"lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)\", [\"arr = np.array([-(1 << 65)], dtype=object)\"], \"np.array([-(1 << 65)], dtype=object)\"], [\"arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)\", \"lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)\", [\"arr = np.array([str(1 << 65)], dtype=object)\"], \"np.array([1 << 65], dtype=float)\"], [\"arr = np.array([f\\\"-{1 << 65}\\\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)\", \"lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)\", [\"arr = np.array([f\\\"-{1 << 65}\\\"], dtype=object)\"], \"np.array([-(1 << 65)], dtype=object)\"], [\"pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float\", \"pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float\", [], \"value column detected as float64, values approximately [4.20000000e+01 1.84467441e+19] (same as the case with a preceding float)\"], [\"to_numeric on a really large string value beyond int64 (test_really_large_scalar, e.g. transform of large_val to str), errors=None\", \"None\", [], \"no raise; tm.assert_almost_equal(to_numeric(val, **kwargs), int(val))\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import pandas as pd\n\nname = \"pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float\"\n\ntry:\n    csv = \"col\\n42\\n18446744073709551616.5\\n\"\n    result = pd.read_csv(pd.io.common.StringIO(csv))\n    # record the returned DataFrame\n    probe(name, result)\nexcept Exception as e:\n    probe_exception(name, e)"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/6 reported example(s))",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "not_reproduced",
+      "success_criterion": "The selected tests (test_convert_numeric_overflow, test_int64_overflow, test_outside_int64_uint64_range, plus the to_numeric large-value tests) FAIL on buggy commit 27368892 with the PR test files applied, and would PASS once the lib.pyx/base_parser.py fix is applied; failure counts/assertions must be attributable to the overflow-inference behavior, not to import or build errors.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": 4,
+            "failed": 4,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 8,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float": "            col\n0  4.200000e+01\n1  1.844674e+19"
+            },
+            "fixed_values": {
+              "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float": "            col\n0  4.200000e+01\n1  1.844674e+19"
+            }
+          },
+          {
+            "label": "overflow_inference_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: probe() missing 1 required positional argument: 'value'"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: probe() missing 1 required positional argument: 'value'"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "overflow_inference_examples_direct",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "maybe_overflow_pos_coerceFalse": [
+                "EXC",
+                "AttributeError",
+                "'tuple' object has no attribute 'dtype'"
+              ],
+              "maybe_overflow_neg_coerceFalse": [
+                "EXC",
+                "AttributeError",
+                "'tuple' object has no attribute 'dtype'"
+              ],
+              "maybe_overflow_pos_str_coerceTrue": [
+                "<class 'tuple'>",
+                null,
+                [
+                  [
+                    3.6893488147419103e+19
+                  ],
+                  null
+                ]
+              ],
+              "maybe_overflow_neg_str_coerceFalse": [
+                "EXC",
+                "ValueError",
+                "Integer out of range. at position 0"
+              ],
+              "read_csv_overflow_fraction": [
+                "OK",
+                "dtype('float64')",
+                [
+                  42.0,
+                  1.8446744073709552e+19
+                ]
+              ],
+              "to_numeric_large_scalar": [
+                "EXC",
+                "ValueError",
+                "Integer out of range. at position 0"
+              ]
+            },
+            "fixed_values": {
+              "maybe_overflow_pos_coerceFalse": [
+                "EXC",
+                "AttributeError",
+                "'tuple' object has no attribute 'dtype'"
+              ],
+              "maybe_overflow_neg_coerceFalse": [
+                "EXC",
+                "AttributeError",
+                "'tuple' object has no attribute 'dtype'"
+              ],
+              "maybe_overflow_pos_str_coerceTrue": [
+                "<class 'tuple'>",
+                null,
+                [
+                  [
+                    3.6893488147419103e+19
+                  ],
+                  null
+                ]
+              ],
+              "maybe_overflow_neg_str_coerceFalse": [
+                "<class 'tuple'>",
+                null,
+                [
+                  [
+                    -36893488147419103232
+                  ],
+                  null
+                ]
+              ],
+              "read_csv_overflow_fraction": [
+                "OK",
+                "dtype('float64')",
+                [
+                  42.0,
+                  1.8446744073709552e+19
+                ]
+              ],
+              "to_numeric_large_scalar": [
+                "OK",
+                "int",
+                36893488147419103232
+              ]
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)": [
+                [
+                  3.6893488147419103e+19
+                ],
+                null
+              ],
+              "expected::arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)": [
+                36893488147419103232
+              ],
+              "arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                [
+                  -3.6893488147419103e+19
+                ],
+                null
+              ],
+              "expected::arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                -36893488147419103232
+              ],
+              "arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)": [
+                [
+                  3.6893488147419103e+19
+                ],
+                null
+              ],
+              "expected::arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)": [
+                3.6893488147419103e+19
+              ],
+              "arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": "__error__: ValueError: Integer out of range. at position 0",
+              "expected::arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                -36893488147419103232
+              ],
+              "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "to_numeric on a really large string value beyond int64 (test_really_large_scalar, e.g. transform of large_val to str), errors=None": null
+            },
+            "fixed_values": {
+              "arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)": [
+                [
+                  36893488147419103232
+                ],
+                null
+              ],
+              "expected::arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)": [
+                36893488147419103232
+              ],
+              "arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                [
+                  -36893488147419103232
+                ],
+                null
+              ],
+              "expected::arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                -36893488147419103232
+              ],
+              "arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)": [
+                [
+                  3.6893488147419103e+19
+                ],
+                null
+              ],
+              "expected::arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)": [
+                3.6893488147419103e+19
+              ],
+              "arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                [
+                  -36893488147419103232
+                ],
+                null
+              ],
+              "expected::arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                -36893488147419103232
+              ],
+              "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "to_numeric on a really large string value beyond int64 (test_really_large_scalar, e.g. transform of large_val to str), errors=None": null
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)",
+            "expected_output": "np.array([1 << 65], dtype=object)",
+            "expected_value": [
+              36893488147419103232
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "result != np.array([1 << 65], dtype=object); overflow value is not kept as a Python int and tm.assert_numpy_array_equal raises AssertionError (not converted to object-dtype python ints on overflow)",
+            "outcome": "still_wrong",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)",
+              "observed": [
+                [
+                  3.6893488147419103e+19
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)",
+              "observed": [
+                [
+                  36893488147419103232
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)",
+            "expected_output": "np.array([-(1 << 65)], dtype=object)",
+            "expected_value": [
+              -36893488147419103232
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "result != np.array([-(1 << 65)], dtype=object); negative overflow not preserved as object-dtype python int (AssertionError)",
+            "outcome": "still_wrong",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)",
+              "observed": [
+                [
+                  -3.6893488147419103e+19
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)",
+              "observed": [
+                [
+                  -36893488147419103232
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)",
+            "expected_output": "np.array([1 << 65], dtype=float)",
+            "expected_value": [
+              3.6893488147419103e+19
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "result != np.array([1 << 65], dtype=float); the numeric string beyond the int64/uint64 range is not coerced to float as expected (AssertionError)",
+            "outcome": "still_wrong",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)",
+              "observed": [
+                [
+                  3.6893488147419103e+19
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)",
+              "observed": [
+                [
+                  3.6893488147419103e+19
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)",
+            "expected_output": "np.array([-(1 << 65)], dtype=object)",
+            "expected_value": [
+              -36893488147419103232
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "result != np.array([-(1 << 65)], dtype=object); string form of the negative overflow is not detected/kept as object python int (AssertionError)",
+            "outcome": "still_wrong",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)",
+              "observed": "__error__: ValueError: Integer out of range. at position 0",
+              "evaluation_error": "ValueError: Integer out of range. at position 0",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)",
+              "observed": [
+                [
+                  -36893488147419103232
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float",
+            "expected_output": "value column detected as float64, values approximately [4.20000000e+01 1.84467441e+19] (same as the case with a preceding float)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "value column parsed as str with dtype object; data['value'].values == ['42' '18446744073709551616.5']",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float",
+              "observed": "            col\n0  4.200000e+01\n1  1.844674e+19",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float",
+              "observed": "            col\n0  4.200000e+01\n1  1.844674e+19",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "to_numeric on a really large string value beyond int64 (test_really_large_scalar, e.g. transform of large_val to str), errors=None",
+            "expected_output": "no raise; tm.assert_almost_equal(to_numeric(val, **kwargs), int(val))",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "raises ValueError 'Integer out of range. at position 0' (old expectation in test_really_large_scalar before PR #62813)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "to_numeric on a really large string value beyond int64 (test_really_large_scalar, e.g. transform of large_val to str), errors=None",
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "to_numeric on a really large string value beyond int64 (test_really_large_scalar, e.g. transform of large_val to str), errors=None",
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 8,
+            "n_failed": 6,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 3,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata",
+            "hypothesis>=6.116.0",
+            "meson>=1.2.1",
+            "meson-python>=0.13.1",
+            "numpy>=2.0.0rc1",
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2025-10-27T13:51:57-07:00",
+        "fixed_commit_date": "2025-10-27T13:56:19-07:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2025-10-27T13:56:19-07:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.13.1",
+              "meson>=1.2.1,<2",
+              "wheel",
+              "Cython<4.0.0a0",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.3.4",
+              "matplotlib": "3.10.7",
+              "pyparsing": "3.2.5",
+              "llvmlite": "0.45.1",
+              "meson-python": "0.18.0",
+              "meson": "1.9.1",
+              "wheel": "0.46.1",
+              "cython": "3.1.6",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "hypothesis>=6.116.0",
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.26.0 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.0.0.dev0+2610.g27368892d3.dirty) (2.3.4)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.0.0.dev0+2610.g27368892d3.dirty) (2.9.0.post0)\nRequirement already satisfied: tzdata>=2023.3 in /usr/local/lib/python3.11/site-packages (from pandas==3.0.0.dev0+2610.g27368892d3.dirty) (2026.4)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.8.2->pandas==3.0.0.dev0+2610.g27368892d3.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.0.0.dev0+2610.g27368892d3.dirty-cp311-cp311-linux_x86_64.whl size=15533791 sha256=98b9cda8ff5b7946b5b5976a18347e5c93d48f88e88f3349b642456de2f30329\n  Stored in directory: /tmp/pip-ephem-wheel-cache-wsu89mwu/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.0.0.dev0+2610.g27368892d3.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.13.1",
+              "meson>=1.2.1,<2",
+              "wheel",
+              "Cython<4.0.0a0",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.3.4",
+              "matplotlib": "3.10.7",
+              "pyparsing": "3.2.5",
+              "llvmlite": "0.45.1",
+              "meson-python": "0.18.0",
+              "meson": "1.9.1",
+              "wheel": "0.46.1",
+              "cython": "3.1.6",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "hypothesis>=6.116.0",
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.26.0 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.0.0.dev0+2611.g0350b56dd5) (2.3.4)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.0.0.dev0+2611.g0350b56dd5) (2.9.0.post0)\nRequirement already satisfied: tzdata>=2023.3 in /usr/local/lib/python3.11/site-packages (from pandas==3.0.0.dev0+2611.g0350b56dd5) (2026.4)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.8.2->pandas==3.0.0.dev0+2611.g0350b56dd5) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.0.0.dev0+2611.g0350b56dd5-cp311-cp311-linux_x86_64.whl size=15532670 sha256=374cf1a7f7dd4c840fc474d78e88ab8318e14d82b5c814982464aff4235993c1\n  Stored in directory: /tmp/pip-ephem-wheel-cache-f24jn0a5/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.0.0.dev0+2611.g0350b56dd5\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": 4,
+        "failed": 4,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 8,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 4,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float": "            col\n0  4.200000e+01\n1  1.844674e+19"
+            },
+            "fixed_values": {
+              "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float": "            col\n0  4.200000e+01\n1  1.844674e+19"
+            }
+          },
+          {
+            "label": "overflow_inference_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: probe() missing 1 required positional argument: 'value'"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: probe() missing 1 required positional argument: 'value'"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "overflow_inference_examples_direct",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "maybe_overflow_pos_coerceFalse": [
+                "EXC",
+                "AttributeError",
+                "'tuple' object has no attribute 'dtype'"
+              ],
+              "maybe_overflow_neg_coerceFalse": [
+                "EXC",
+                "AttributeError",
+                "'tuple' object has no attribute 'dtype'"
+              ],
+              "maybe_overflow_pos_str_coerceTrue": [
+                "<class 'tuple'>",
+                null,
+                [
+                  [
+                    3.6893488147419103e+19
+                  ],
+                  null
+                ]
+              ],
+              "maybe_overflow_neg_str_coerceFalse": [
+                "EXC",
+                "ValueError",
+                "Integer out of range. at position 0"
+              ],
+              "read_csv_overflow_fraction": [
+                "OK",
+                "dtype('float64')",
+                [
+                  42.0,
+                  1.8446744073709552e+19
+                ]
+              ],
+              "to_numeric_large_scalar": [
+                "EXC",
+                "ValueError",
+                "Integer out of range. at position 0"
+              ]
+            },
+            "fixed_values": {
+              "maybe_overflow_pos_coerceFalse": [
+                "EXC",
+                "AttributeError",
+                "'tuple' object has no attribute 'dtype'"
+              ],
+              "maybe_overflow_neg_coerceFalse": [
+                "EXC",
+                "AttributeError",
+                "'tuple' object has no attribute 'dtype'"
+              ],
+              "maybe_overflow_pos_str_coerceTrue": [
+                "<class 'tuple'>",
+                null,
+                [
+                  [
+                    3.6893488147419103e+19
+                  ],
+                  null
+                ]
+              ],
+              "maybe_overflow_neg_str_coerceFalse": [
+                "<class 'tuple'>",
+                null,
+                [
+                  [
+                    -36893488147419103232
+                  ],
+                  null
+                ]
+              ],
+              "read_csv_overflow_fraction": [
+                "OK",
+                "dtype('float64')",
+                [
+                  42.0,
+                  1.8446744073709552e+19
+                ]
+              ],
+              "to_numeric_large_scalar": [
+                "OK",
+                "int",
+                36893488147419103232
+              ]
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)": [
+                [
+                  3.6893488147419103e+19
+                ],
+                null
+              ],
+              "expected::arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)": [
+                36893488147419103232
+              ],
+              "arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                [
+                  -3.6893488147419103e+19
+                ],
+                null
+              ],
+              "expected::arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                -36893488147419103232
+              ],
+              "arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)": [
+                [
+                  3.6893488147419103e+19
+                ],
+                null
+              ],
+              "expected::arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)": [
+                3.6893488147419103e+19
+              ],
+              "arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": "__error__: ValueError: Integer out of range. at position 0",
+              "expected::arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                -36893488147419103232
+              ],
+              "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "to_numeric on a really large string value beyond int64 (test_really_large_scalar, e.g. transform of large_val to str), errors=None": null
+            },
+            "fixed_values": {
+              "arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)": [
+                [
+                  36893488147419103232
+                ],
+                null
+              ],
+              "expected::arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)": [
+                36893488147419103232
+              ],
+              "arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                [
+                  -36893488147419103232
+                ],
+                null
+              ],
+              "expected::arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                -36893488147419103232
+              ],
+              "arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)": [
+                [
+                  3.6893488147419103e+19
+                ],
+                null
+              ],
+              "expected::arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)": [
+                3.6893488147419103e+19
+              ],
+              "arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                [
+                  -36893488147419103232
+                ],
+                null
+              ],
+              "expected::arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)": [
+                -36893488147419103232
+              ],
+              "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "to_numeric on a really large string value beyond int64 (test_really_large_scalar, e.g. transform of large_val to str), errors=None": null
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 6,
+        "n_judged": 6,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 0,
+        "n_contested": 4,
+        "unobserved": [],
+        "verdict": "not_reproduced",
+        "examples": [
+          {
+            "input": "arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)",
+            "expected_output": "np.array([1 << 65], dtype=object)",
+            "expected_value": [
+              36893488147419103232
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "result != np.array([1 << 65], dtype=object); overflow value is not kept as a Python int and tm.assert_numpy_array_equal raises AssertionError (not converted to object-dtype python ints on overflow)",
+            "outcome": "still_wrong",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)",
+              "observed": [
+                [
+                  3.6893488147419103e+19
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "arr = np.array([1 << 65], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)  # 1 << 65 = 36893488147419103232 (source test_diff:pandas/tests/dtypes/test_inference.py:729-754)",
+              "observed": [
+                [
+                  36893488147419103232
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)",
+            "expected_output": "np.array([-(1 << 65)], dtype=object)",
+            "expected_value": [
+              -36893488147419103232
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "result != np.array([-(1 << 65)], dtype=object); negative overflow not preserved as object-dtype python int (AssertionError)",
+            "outcome": "still_wrong",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)",
+              "observed": [
+                [
+                  -3.6893488147419103e+19
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "arr = np.array([-(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)",
+              "observed": [
+                [
+                  -36893488147419103232
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)",
+            "expected_output": "np.array([1 << 65], dtype=float)",
+            "expected_value": [
+              3.6893488147419103e+19
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "result != np.array([1 << 65], dtype=float); the numeric string beyond the int64/uint64 range is not coerced to float as expected (AssertionError)",
+            "outcome": "still_wrong",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)",
+              "observed": [
+                [
+                  3.6893488147419103e+19
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "arr = np.array([str(1 << 65)], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=True)",
+              "observed": [
+                [
+                  3.6893488147419103e+19
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)",
+            "expected_output": "np.array([-(1 << 65)], dtype=object)",
+            "expected_value": [
+              -36893488147419103232
+            ],
+            "expected_from": "evaluated",
+            "buggy_output_reported": "result != np.array([-(1 << 65)], dtype=object); string form of the negative overflow is not detected/kept as object python int (AssertionError)",
+            "outcome": "still_wrong",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)",
+              "observed": "__error__: ValueError: Integer out of range. at position 0",
+              "evaluation_error": "ValueError: Integer out of range. at position 0",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "arr = np.array([f\"-{1 << 65}\"], dtype=object); lib.maybe_convert_numeric(arr, set(), coerce_numeric=False)",
+              "observed": [
+                [
+                  -36893488147419103232
+                ],
+                null
+              ],
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float",
+            "expected_output": "value column detected as float64, values approximately [4.20000000e+01 1.84467441e+19] (same as the case with a preceding float)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "value column parsed as str with dtype object; data['value'].values == ['42' '18446744073709551616.5']",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float",
+              "observed": "            col\n0  4.200000e+01\n1  1.844674e+19",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.read_csv(csv) on a CSV column with rows '42' and '18446744073709551616.5' (2**64 + 0.5), no dtype=, column has no preceding float",
+              "observed": "            col\n0  4.200000e+01\n1  1.844674e+19",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "to_numeric on a really large string value beyond int64 (test_really_large_scalar, e.g. transform of large_val to str), errors=None",
+            "expected_output": "no raise; tm.assert_almost_equal(to_numeric(val, **kwargs), int(val))",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "raises ValueError 'Integer out of range. at position 0' (old expectation in test_really_large_scalar before PR #62813)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "to_numeric on a really large string value beyond int64 (test_really_large_scalar, e.g. transform of large_val to str), errors=None",
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "to_numeric on a really large string value beyond int64 (test_really_large_scalar, e.g. transform of large_val to str), errors=None",
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 8,
+          "n_failed": 6,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 3,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "The selected tests (test_convert_numeric_overflow, test_int64_overflow, test_outside_int64_uint64_range, plus the to_numeric large-value tests) FAIL on buggy commit 27368892 with the PR test files applied, and would PASS once the lib.pyx/base_parser.py fix is applied; failure counts/assertions must be attributable to the overflow-inference behavior, not to import or build errors."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata",
+          "hypothesis>=6.116.0",
+          "meson>=1.2.1",
+          "meson-python>=0.13.1",
+          "numpy>=2.0.0rc1",
+          "pytest>=8.3.4",
+          "pytest-xdist>=3.6.1"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2025-10-27T13:51:57-07:00",
+      "fixed_commit_date": "2025-10-27T13:56:19-07:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2025-10-27T13:56:19-07:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.13.1",
+            "meson>=1.2.1,<2",
+            "wheel",
+            "Cython<4.0.0a0",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.3.4",
+            "matplotlib": "3.10.7",
+            "pyparsing": "3.2.5",
+            "llvmlite": "0.45.1",
+            "meson-python": "0.18.0",
+            "meson": "1.9.1",
+            "wheel": "0.46.1",
+            "cython": "3.1.6",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "hypothesis>=6.116.0",
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.26.0 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.0.0.dev0+2610.g27368892d3.dirty) (2.3.4)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.0.0.dev0+2610.g27368892d3.dirty) (2.9.0.post0)\nRequirement already satisfied: tzdata>=2023.3 in /usr/local/lib/python3.11/site-packages (from pandas==3.0.0.dev0+2610.g27368892d3.dirty) (2026.4)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.8.2->pandas==3.0.0.dev0+2610.g27368892d3.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.0.0.dev0+2610.g27368892d3.dirty-cp311-cp311-linux_x86_64.whl size=15533791 sha256=98b9cda8ff5b7946b5b5976a18347e5c93d48f88e88f3349b642456de2f30329\n  Stored in directory: /tmp/pip-ephem-wheel-cache-wsu89mwu/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.0.0.dev0+2610.g27368892d3.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.13.1",
+            "meson>=1.2.1,<2",
+            "wheel",
+            "Cython<4.0.0a0",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.3.4",
+            "matplotlib": "3.10.7",
+            "pyparsing": "3.2.5",
+            "llvmlite": "0.45.1",
+            "meson-python": "0.18.0",
+            "meson": "1.9.1",
+            "wheel": "0.46.1",
+            "cython": "3.1.6",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "hypothesis>=6.116.0",
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.26.0 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.0.0.dev0+2611.g0350b56dd5) (2.3.4)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.0.0.dev0+2611.g0350b56dd5) (2.9.0.post0)\nRequirement already satisfied: tzdata>=2023.3 in /usr/local/lib/python3.11/site-packages (from pandas==3.0.0.dev0+2611.g0350b56dd5) (2026.4)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.8.2->pandas==3.0.0.dev0+2611.g0350b56dd5) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.0.0.dev0+2611.g0350b56dd5-cp311-cp311-linux_x86_64.whl size=15532670 sha256=374cf1a7f7dd4c840fc474d78e88ab8318e14d82b5c814982464aff4235993c1\n  Stored in directory: /tmp/pip-ephem-wheel-cache-f24jn0a5/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.0.0.dev0+2611.g0350b56dd5\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 7,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the pandas numeric overflow inference bug by showing focused test failures on the buggy revision and passing on the fixed revision, and corroborate with value-level probes for maybe_convert_numeric overflow handling.",
+          "milestones": [
+            "buggy_build_and_baseline_observations [buggy] \u2014 Run the selected reproducing tests on the buggy revision to confirm failures due to overflow inference (not build/import issues). (4 steps, verify: steps_succeeded, test_ran, test_fails)",
+            "buggy_value_level_probe [buggy] \u2014 Directly observe the incorrect overflow handling at the value level on the buggy revision via a numerical probe calling lib.maybe_convert_numeric and pandas.to_numeric/read_csv behaviors from the report\u2019s examples. (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "fixed_test_and_probe_consistency [fixed] \u2014 Confirm the same selected tests and the same value-level behavior on the fixed revision. (4 steps, verify: steps_succeeded, test_ran, test_passes, probe_ran, probe_clean, revisions_differ)",
+            "reported_examples_roundtrip [buggy] \u2014 Use check_reported_examples to evaluate the report\u2019s own example expressions on both revisions, aligning inputs and showing buggy vs fixed outputs for overflow inference. (2 steps, verify: steps_succeeded, examples_reproduced)",
+            "reported_examples_roundtrip_fixed [fixed] \u2014 Run the same check_reported_examples on fixed to complete the buggy vs fixed alignment. (2 steps, verify: steps_succeeded, examples_reproduced)",
+            "final_reproduces_bug [fixed] \u2014 Establish that the buggy and fixed revisions differ on the overflow inference behavior (tests/probes/examples). (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import pandas, sys; print('pandas', pandas.__version__); print('file', pandas.__file__); print('prefix', sys.prefix)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.51
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.dtypes.test_inference -k test_convert_numeric_overflow --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 2.12
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.io.parser.common.test_ints -k \"test_int64_overflow or test_outside_int64_uint64_range\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.05
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.tools.test_to_numeric -k large --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 2.28
+      },
+      {
+        "verification": {
+          "milestone": "buggy_build_and_baseline_observations",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.dtypes.test_inf` exited 1: t PYTHONWARNINGS=error to get a traceback and show which plugin is responsible. Additionally, set HYPOTHESIS_EXTEND_INITIALIZATION=1 to pinpoint the exact location.\n  notice_initialization_restarted(); `cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.io.parser.commo` exited 1: t PYTHONWARNINGS=error to get a traceback and show which plugin is responsible. Additionally, set HYPOTHESIS_EXTEND_INITIALIZATION=1 to pinpoint the exact location.\n  notice_initialization_restarted(); `cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.tools.test_to_n` exited 1: t PYTHONWARNINGS=error to get a traceback and show which plugin is responsible. Additionally, set HYPOTHESIS_EXTEND_INITIALIZATION=1 to pinpoint the exact location.\n  notice_initialization_restarted()"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce and measure the pandas overflow-inference defect at the value level (and ensure fixed-vs-buggy divergence) without relying on the failing selected test runs, whose current execution is blocked by Pytest warning-as-error setup issues on this container.",
+          "milestones": [
+            "buggy_test_environment_probe_fixup [buggy] \u2014 Determine why selected pytest invocations are failing early on the buggy revision and confirm this is an environment/warning-as-error issue rather than the overflow assertions themselves. (2 steps, verify: steps_succeeded, test_ran)",
+            "reported_examples_roundtrip_buggy_fixed_via_probes [buggy] \u2014 Reproduce the reported overflow behavior directly by executing the report\u2019s example expressions against lib.maybe_convert_numeric, read_csv, and to_numeric on BOTH revisions, recording observable values that differ. (1 steps, verify: steps_succeeded, probe_ran)",
+            "reported_examples_roundtrip_fixed [fixed] \u2014 Run the same overflow example probe on the fixed revision to obtain the expected (correct) values. (1 steps, verify: steps_succeeded, probe_ran, probe_clean)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.dtypes.test_inference -k test_convert_numeric_overflow --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.24
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.dtypes.test_inference -k test_convert_numeric_overflow --confcutdir=.venv -vv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.24
+      },
+      {
+        "verification": {
+          "milestone": "buggy_test_environment_probe_fixup",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.dtypes.test_inf` exited 1: t PYTHONWARNINGS=error to get a traceback and show which plugin is responsible. Additionally, set HYPOTHESIS_EXTEND_INITIALIZATION=1 to pinpoint the exact location.\n  notice_initialization_restarted(); `cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.dtypes.test_inf` exited 1: t PYTHONWARNINGS=error to get a traceback and show which plugin is responsible. Additionally, set HYPOTHESIS_EXTEND_INITIALIZATION=1 to pinpoint the exact location.\n  notice_initialization_restarted()"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "buggy_test_environment_probe_fixup",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 2,
+          "detail": [
+            "`cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.dtypes.test_inf` exited 1: t PYTHONWARNINGS=error to get a traceback and show which plugin is responsible. Additionally, set HYPOTHESIS_EXTEND_INITIALIZATION=1 to pinpoint the exact location.\n  notice_initialization_restarted(); `cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.dtypes.test_inf` exited 1: t PYTHONWARNINGS=error to get a traceback and show which plugin is responsible. Additionally, set HYPOTHESIS_EXTEND_INITIALIZATION=1 to pinpoint the exact location.\n  notice_initialization_restarted()"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "overflow_inference_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(overflow_inference_examples) \u2014 Execute the report\u2019s overflow-focused expressions on the buggy revision and record outputs (arrays/series values or exception types/messages)."
+      },
+      {
+        "verification": {
+          "milestone": "reported_examples_roundtrip_buggy_fixed_via_probes",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(overflow_inference_examples) \u2014 Execute the report\u2019s overflow-focused expressions on the buggy revision and record outputs (arrays/series values or exception types/messages). did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce and measure the reported overflow-inference behavior using direct probes/evaluations of the report\u2019s example expressions on both the buggy and fixed pandas builds, without relying on the failing selected pytest tests.",
+          "milestones": [
+            "env_sanity_repro_probes_ready [buggy] \u2014 Confirm both revisions can import pandas from their respective venvs and run a minimal lib.maybe_convert_numeric probe. (2 steps, verify: steps_succeeded)",
+            "overflow_examples_probe_buggy [buggy] \u2014 Run the overflow-focused report example expressions on the buggy revision and record observable outputs (values and dtypes or exception messages). (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "overflow_examples_probe_fixed [fixed] \u2014 Run the same overflow-focused report example expressions on the fixed revision and record observable outputs. (1 steps, verify: steps_succeeded, probe_ran, probe_clean)",
+            "compare_buggy_fixed_overflow_divergence [buggy] \u2014 Establish that buggy and fixed probes differ on at least one observable overflow-related output, confirming divergence at the value level. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import pandas, numpy as np; import pandas._libs.lib as lib; print('pandas', pandas.__version__); print('file', pandas.__file__); arr=np.array([1<<65],dtype=object); print('probe', lib.maybe_convert_numeric(arr, set(), coerce_numeric=False), lib.maybe_convert_numeric(np.array([str(1<<65)],dtype=object), set(), coerce_numeric=True))\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.51
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -c \"import pandas, numpy as np; import pandas._libs.lib as lib; print('pandas', pandas.__version__); print('file', pandas.__file__); arr=np.array([1<<65],dtype=object); print('probe', lib.maybe_convert_numeric(arr, set(), coerce_numeric=False), lib.maybe_convert_numeric(np.array([str(1<<65)],dtype=object), set(), coerce_numeric=True))\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.51
+      },
+      {
+        "verification": {
+          "milestone": "env_sanity_repro_probes_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "overflow_inference_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: TypeError: probe() missing 1 required positional argument: 'value'"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "overflow_examples_probe_buggy",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'overflow_inference_examples': probe raised: TypeError: probe() missing 1 required positional argument: 'value'"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "overflow_inference_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: TypeError: probe() missing 1 required positional argument: 'value'"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "overflow_examples_probe_fixed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "probe 'overflow_inference_examples' is not clean on fixed: probe raised: TypeError: probe() missing 1 required positional argument: 'value'"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Establish overflow-inference divergence by directly evaluating the report\u2019s overflow examples via probes on both buggy and fixed revisions, avoiding the failing (signature-broken) report example probe.",
+          "milestones": [
+            "overflow_examples_probe_direct_buggy_fixed [buggy] \u2014 Run a direct numerical probe (handwritten to call pandas APIs) that captures the overflow-inference outputs/exceptions on both buggy and fixed revisions. (2 steps, verify: steps_succeeded, probe_ran)",
+            "compare_buggy_fixed_overflow_divergence [fixed] \u2014 Confirm buggy vs fixed revisions differ on at least one observable overflow-inference output using the direct probe results. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "overflow_inference_examples_direct",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.6893488147419103e+19,
+          42.0,
+          1.8446744073709552e+19
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "overflow_inference_examples_direct",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.6893488147419103e+19,
+          -3.6893488147419103e+19,
+          42.0,
+          1.8446744073709552e+19,
+          3.6893488147419103e+19
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "overflow_examples_probe_direct_buggy_fixed",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "echo 'Use recorded probe outputs from overflow_inference_examples_direct for divergence check.'",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.12
+      },
+      {
+        "verification": {
+          "milestone": "compare_buggy_fixed_overflow_divergence",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": false,
+              "detail": "no difference established (transition fail->missing, numeric persistent)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs pandas.tests.dtypes.test_inference -k test_convert_numeric_overflow -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.22
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs pandas.tests.dtypes.test_inference -k test_convert_numeric_overflow -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.24
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_convert_numeric_overflow",
+          "command": "python -I -m pytest --pyargs pandas.tests.dtypes.test_inference -k test_convert_numeric_overflow -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "pandas",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_convert_numeric_overflow",
+              "command": "python -I -m pytest --pyargs pandas.tests.dtypes.test_inference -k test_convert_numeric_overflow -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 4)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 4)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.6893488147419103e+19,
+          3.6893488147419103e+19,
+          -3.6893488147419103e+19,
+          -3.6893488147419103e+19,
+          3.6893488147419103e+19,
+          3.6893488147419103e+19,
+          -3.6893488147419103e+19
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.6893488147419103e+19,
+          3.6893488147419103e+19,
+          -3.6893488147419103e+19,
+          -3.6893488147419103e+19,
+          3.6893488147419103e+19,
+          3.6893488147419103e+19,
+          -3.6893488147419103e+19,
+          -3.6893488147419103e+19
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.6893488147419103e+19,
+          3.6893488147419103e+19,
+          -3.6893488147419103e+19,
+          -3.6893488147419103e+19,
+          3.6893488147419103e+19,
+          3.6893488147419103e+19,
+          -3.6893488147419103e+19
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.6893488147419103e+19,
+          3.6893488147419103e+19,
+          -3.6893488147419103e+19,
+          -3.6893488147419103e+19,
+          3.6893488147419103e+19,
+          3.6893488147419103e+19,
+          -3.6893488147419103e+19,
+          -3.6893488147419103e+19
+        ]
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 6,
+            "recorded": 6,
+            "error": null,
+            "could_not_evaluate": 2
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 6,
+            "recorded": 6,
+            "error": null,
+            "could_not_evaluate": 1
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "described_examples": {
+          "n_described": 1,
+          "buggy": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "not_reproduced",
+        "examples": "0/6"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/6 reported example(s))"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 7,
+      "input_tokens": 20336,
+      "output_tokens": 7854,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.013885
+    }
+  }
+]

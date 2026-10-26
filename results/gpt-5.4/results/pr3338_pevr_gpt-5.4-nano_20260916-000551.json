@@ -1,0 +1,1330 @@
+[
+  {
+    "slug": "cvxpy_3338",
+    "bug_type": "special_value",
+    "image": "python:3.11",
+    "status": "SETUP_FAILURE",
+    "reasoning": "pevr",
+    "rationale": "every selected test was SKIPPED on buggy and fixed (COPT is not installed.)",
+    "transition": "no_tests->no_tests",
+    "fail_to_pass": false,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "not_reproduced",
+    "setup_cause": {
+      "cause": "tests_skipped",
+      "detail": "buggy: COPT is not installed."
+    },
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import numpy as np\nfrom scipy import sparse\nfrom cvxpy.reductions.solvers.nlp_solvers.nlp_solver import Bounds\nfrom cvxpy.reductions.dnlp2smooth.dnlp2smooth import Dnlp2Smooth\nfrom cvxpy.reductions.solvers.nlp_solvers.diff_engine import C_problem\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)\", \"pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)\", [], \"Test passes when called as StandardTestMixedCPs.test_exp_soc_1(solver='COPT', FeasTol=1e-9, DualTol=1e-9)\"], [\"check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)\", \"check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)\", [], \"True; gradient match when epsilon=1e-6, the balanced central-difference step ~ eps_machine**(1/3)\"], [\"eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)\", \"eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)\", [], \"Hessian values at x once objective_forward(x) and constraint_forward(x) pin the evaluation point\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "copt_exp_soc_example_probe": "import numpy as np\nimport cvxpy as cp\n\n# Build an exponential-cone SOC test instance that matches StandardTestMixedCPs.test_exp_soc_1 structure.\n# The report indicates the issue is dual value convergence tolerance (3 decimals) for COPT.\n# We therefore solve with COPT and record the specific dual-like quantity(s) used in the test.\n\n# Fallback strategy: construct the common exp-cone form used by CVXPY conic tests:\n# variables x,y,z with constraint (x, y, z) in exponential cone and an SOC constraint for coupling.\n# Then solve with objective that yields a deterministic solution.\n\n# Note: if the exact test instance cannot be reconstructed without reading source,\n# we still use a representative exp-cone program and record the exp-cone dual residual/dual variable magnitudes.\n\nnp.random.seed(0)\n\n# Variables\nx = cp.Variable(3)\n# Exponential cone requires constraints of form (x1, x2, x3) s.t. x1*exp(x2/x1) <= x3, x1>0.\n# We'll use a small deterministic RHS so solver converges.\ny = cp.Variable(3)\nz = cp.Variable(3)\n\nconstraints = []\n# Make x positive and tie y,z\nconstraints += [cp.ExpCone(x[i], y[i], z[i]) for i in range(3)]\n\n# Add an SOC-style coupling constraint to resemble exp-cone SOC mixed problems.\n# Use ||[y0,y1]||_2 <= z2\nconstraints += [cp.SOC(z[2], cp.hstack([y[0], y[1]]))]\n\n# Feasible anchor\nconstraints += [x >= 0.1]\nconstraints += [z >= 0.1]\n\n# Objective designed to be smooth and deterministic\nobjective = cp.Minimize(cp.sum(z) + 0.1*cp.sum_squares(y) + 0.01*cp.sum(x))\n\nprob = cp.Problem(objective, constraints)\n\n# Solve with COPT; if COPT not available, record NaNs.\nsol_default = prob.solve(solver=cp.COPT, verbose=False)\n\n# Record exponential cone dual-related quantities.\n# CVXPY dual for ExpCone is accessible via constraint.dual_value.\n# We'll aggregate dual norms as a proxy for the test's convergence/precision check.\nduals = []\nfor con in constraints:\n    if isinstance(con, cp.constraints.exponential.ExpCone):\n        dv = con.dual_value\n        duals.append(np.array(dv).ravel())\n\nif duals:\n    dual_mat = np.vstack(duals)\n    dual_norm = float(np.linalg.norm(dual_mat))\n    dual_mean = float(np.mean(dual_mat))\nelse:\n    dual_norm = float('nan')\n    dual_mean = float('nan')\n\n# Also record solver status and objective\nstatus_default = prob.status\n\n# Tight tolerances run (as report suggests FeasTol/DualTol=1e-9)\nprob2 = cp.Problem(objective, constraints)\nprob2.solve(solver=cp.COPT, verbose=False, FeasTol=1e-9, DualTol=1e-9)\n\nduals2=[]\nfor con in constraints:\n    if isinstance(con, cp.constraints.exponential.ExpCone):\n        duals2.append(np.array(con.dual_value).ravel())\nif duals2:\n    dual_mat2=np.vstack(duals2)\n    dual_norm2=float(np.linalg.norm(dual_mat2))\n    dual_mean2=float(np.mean(dual_mat2))\nelse:\n    dual_norm2=float('nan')\n    dual_mean2=float('nan')\n\nprobe('copt_default_status', status_default)\nprobe('copt_default_objective', float(sol_default))\nprobe('copt_default_dual_norm', dual_norm)\nprobe('copt_default_dual_mean', dual_mean)\nprobe('copt_tight_dual_norm', dual_norm2)\nprobe('copt_tight_dual_mean', dual_mean2)\n",
+        "derivative_helper_probe": "import numpy as np\nimport cvxpy as cp\n\n# Build a simple logistic regression NLP where CVXPY's check_gradient would be meaningful.\n# We emulate the check_gradient contract by computing central-difference gradients.\n\n# Create a scalar objective with logistic terms.\n# x0 default chosen to be nontrivial.\nx = cp.Variable(3)\nA = np.array([[1.0, -2.0, 0.5],\n              [-0.3, 0.8, 1.2],\n              [2.0, 0.1, -0.7]])\nb = np.array([0.2, -0.5, 1.0])\n\n# logistic loss: sum log(1+exp(Ax+b))\nexpr = cp.sum(cp.logistic(A @ x + b))\nobjective = cp.Minimize(expr + 0.01*cp.sum_squares(x))\nprob = cp.Problem(objective)\n\n# Define an evaluation point\nx0 = np.array([0.4, -0.7, 1.1], dtype=float)\n\n# Function value\nf = lambda xv: float(prob.objective.expr.value if False else 0.0)\n\n# Instead, directly compute numeric objective using cvxpy's expression evaluation\n# by assigning variable values.\n\ndef obj_val(xv):\n    x.value = xv\n    return float(cp.sum(cp.logistic(A @ x + b)).value + 0.01*cp.sum_squares(x).value)\n\n# Analytic gradient via cvxpy derivative\n# We'll compute gradient manually using numpy for stability.\n# logistic(t)=log(1+exp(t))\n\ndef sigmoid(t):\n    return 1/(1+np.exp(-t))\n\ndef grad_val(xv):\n    t = A @ xv + b\n    # d/dx sum log(1+exp(t)) = A^T * sigmoid(t)\n    return A.T @ sigmoid(t) + 0.02*xv\n\n# Central difference gradient approximation\n\ndef cd_grad(xv, eps):\n    g = np.zeros_like(xv)\n    for i in range(len(xv)):\n        xp = xv.copy(); xm = xv.copy()\n        xp[i] += eps\n        xm[i] -= eps\n        g[i] = (obj_val(xp) - obj_val(xm)) / (2*eps)\n    return g\n\n# Compute analytic gradient\ntrue_g = grad_val(x0)\n\nfor eps in [1e-8, 1e-6]:\n    g_cd = cd_grad(x0, eps)\n    rel_err = float(np.linalg.norm(g_cd-true_g) / (np.linalg.norm(true_g)+1e-16))\n    probe(f'check_gradient_eps_{eps}', rel_err)\n    probe(f'check_gradient_pass_{eps}_lt_1e-4', bool(rel_err < 1e-4))\n\nprobe('derivative_probe_x0', x0.tolist())\n",
+        "described_examples": "# Probe for: cvxpy/cvxpy\n# Must run in this harness: only probe(name, value), probe_iteration(**fields), probe_exception(name, exception).\n\nimport numpy as _np\n\n# --------------------\n# Scenario 1\n# --------------------\nname1 = \"pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)\"\ntry:\n    import pytest as _pytest\n    rc = _pytest.main([\n        \"cvxpy/tests/test_conic_solvers.py\",\n        \"-k\", \"copt_exp_soc_1\",\n        \"-q\",\n    ])\n    probe(name1, rc)\nexcept Exception as e:\n    probe_exception(name1, e)\n\n# --------------------\n# Scenario 2\n# --------------------\nname2 = \"check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)\"\ntry:\n    from cvxpy.tests import test_derivatives as _td\n\n    cls = None\n    # Only use existing names from the module; if none exist, this scenario should error.\n    for cand in [\n        \"TestLogistic\",\n        \"LogisticTest\",\n        \"TestNLPDerivativesLogistic\",\n        \"TestNLPDerivativeLogistic\",\n        \"TestLogisticDerivatives\",\n    ]:\n        if hasattr(_td, cand):\n            cls = getattr(_td, cand)\n            break\n\n    if cls is None:\n        raise AttributeError(\n            \"Could not find a logistic NLP derivative test class in cvxpy.tests.test_derivatives\"\n        )\n\n    inst = cls()\n    res = inst.check_gradient(x=None, epsilon=1e-8)\n    probe(name2, res)\nexcept Exception as e:\n    probe_exception(name2, e)\n\n# --------------------\n# Scenario 3\n# --------------------\nname3 = \"eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)\"\ntry:\n    import cvxpy as _cp\n\n    n = 5\n    x = _cp.Variable(n)\n    y = _cp.Parameter(n, value=_np.ones(n))\n\n    obj = _cp.sum(_cp.logistic(-x + y))\n    prob = _cp.Problem(_cp.Minimize(obj))\n\n    # Trigger compilation / reduction.\n    _ = prob.get_problem_data(solver=_cp.SCS)\n\n    # Walk the problem cache to find the method directly.\n    # (No nonlocal / closures to avoid binding issues.)\n    target = None\n\n    def _search(obj_):\n        if target is not None:\n            return\n        if hasattr(obj_, \"eval_hessian_vals_coo_lower_tri\"):\n            target = obj_\n            return\n\n        if isinstance(obj_, dict):\n            for v in obj_.values():\n                _search(v)\n        elif isinstance(obj_, (list, tuple)):\n            for v in obj_:\n                _search(v)\n        else:\n            # common containers on cvxpy internals\n            for attr in [\"_cache\", \"cache\", \"__dict__\"]:\n                if hasattr(obj_, attr):\n                    try:\n                        _search(getattr(obj_, attr))\n                    except Exception:\n                        pass\n\n    # Search in cache objects that already exist after get_problem_data\n    try:\n        _search(prob._cache)\n    except Exception:\n        pass\n\n    if target is None:\n        raise AttributeError(\"Could not locate an object with eval_hessian_vals_coo_lower_tri\")\n\n    x0 = _np.zeros(n)\n    x1 = _np.ones(n)\n\n    # Previous forward at a different point, but do not pin it for Hessian.\n    if hasattr(target, \"objective_forward\"):\n        target.objective_forward(x0)\n    elif hasattr(target, \"forward\"):\n        target.forward(x0)\n\n    try:\n        hv = target.eval_hessian_vals_coo_lower_tri(x1)\n    except TypeError:\n        hv = target.eval_hessian_vals_coo_lower_tri()\n\n    probe(name3, hv)\nexcept Exception as e:\n    probe_exception(name3, e)"
+      },
+      "fixed": {
+        "copt_exp_soc_example_probe": "import numpy as np\nimport cvxpy as cp\n\nnp.random.seed(0)\n\nx = cp.Variable(3)\ny = cp.Variable(3)\nz = cp.Variable(3)\n\nconstraints = []\nconstraints += [cp.ExpCone(x[i], y[i], z[i]) for i in range(3)]\nconstraints += [cp.SOC(z[2], cp.hstack([y[0], y[1]]))]\nconstraints += [x >= 0.1]\nconstraints += [z >= 0.1]\n\nobjective = cp.Minimize(cp.sum(z) + 0.1*cp.sum_squares(y) + 0.01*cp.sum(x))\nprob = cp.Problem(objective, constraints)\n\nsol_default = prob.solve(solver=cp.COPT, verbose=False)\n\nduals = []\nfor con in constraints:\n    if isinstance(con, cp.constraints.exponential.ExpCone):\n        dv = con.dual_value\n        duals.append(np.array(dv).ravel())\n\nif duals:\n    dual_mat = np.vstack(duals)\n    dual_norm = float(np.linalg.norm(dual_mat))\n    dual_mean = float(np.mean(dual_mat))\nelse:\n    dual_norm = float('nan')\n    dual_mean = float('nan')\n\nstatus_default = prob.status\n\nprob2 = cp.Problem(objective, constraints)\nprob2.solve(solver=cp.COPT, verbose=False, FeasTol=1e-9, DualTol=1e-9)\n\nduals2=[]\nfor con in constraints:\n    if isinstance(con, cp.constraints.exponential.ExpCone):\n        duals2.append(np.array(con.dual_value).ravel())\nif duals2:\n    dual_mat2=np.vstack(duals2)\n    dual_norm2=float(np.linalg.norm(dual_mat2))\n    dual_mean2=float(np.mean(dual_mat2))\nelse:\n    dual_norm2=float('nan')\n    dual_mean2=float('nan')\n\nprobe('copt_default_status', status_default)\nprobe('copt_default_objective', float(sol_default))\nprobe('copt_default_dual_norm', dual_norm)\nprobe('copt_default_dual_mean', dual_mean)\nprobe('copt_tight_dual_norm', dual_norm2)\nprobe('copt_tight_dual_mean', dual_mean2)\n",
+        "derivative_helper_probe": "import numpy as np\nimport cvxpy as cp\n\nx = cp.Variable(3)\nA = np.array([[1.0, -2.0, 0.5],\n              [-0.3, 0.8, 1.2],\n              [2.0, 0.1, -0.7]])\nb = np.array([0.2, -0.5, 1.0])\n\nexpr = cp.sum(cp.logistic(A @ x + b))\nobjective = cp.Minimize(expr + 0.01*cp.sum_squares(x))\nprob = cp.Problem(objective)\n\nx0 = np.array([0.4, -0.7, 1.1], dtype=float)\n\ndef obj_val(xv):\n    x.value = xv\n    return float(cp.sum(cp.logistic(A @ x + b)).value + 0.01*cp.sum_squares(x).value)\n\n\ndef sigmoid(t):\n    return 1/(1+np.exp(-t))\n\ndef grad_val(xv):\n    t = A @ xv + b\n    return A.T @ sigmoid(t) + 0.02*xv\n\n\ndef cd_grad(xv, eps):\n    g = np.zeros_like(xv)\n    for i in range(len(xv)):\n        xp = xv.copy(); xm = xv.copy()\n        xp[i] += eps\n        xm[i] -= eps\n        g[i] = (obj_val(xp) - obj_val(xm)) / (2*eps)\n    return g\n\ntrue_g = grad_val(x0)\n\nfor eps in [1e-8, 1e-6]:\n    g_cd = cd_grad(x0, eps)\n    rel_err = float(np.linalg.norm(g_cd-true_g) / (np.linalg.norm(true_g)+1e-16))\n    probe(f'check_gradient_eps_{eps}', rel_err)\n    probe(f'check_gradient_pass_{eps}_lt_1e-4', bool(rel_err < 1e-4))\n\nprobe('derivative_probe_x0', x0.tolist())\n",
+        "reported_examples": "import numpy as np\nfrom scipy import sparse\nfrom cvxpy.reductions.solvers.nlp_solvers.nlp_solver import Bounds\nfrom cvxpy.reductions.dnlp2smooth.dnlp2smooth import Dnlp2Smooth\nfrom cvxpy.reductions.solvers.nlp_solvers.diff_engine import C_problem\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)\", \"pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)\", [], \"Test passes when called as StandardTestMixedCPs.test_exp_soc_1(solver='COPT', FeasTol=1e-9, DualTol=1e-9)\"], [\"check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)\", \"check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)\", [], \"True; gradient match when epsilon=1e-6, the balanced central-difference step ~ eps_machine**(1/3)\"], [\"eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)\", \"eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)\", [], \"Hessian values at x once objective_forward(x) and constraint_forward(x) pin the evaluation point\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "# Probe for: cvxpy/cvxpy\n# Must run in this harness: only probe(name, value), probe_iteration(**fields), probe_exception(name, exception).\n\nimport numpy as _np\n\n# --------------------\n# Scenario 1\n# --------------------\nname1 = \"pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)\"\ntry:\n    import pytest as _pytest\n    rc = _pytest.main([\n        \"cvxpy/tests/test_conic_solvers.py\",\n        \"-k\", \"copt_exp_soc_1\",\n        \"-q\",\n    ])\n    probe(name1, rc)\nexcept Exception as e:\n    probe_exception(name1, e)\n\n# --------------------\n# Scenario 2\n# --------------------\nname2 = \"check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)\"\ntry:\n    from cvxpy.tests import test_derivatives as _td\n\n    cls = None\n    # Only use existing names from the module; if none exist, this scenario should error.\n    for cand in [\n        \"TestLogistic\",\n        \"LogisticTest\",\n        \"TestNLPDerivativesLogistic\",\n        \"TestNLPDerivativeLogistic\",\n        \"TestLogisticDerivatives\",\n    ]:\n        if hasattr(_td, cand):\n            cls = getattr(_td, cand)\n            break\n\n    if cls is None:\n        raise AttributeError(\n            \"Could not find a logistic NLP derivative test class in cvxpy.tests.test_derivatives\"\n        )\n\n    inst = cls()\n    res = inst.check_gradient(x=None, epsilon=1e-8)\n    probe(name2, res)\nexcept Exception as e:\n    probe_exception(name2, e)\n\n# --------------------\n# Scenario 3\n# --------------------\nname3 = \"eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)\"\ntry:\n    import cvxpy as _cp\n\n    n = 5\n    x = _cp.Variable(n)\n    y = _cp.Parameter(n, value=_np.ones(n))\n\n    obj = _cp.sum(_cp.logistic(-x + y))\n    prob = _cp.Problem(_cp.Minimize(obj))\n\n    # Trigger compilation / reduction.\n    _ = prob.get_problem_data(solver=_cp.SCS)\n\n    # Walk the problem cache to find the method directly.\n    # (No nonlocal / closures to avoid binding issues.)\n    target = None\n\n    def _search(obj_):\n        if target is not None:\n            return\n        if hasattr(obj_, \"eval_hessian_vals_coo_lower_tri\"):\n            target = obj_\n            return\n\n        if isinstance(obj_, dict):\n            for v in obj_.values():\n                _search(v)\n        elif isinstance(obj_, (list, tuple)):\n            for v in obj_:\n                _search(v)\n        else:\n            # common containers on cvxpy internals\n            for attr in [\"_cache\", \"cache\", \"__dict__\"]:\n                if hasattr(obj_, attr):\n                    try:\n                        _search(getattr(obj_, attr))\n                    except Exception:\n                        pass\n\n    # Search in cache objects that already exist after get_problem_data\n    try:\n        _search(prob._cache)\n    except Exception:\n        pass\n\n    if target is None:\n        raise AttributeError(\"Could not locate an object with eval_hessian_vals_coo_lower_tri\")\n\n    x0 = _np.zeros(n)\n    x1 = _np.ones(n)\n\n    # Previous forward at a different point, but do not pin it for Hessian.\n    if hasattr(target, \"objective_forward\"):\n        target.objective_forward(x0)\n    elif hasattr(target, \"forward\"):\n        target.forward(x0)\n\n    try:\n        hv = target.eval_hessian_vals_coo_lower_tri(x1)\n    except TypeError:\n        hv = target.eval_hessian_vals_coo_lower_tri()\n\n    probe(name3, hv)\nexcept Exception as e:\n    probe_exception(name3, e)"
+      }
+    },
+    "report": {
+      "status": "SETUP_FAILURE",
+      "rationale": "every selected test was SKIPPED on buggy and fixed (COPT is not installed.)",
+      "transition": "no_tests->no_tests",
+      "fail_to_pass": false,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "not_reproduced",
+      "success_criterion": "At buggy commit a918e45f, `pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1` FAILS (exp-cone dual values miss the 3-decimal assertion) and/or the NLP derivative check_gradient returns False spuriously; the same test(s) PASS at fixed commit 74e1506400b3412a26548dcb122c52030e60d61a.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "no_tests",
+            "exit_code": 0,
+            "failure_kind": "skipped",
+            "passed": null,
+            "failed": null,
+            "errors": null,
+            "skip_reason": "COPT is not installed."
+          },
+          "fixed": {
+            "status": "no_tests",
+            "exit_code": 0,
+            "failure_kind": "skipped",
+            "passed": null,
+            "failed": null,
+            "errors": null,
+            "skip_reason": "COPT is not installed."
+          }
+        },
+        "probes": [
+          {
+            "label": "copt_exp_soc_example_probe",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: cvxpy.error.SolverError: The solver COPT is not installed."
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: cvxpy.error.SolverError: The solver COPT is not installed."
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "derivative_helper_probe",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "check_gradient_eps_1e-08": 1.494778568072338e-08,
+              "check_gradient_pass_1e-08_lt_1e-4": true,
+              "check_gradient_eps_1e-06": 1.5826704196051094e-10,
+              "check_gradient_pass_1e-06_lt_1e-4": true,
+              "derivative_probe_x0": [
+                0.4,
+                -0.7,
+                1.1
+              ]
+            },
+            "fixed_values": {
+              "check_gradient_eps_1e-08": 1.494778568072338e-08,
+              "check_gradient_pass_1e-08_lt_1e-4": true,
+              "check_gradient_eps_1e-06": 1.5826704196051094e-10,
+              "check_gradient_pass_1e-06_lt_1e-4": true,
+              "derivative_probe_x0": [
+                0.4,
+                -0.7,
+                1.1
+              ]
+            }
+          },
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)": 0,
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)": {
+                "raised": "ImportError",
+                "message": "cannot import name 'test_derivatives' from 'cvxpy.tests' (/workspace/buggy/cvxpy/tests/__init__.py)",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)": {
+                "raised": "AttributeError",
+                "message": "Could not locate an object with eval_hessian_vals_coo_lower_tri",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              }
+            },
+            "fixed_values": {
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)": 0,
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)": {
+                "raised": "ImportError",
+                "message": "cannot import name 'test_derivatives' from 'cvxpy.tests' (/workspace/fixed/cvxpy/tests/__init__.py)",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)": {
+                "raised": "AttributeError",
+                "message": "Could not locate an object with eval_hessian_vals_coo_lower_tri",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              }
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)",
+            "expected_output": "Test passes when called as StandardTestMixedCPs.test_exp_soc_1(solver='COPT', FeasTol=1e-9, DualTol=1e-9)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Test fails: exp-cone dual values do not converge to the 3 decimal places the test asserts",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)",
+              "observed": 0,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)",
+              "observed": 0,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)",
+            "expected_output": "True; gradient match when epsilon=1e-6, the balanced central-difference step ~ eps_machine**(1/3)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "False; spurious gradient mismatch due to floating-point cancellation O(eps_machine*|objective|/epsilon)",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)",
+            "expected_output": "Hessian values at x once objective_forward(x) and constraint_forward(x) pin the evaluation point",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Hessian values correspond to the stale point, not to x",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 7,
+            "n_failed": 1,
+            "ran_test": true,
+            "failed_setup_or_build": [
+              "cd /workspace/buggy && python -c \"import coptpy; print('coptpy', getattr(coptpy,'__version__', 'unknown'))\""
+            ]
+          },
+          "fixed": {
+            "n_commands": 3,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "setup_cause": {
+        "cause": "tests_skipped",
+        "detail": "buggy: COPT is not installed."
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-05-24T22:30:12-07:00",
+        "fixed_commit_date": "2026-05-26T11:12:07-07:00",
+        "reproducing_test_present": true,
+        "build_detected": "build-requires:pybind11|setup.py:ext_modules",
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-05-26T11:12:07-07:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/cvxpy/__init__.py",
+            "build_requires": [
+              "scipy >= 1.13.0",
+              "setuptools >= 68.1.0",
+              "wheel",
+              "pybind11"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "pandas": "3.0.3",
+              "matplotlib": "3.10.9",
+              "pyparsing": "3.3.2",
+              "scipy": "1.17.1",
+              "setuptools": "82.0.1",
+              "wheel": "0.47.0",
+              "pybind11": "3.0.4"
+            },
+            "repinned_for_build": {},
+            "test_extras": [
+              "pytest",
+              "hypothesis"
+            ],
+            "output": "--- end of build log ---\n4.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 48.2/48.2 kB 85.4 MB/s eta 0:00:00\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.10.0-cp311-cp311-linux_x86_64.whl size=4287708 sha256=923f6ca137b5969a8ec3e5160763a7df21d74310d91a5f143ad723e84da7fd14\n  Stored in directory: /tmp/pip-ephem-wheel-cache-9l8yw8vc/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, qdldl, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.10.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 qdldl-0.1.9.post1 scs-3.3.1 sparsediffpy-0.3.0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/cvxpy/__init__.py",
+            "build_requires": [
+              "scipy >= 1.13.0",
+              "setuptools >= 68.1.0",
+              "wheel",
+              "pybind11"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "pandas": "3.0.3",
+              "matplotlib": "3.10.9",
+              "pyparsing": "3.3.2",
+              "scipy": "1.17.1",
+              "setuptools": "82.0.1",
+              "wheel": "0.47.0",
+              "pybind11": "3.0.4"
+            },
+            "repinned_for_build": {},
+            "test_extras": [
+              "pytest",
+              "hypothesis"
+            ],
+            "output": "--- end of build log ---\n4.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 48.2/48.2 kB 88.6 MB/s eta 0:00:00\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.10.0-cp311-cp311-linux_x86_64.whl size=4288174 sha256=cd022ff69e80e1fc7aaf1104e34e427ec1968c1f7e8f506371b001cb138cad40\n  Stored in directory: /tmp/pip-ephem-wheel-cache-kat63am_/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, qdldl, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.10.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 qdldl-0.1.9.post1 scs-3.3.1 sparsediffpy-0.3.0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "no_tests",
+        "exit_code": 0,
+        "failure_kind": "skipped",
+        "passed": null,
+        "failed": null,
+        "errors": null,
+        "skip_reason": "COPT is not installed."
+      },
+      "fixed": {
+        "status": "no_tests",
+        "exit_code": 0,
+        "failure_kind": "skipped",
+        "passed": null,
+        "failed": null,
+        "errors": null,
+        "skip_reason": "COPT is not installed."
+      },
+      "transition": "no_tests->no_tests",
+      "fail_to_pass": false,
+      "numeric": {
+        "n_pairs": 4,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "copt_exp_soc_example_probe",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: cvxpy.error.SolverError: The solver COPT is not installed."
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: cvxpy.error.SolverError: The solver COPT is not installed."
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "derivative_helper_probe",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "check_gradient_eps_1e-08": 1.494778568072338e-08,
+              "check_gradient_pass_1e-08_lt_1e-4": true,
+              "check_gradient_eps_1e-06": 1.5826704196051094e-10,
+              "check_gradient_pass_1e-06_lt_1e-4": true,
+              "derivative_probe_x0": [
+                0.4,
+                -0.7,
+                1.1
+              ]
+            },
+            "fixed_values": {
+              "check_gradient_eps_1e-08": 1.494778568072338e-08,
+              "check_gradient_pass_1e-08_lt_1e-4": true,
+              "check_gradient_eps_1e-06": 1.5826704196051094e-10,
+              "check_gradient_pass_1e-06_lt_1e-4": true,
+              "derivative_probe_x0": [
+                0.4,
+                -0.7,
+                1.1
+              ]
+            }
+          },
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)": 0,
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)": {
+                "raised": "ImportError",
+                "message": "cannot import name 'test_derivatives' from 'cvxpy.tests' (/workspace/buggy/cvxpy/tests/__init__.py)",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)": {
+                "raised": "AttributeError",
+                "message": "Could not locate an object with eval_hessian_vals_coo_lower_tri",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              }
+            },
+            "fixed_values": {
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)": 0,
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)": {
+                "raised": "ImportError",
+                "message": "cannot import name 'test_derivatives' from 'cvxpy.tests' (/workspace/fixed/cvxpy/tests/__init__.py)",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)": {
+                "raised": "AttributeError",
+                "message": "Could not locate an object with eval_hessian_vals_coo_lower_tri",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              }
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 3,
+        "n_judged": 1,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 2,
+        "n_contested": 0,
+        "unobserved": [
+          "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)",
+          "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)"
+        ],
+        "verdict": "not_reproduced",
+        "examples": [
+          {
+            "input": "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)",
+            "expected_output": "Test passes when called as StandardTestMixedCPs.test_exp_soc_1(solver='COPT', FeasTol=1e-9, DualTol=1e-9)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Test fails: exp-cone dual values do not converge to the 3 decimal places the test asserts",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)",
+              "observed": 0,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)",
+              "observed": 0,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)",
+            "expected_output": "True; gradient match when epsilon=1e-6, the balanced central-difference step ~ eps_machine**(1/3)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "False; spurious gradient mismatch due to floating-point cancellation O(eps_machine*|objective|/epsilon)",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)",
+            "expected_output": "Hessian values at x once objective_forward(x) and constraint_forward(x) pin the evaluation point",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Hessian values correspond to the stale point, not to x",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 7,
+          "n_failed": 1,
+          "ran_test": true,
+          "failed_setup_or_build": [
+            "cd /workspace/buggy && python -c \"import coptpy; print('coptpy', getattr(coptpy,'__version__', 'unknown'))\""
+          ]
+        },
+        "fixed": {
+          "n_commands": 3,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "At buggy commit a918e45f, `pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1` FAILS (exp-cone dual values miss the 3-decimal assertion) and/or the NLP derivative check_gradient returns False spuriously; the same test(s) PASS at fixed commit 74e1506400b3412a26548dcb122c52030e60d61a."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-05-24T22:30:12-07:00",
+      "fixed_commit_date": "2026-05-26T11:12:07-07:00",
+      "reproducing_test_present": true,
+      "build_detected": "build-requires:pybind11|setup.py:ext_modules",
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-05-26T11:12:07-07:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/cvxpy/__init__.py",
+          "build_requires": [
+            "scipy >= 1.13.0",
+            "setuptools >= 68.1.0",
+            "wheel",
+            "pybind11"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "pandas": "3.0.3",
+            "matplotlib": "3.10.9",
+            "pyparsing": "3.3.2",
+            "scipy": "1.17.1",
+            "setuptools": "82.0.1",
+            "wheel": "0.47.0",
+            "pybind11": "3.0.4"
+          },
+          "repinned_for_build": {},
+          "test_extras": [
+            "pytest",
+            "hypothesis"
+          ],
+          "output": "--- end of build log ---\n4.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 48.2/48.2 kB 85.4 MB/s eta 0:00:00\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.10.0-cp311-cp311-linux_x86_64.whl size=4287708 sha256=923f6ca137b5969a8ec3e5160763a7df21d74310d91a5f143ad723e84da7fd14\n  Stored in directory: /tmp/pip-ephem-wheel-cache-9l8yw8vc/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, qdldl, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.10.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 qdldl-0.1.9.post1 scs-3.3.1 sparsediffpy-0.3.0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/cvxpy/__init__.py",
+          "build_requires": [
+            "scipy >= 1.13.0",
+            "setuptools >= 68.1.0",
+            "wheel",
+            "pybind11"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "pandas": "3.0.3",
+            "matplotlib": "3.10.9",
+            "pyparsing": "3.3.2",
+            "scipy": "1.17.1",
+            "setuptools": "82.0.1",
+            "wheel": "0.47.0",
+            "pybind11": "3.0.4"
+          },
+          "repinned_for_build": {},
+          "test_extras": [
+            "pytest",
+            "hypothesis"
+          ],
+          "output": "--- end of build log ---\n4.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 48.2/48.2 kB 88.6 MB/s eta 0:00:00\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.10.0-cp311-cp311-linux_x86_64.whl size=4288174 sha256=cd022ff69e80e1fc7aaf1104e34e427ec1968c1f7e8f506371b001cb138cad40\n  Stored in directory: /tmp/pip-ephem-wheel-cache-kat63am_/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, qdldl, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.10.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 qdldl-0.1.9.post1 scs-3.3.1 sparsediffpy-0.3.0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 8,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the reported special_value numerical defect for COPT exponential-cone dual tolerances and the related derivative helper behavior by running the specific failing test and the report-provided examples on both buggy and fixed revisions.",
+          "milestones": [
+            "buggy_env_and_observe_failure [buggy] \u2014 Set up and run the reproducing COPT test on the buggy revision to confirm it fails as reported. (3 steps, verify: steps_succeeded, test_ran, test_fails)",
+            "buggy_examples_reproduce_value_defect [buggy] \u2014 Evaluate the report\u2019s own input/output examples on the buggy revision to capture the special values/boolean mismatches that motivate the fix. (3 steps, verify: steps_succeeded, examples_reproduced)",
+            "fixed_env_and_observe_pass [fixed] \u2014 Run the same targeted test on the fixed revision to confirm it passes as reported (and therefore reproduces a difference between revisions). (3 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "fixed_examples_match_expected [fixed] \u2014 Evaluate the report\u2019s own input/output examples on the fixed revision to confirm the expected special values/boolean outcomes. (3 steps, verify: steps_succeeded, examples_reproduced)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -V && pytest -V && python -c \"import cvxpy, sys; print('cvxpy', cvxpy.__version__); print('cwd', __import__('os').getcwd()); print('sys.path0', sys.path[0])\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 1.77
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c \"import coptpy; print('coptpy', getattr(coptpy,'__version__', 'unknown'))\"",
+        "purpose": "setup",
+        "exit_code": 1,
+        "runtime_s": 0.17
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k copt_exp_soc_1 --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 2.52
+      },
+      {
+        "verification": {
+          "milestone": "buggy_env_and_observe_failure",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -c \"import coptpy; print('coptpy', getattr(coptpy,` exited 1: Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nModuleNotFoundError: No module named 'coptpy'"
+            },
+            {
+              "check": "test_ran",
+              "passed": false,
+              "detail": "test no_tests on buggy: session starts ==============================\nplatform linux -- Python 3.11.16, pytest-9.1.1, pluggy-1.6.0\nrootdir: /workspace/buggy\nconfigfile: pyproject.toml\nplugins: hypothesis-6.168.0\ncollected 505 items / 504 deselected / 1 selected\n\n.venv/lib/python3.11/site-packages/cvxpy/tests/test_conic_solvers.py s   [100%]\n\n====================== 1 skipped, 504 deselected in 1.96s ======================"
+            },
+            {
+              "check": "test_fails",
+              "passed": false,
+              "detail": "test no_tests on buggy (milestone required fail): session starts ==============================\nplatform linux -- Python 3.11.16, pytest-9.1.1, pluggy-1.6.0\nrootdir: /workspace/buggy\nconfigfile: pyproject.toml\nplugins: hypothesis-6.168.0\ncollected 505 items / 504 deselected / 1 selected\n\n.venv/lib/python3.11/site-packages/cvxpy/tests/test_conic_solvers.py s   [100%]\n\n====================== 1 skipped, 504 deselected in 1.96s ======================"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce and measure the reported COPT special-value defect (and the related derivative helper behavior) using report-provided examples on both buggy and fixed revisions, without relying on the skipped/fragile pytest target that cannot import coptpy in the buggy environment.",
+          "milestones": [
+            "buggy_fixed_import_and_versions [buggy] \u2014 Verify each revision can import the built cvxpy package and record whether COPT bindings (coptpy) are importable, to determine whether COPT tests will be meaningful or must be bypassed with report examples. (1 steps, verify: steps_succeeded)",
+            "buggy_run_conic_example_probe [buggy] \u2014 Run the report\u2019s own example expression(s) that characterize the COPT special-value numerical defect on the buggy revision (so we can still observe the defect even if the upstream pytest case is skipped). (1 steps, verify: steps_succeeded, examples_reproduced)",
+            "fixed_run_conic_example_probe [fixed] \u2014 Run the same report examples on the fixed revision and confirm they match the expected (passing) behavior for the COPT special-value defect. (1 steps, verify: steps_succeeded, examples_reproduced)",
+            "buggy_run_derivative_examples [buggy] \u2014 Evaluate the derivative-helper-related report examples on the buggy revision to reproduce spurious check_gradient failure / stale evaluation point behavior. (1 steps, verify: steps_succeeded, examples_reproduced)",
+            "fixed_run_derivative_examples [fixed] \u2014 Evaluate the same derivative-helper report examples on the fixed revision and confirm the expected corrected outcomes (gradient match / Hessian at pinned point). (1 steps, verify: steps_succeeded, examples_reproduced)",
+            "compare_revision_observations [fixed] \u2014 Establish that the buggy and fixed revisions produce different recorded values for the report examples, demonstrating the defect is fixed. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import cvxpy, sys; print('cvxpy', cvxpy.__version__); import importlib.util; print('coptpy_spec', importlib.util.find_spec('coptpy'))\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 1.32
+      },
+      {
+        "verification": {
+          "milestone": "buggy_fixed_import_and_versions",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_run_conic_example_probe",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/3 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 3 never evaluated \u2014 the preamble does not bind everything they need: pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances); check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case); eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Recreate the COPT special-value defect and the related derivative-helper behavior using direct numerical probes from the report\u2019s examples on both buggy and fixed revisions, without relying on the skipped/fragile pytest selector.",
+          "milestones": [
+            "buggy_probe_copt_special_values [buggy] \u2014 On the buggy revision, directly evaluate the report\u2019s COPT special-value example(s) and record the values that demonstrate the defect (exp-cone dual convergence and any helper-derivative symptom). (3 steps, verify: steps_succeeded, probe_ran)",
+            "fixed_probe_copt_special_values [fixed] \u2014 On the fixed revision, run the same direct numerical probes and record values that confirm the defect is resolved (exp-cone dual convergence and derivative helper stability). (2 steps, verify: steps_succeeded, probe_ran)",
+            "compare_buggy_fixed_probes [fixed] \u2014 Confirm that the buggy and fixed revisions produce different recorded values for the probe(s), demonstrating the defect is fixed. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k copt_exp_soc_1 --collect-only -q --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.72
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "copt_exp_soc_example_probe",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(copt_exp_soc_example_probe) \u2014 Run a numerical probe that constructs the same exponential-cone SOC test instance used by StandardTestMixedCPs.test_exp_soc_1 for solver COPT, then evaluates the quantities (e.g., exp-cone dual values / convergence indicator) that the test asserts; pin tolerances and record both default and tightene"
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "derivative_helper_probe",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(derivative_helper_probe) \u2014 Run a numerical probe for derivative-helper symptom: check_gradient on logistic NLP with epsilon=1e-8 at the default x0; capture boolean and any numerical diff summary."
+      },
+      {
+        "verification": {
+          "milestone": "buggy_probe_copt_special_values",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(copt_exp_soc_example_probe) \u2014 Run a numerical probe that constructs the same exponential-cone SOC test instance used by StandardTestMixedCPs.test_exp_soc_1 for solver COPT, then evaluates the quantities (e.g., exp-cone dual values / convergence indicator) that the test asserts; pin tolerances and record both default and tightene did not execute; [buggy] run_numerical_probe(derivative_helper_probe) \u2014 Run a numerical probe for derivative-helper symptom: check_gradient on logistic NLP with epsilon=1e-8 at the default x0; capture boolean and any numerical diff summary. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the reported COPT special-value and derivative-helper issues on both buggy and fixed revisions using direct numerical probes built from the report examples, without relying on the fragile/disabled pytest selector.",
+          "milestones": [
+            "buggy_probe_copt_special_values [buggy] \u2014 On the buggy revision, run numerical probes that directly evaluate (a) the COPT exp-cone SOC special-value behavior from the report examples and (b) the derivative-helper check_gradient symptom; record at least one value per symptom. (2 steps, verify: steps_succeeded, probe_ran)",
+            "fixed_probe_copt_special_values [fixed] \u2014 On the fixed revision, run the same numerical probes as on buggy and record values for comparison. (2 steps, verify: steps_succeeded, probe_ran)",
+            "compare_buggy_fixed_probes [fixed] \u2014 Confirm that the buggy and fixed revisions produce different recorded values for the probe(s), demonstrating the defect is resolved. (1 steps, verify: steps_succeeded, revisions_differ, probe_ran)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "copt_exp_soc_example_probe",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: cvxpy.error.SolverError: The solver COPT is not installed."
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "derivative_helper_probe",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.494778568072338e-08,
+          1.5826704196051094e-10,
+          0.4,
+          -0.7,
+          1.1
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_probe_copt_special_values",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "copt_exp_soc_example_probe",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: cvxpy.error.SolverError: The solver COPT is not installed."
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "derivative_helper_probe",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.494778568072338e-08,
+          1.5826704196051094e-10,
+          0.4,
+          -0.7,
+          1.1
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "fixed_probe_copt_special_values",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "echo 'Comparison handled automatically by harness via same probe labels: copt_exp_soc_example_probe and derivative_helper_probe.'",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.17
+      },
+      {
+        "verification": {
+          "milestone": "compare_buggy_fixed_probes",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": false,
+              "detail": "no difference established (transition pass->missing, numeric persistent)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k test_copt_expcone_1 -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.67
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k test_copt_expcone_1 -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.77
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k test_copt_expcone_1 -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.67
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k test_copt_expcone_1 -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.67
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_copt_expcone_1",
+          "command": "python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k test_copt_expcone_1 -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "cvxpy",
+          "statuses": {
+            "buggy": "no_tests",
+            "fixed": "no_tests"
+          },
+          "exit_codes": {
+            "buggy": 0,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_copt_expcone_1",
+              "command": "python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k test_copt_expcone_1 -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "no_tests",
+              "fixed": "no_tests"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "status": "probe_error",
+        "kept_earlier_run": true
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "status": "probe_error",
+        "kept_earlier_run": true
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "status": "probe_error",
+        "kept_earlier_run": true
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "status": "probe_error",
+        "kept_earlier_run": true
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "probe_error",
+            "checked": 3,
+            "recorded": 0,
+            "error": null,
+            "could_not_evaluate": 0,
+            "traceback": "Traceback (most recent call last):\n  File \"/tmp/_numagent_runner.py\", line 156, in <module>\n    exec(compile(_ast.Module(body=_lead, type_ignores=[]), \"/tmp/_numagent_probe.py\", \"exec\"), _g)\n  File \"/tmp/_numagent_probe.py\", line 8, in <module>\n    from cvxpy.tests.test_nonlinear_atoms import LogisticObjectiveTest\nImportError: cannot import name 'LogisticObjectiveTest' from 'cvxpy.tests.test_nonlinear_atoms' (/workspace/buggy/.venv/lib/python3.11/site-packages/cvxpy/tests/test_nonlinear_atoms.py)"
+          },
+          "fixed": {
+            "status": "probe_error",
+            "checked": 3,
+            "recorded": 0,
+            "error": null,
+            "could_not_evaluate": 0,
+            "traceback": "Traceback (most recent call last):\n  File \"/tmp/_numagent_runner.py\", line 156, in <module>\n    exec(compile(_ast.Module(body=_lead, type_ignores=[]), \"/tmp/_numagent_probe.py\", \"exec\"), _g)\n  File \"/tmp/_numagent_probe.py\", line 8, in <module>\n    from cvxpy.tests.test_nonlinear_atoms import LogisticObjectiveTest\nImportError: cannot import name 'LogisticObjectiveTest' from 'cvxpy.tests.test_nonlinear_atoms' (/workspace/fixed/.venv/lib/python3.11/site-packages/cvxpy/tests/test_nonlinear_atoms.py)"
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: SyntaxError: no binding for nonlocal 'target' found"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: SyntaxError: no binding for nonlocal 'target' found"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.0
+        ]
+      },
+      {
+        "described_examples": {
+          "n_described": 3,
+          "buggy": {
+            "status": "ok",
+            "n_records": 3,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 3,
+            "target_reached": true
+          },
+          "repaired": 1,
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "no_tests->no_tests",
+        "fail_to_pass": false,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "not_reproduced",
+        "examples": "0/1"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "SETUP_FAILURE",
+        "rationale": "every selected test was SKIPPED on buggy and fixed (COPT is not installed.)"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 8,
+      "input_tokens": 19729,
+      "output_tokens": 11959,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.018895
+    }
+  }
+]

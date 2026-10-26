@@ -1,0 +1,114 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/numpy_29230_claude-haiku-5-5/mined/numpy__numpy_29230.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 13864,
+    "output_tokens": 5712,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "numpy/numpy",
+      "pr_number": 29230,
+      "reference": "https://github.com/numpy/numpy/pull/29230",
+      "buggy_commit": "f15a116ee12ec539c7ed1fafb3a0abfb82005e0f",
+      "fixed_commit": "7a74e12558789ecf0252dad56a77560db7411d13",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5402,
+      "withheld": [],
+      "strategy": {
+        "summary": "Build NumPy from source at the buggy commit f15a116ee12e under Python 3.12, then run the new test test_unsigned_resize on the buggy revision (expected to fail) and on the fixed revision (expected to pass). The defect is in numpy.resize: repeats = -(-new_size // a.size) negates an unsigned new_size, which wraps and produces a huge repeats value, so the test errors (RuntimeWarning, then SystemError or OverflowError) before reaching its assertion. The fix uses (new_size + a.size - 1) // a.size.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "pytest",
+            "hypothesis",
+            "numpy (built from source at the commit under test, not from PyPI)",
+            "meson-python",
+            "cython",
+            "ninja"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain (gcc or clang) and git"
+          ],
+          "build_commands": [
+            "git checkout f15a116ee12e && git submodule update --init",
+            "python -m pip install -r requirements/build_requirements.txt",
+            "python -m pip install -r requirements/test_requirements.txt",
+            "python -m pip install --no-build-isolation -e ."
+          ],
+          "pinned_because": [
+            "Python 3.12 is taken from the issue environment (site-packages path in traceback), not from a documented constraint.",
+            "numpy is not pinned to a version: the source tree itself is the system under test, so the version is whatever the buggy and fixed commits contain.",
+            "pytest and hypothesis are documented in README Testing section as required, but no version is pinned; the latest versions compatible with the build requirements are used."
+          ]
+        },
+        "test_command": "python -m pytest numpy/_core/tests/test_numeric.py -k test_unsigned_resize -v",
+        "reproducing_test": "numpy/_core/tests/test_numeric.py::test_unsigned_resize (method of the resize test class, selected with -k test_unsigned_resize): for (np.int32, np.uint32) and (np.int64, np.uint64) pairs, asserts np.resize(arr, unsigned(1)) equals np.resize(arr, signed(1)) for arr = [[23, 95], [66, 37]].",
+        "success_criterion": "On the buggy revision f15a116ee12e the test fails: the first iteration's np.resize(arr, np.uint32(1)) emits RuntimeWarning 'overflow encountered in scalar negative' and then raises SystemError (or the 64-bit pair raises OverflowError), so the test errors before its equality check. On the fixed revision (the commit with repeats = (new_size + a.size - 1) // a.size) both pairs return [23] for signed and unsigned sizes, assert_array_equal passes, and the test passes.",
+        "numerical_probe": "np.resize(np.array([[23, 95], [66, 37]]), np.uint32(1)) should return array([23]) with no warning on the fixed revision.",
+        "input_output_examples": [
+          {
+            "input": "np.resize(np.array([[23, 95], [66, 37]]), np.int32(1))",
+            "buggy_output": "[23]",
+            "expected_output": "[23]"
+          },
+          {
+            "input": "np.resize(np.array([[23, 95], [66, 37]]), np.uint32(1))",
+            "buggy_output": "RuntimeWarning: overflow encountered in scalar negative; SystemError: <built-in function concatenate> returned NULL without setting an exception",
+            "expected_output": "[23]"
+          },
+          {
+            "input": "np.resize(np.array([[23, 95], [66, 37]]), np.uint64(1))",
+            "buggy_output": "OverflowError: cannot fit 'numpy.uint64' into an index-sized integer",
+            "expected_output": "[23]"
+          }
+        ],
+        "risks": [
+          "The failure mode depends on platform and allocator: the issue reports SystemError for uint32 and OverflowError for uint64; another platform may instead raise MemoryError or hang while allocating a huge repeats array. Any of these still counts as a failure on the buggy revision, but the exact exception text will differ.",
+          "NumPy's pytest configuration may turn RuntimeWarning into an error via filterwarnings; if so the buggy run fails at the warning, which is still a transition but at a different line.",
+          "The reproduction only triggers on builds where unsigned scalar negation wraps (standard two's complement, which holds on all mainstream platforms); it cannot be expected to transition under a sanitiser or on an architecture where the resize path differs, and no such configuration is evidenced here.",
+          "The provided test_command (numpy.test()) is not the project's own test selector and would run the full suite; the pytest -k invocation is used instead.",
+          "Building the buggy and fixed commits requires a working compiler toolchain and submodules; a missing build dependency would produce an error that is not the target failure.",
+          "numpy, pytest and hypothesis have no documented or era-derived version constraint; the strategy chooses current versions compatible with the commit's build requirements.",
+          "Expected-value check relies on the signed-int result as the reference; the test compares arrays exactly, so no numeric tolerance applies."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "np.resize with the signed integer scalar of the same width (np.int32 / np.int64), as stated by the developer test",
+          "why": "Resize only copies and repeats integer elements, so exact equality is the correct comparison and no floating-point tolerance is needed."
+        },
+        "fails_on_buggy": "On f15a116ee12e the first call np.resize(arr, np.uint32(1)) hits repeats = -(-new_size // a.size) with unsigned new_size, which wraps to a large positive value; the buggy run emits RuntimeWarning and then raises SystemError (or OverflowError for uint64), so the test ends with an error before the assert_array_equal line is reached.",
+        "passes_on_fixed": "On the fixed revision repeats = (new_size + a.size - 1) // a.size gives 1 for both signed and unsigned size 1; both outputs equal [23] and assert_array_equal passes for both dtype pairs."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4296,
+        "output_tokens": 3309,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 9568,
+        "output_tokens": 2403,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

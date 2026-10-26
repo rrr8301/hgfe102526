@@ -1,0 +1,211 @@
+diff --git a/cvxpy/expressions/leaf.py b/cvxpy/expressions/leaf.py
+index 4dc3a37879..d2f02b57d9 100644
+--- a/cvxpy/expressions/leaf.py
++++ b/cvxpy/expressions/leaf.py
+@@ -989,7 +989,7 @@ def get_bounds(self) -> tuple[np.ndarray | sp.sparray, np.ndarray | sp.sparray]:
+                 else:
+                     lb_arr = np.maximum(lb_arr, 0)
+             else:
+-                lb_val = max(lb_val, 0)
++                lb_val = max(lb_val, 0.0)
+         if self.attributes['nonpos'] or self.attributes['neg']:
+             if ub_arr is not None:
+                 if sp.issparse(ub_arr):
+@@ -997,7 +997,7 @@ def get_bounds(self) -> tuple[np.ndarray | sp.sparray, np.ndarray | sp.sparray]:
+                 else:
+                     ub_arr = np.minimum(ub_arr, 0)
+             else:
+-                ub_val = min(ub_val, 0)
++                ub_val = min(ub_val, 0.0)
+ 
+         # For boolean variables, bounds are [0, 1]
+         if self.attributes['boolean'] is True:
+@@ -1007,14 +1007,14 @@ def get_bounds(self) -> tuple[np.ndarray | sp.sparray, np.ndarray | sp.sparray]:
+                 else:
+                     lb_arr = np.maximum(lb_arr, 0)
+             else:
+-                lb_val = max(lb_val, 0)
++                lb_val = max(lb_val, 0.0)
+             if ub_arr is not None:
+                 if sp.issparse(ub_arr):
+                     ub_arr = ub_arr.minimum(1)
+                 else:
+                     ub_arr = np.minimum(ub_arr, 1)
+             else:
+-                ub_val = min(ub_val, 1)
++                ub_val = min(ub_val, 1.0)
+ 
+         # Build final bounds: use broadcast views for uniform scalars
+         if lb_arr is not None:
+diff --git a/cvxpy/reductions/solvers/conic_solvers/copt_conif.py b/cvxpy/reductions/solvers/conic_solvers/copt_conif.py
+index aaebfa62e2..6df627d6d8 100644
+--- a/cvxpy/reductions/solvers/conic_solvers/copt_conif.py
++++ b/cvxpy/reductions/solvers/conic_solvers/copt_conif.py
+@@ -16,6 +16,46 @@
+ from cvxpy.utilities.psd_utils import TriangleKind
+ 
+ 
++def _add_psd_bound_rows(A, b, dims, lb, ub):
++    """Add finite variable bounds as explicit inequality rows.
++
++    The rows are inserted right after the existing NonNeg (LEQ) block so the
++    cone partition passed to ``loadConeMatrix`` stays contiguous: COPT expects
++    rows ordered as free, linear, SOC, exponential, PSD.
++    """
++    n = A.shape[1]
++    extra_rows = []
++    extra_b = []
++
++    if ub is not None:
++        finite_ub = np.isfinite(ub)
++        n_ub = int(np.count_nonzero(finite_ub))
++        if n_ub:
++            extra_rows.append(_bound_selector(n_ub, n, np.flatnonzero(finite_ub), 1.0))
++            extra_b.append(ub[finite_ub])
++
++    if lb is not None:
++        finite_lb = np.isfinite(lb)
++        n_lb = int(np.count_nonzero(finite_lb))
++        if n_lb:
++            extra_rows.append(_bound_selector(n_lb, n, np.flatnonzero(finite_lb), -1.0))
++            extra_b.append(-lb[finite_lb])
++
++    if extra_rows:
++        insert_at = dims[s.EQ_DIM] + dims[s.LEQ_DIM]
++        bound_block = sp.vstack(extra_rows, format='csr')
++        A = sp.vstack([A[:insert_at], bound_block, A[insert_at:]], format='csc')
++        b = np.concatenate([b[:insert_at], *extra_b, b[insert_at:]])
++        dims[s.LEQ_DIM] += bound_block.shape[0]
++
++    return A, b
++
++
++def _bound_selector(num_rows, num_cols, cols, value):
++    return sp.csr_array((np.full(num_rows, value), (np.arange(num_rows), cols)),
++                        shape=(num_rows, num_cols))
++
++
+ class COPT(ConicSolver):
+     """
+     An interface for the COPT solver.
+@@ -47,8 +87,10 @@ class COPT(ConicSolver):
+                   7: s.OPTIMAL_INACCURATE,  # imprecise
+                   8: s.USER_LIMIT,          # time out
+                   9: s.SOLVER_ERROR,        # unfinished
+-                 10: s.USER_LIMIT,          # interrupted
+-                 11: s.USER_LIMIT           # iteration limit
++                  10: s.USER_LIMIT,         # interrupted
++                  11: s.USER_LIMIT,         # iteration limit
++                  20: s.OPTIMAL,            # local optimal
++                  21: s.INFEASIBLE          # local infeasible
+                  }
+ 
+     def name(self):
+@@ -182,25 +224,10 @@ def solve_via_data(self, data, warm_start: bool, verbose: bool, solver_opts, sol
+             psd_lb = data[s.LOWER_BOUNDS]
+             psd_ub = data[s.UPPER_BOUNDS]
+             if psd_lb is not None or psd_ub is not None:
+-                n = c.shape[0]
+-                extra_rows = []
+-                extra_b = []
+-                if psd_ub is not None:
+-                    # x_i <= ub_i  =>  x_i <= ub_i  (LEQ constraint: I @ x <= ub)
+-                    extra_rows.append(sp.eye_array(n, format='csc'))
+-                    extra_b.append(psd_ub)
+-                    dims[s.LEQ_DIM] += n
+-                if psd_lb is not None:
+-                    # x_i >= lb_i  =>  -x_i <= -lb_i  (LEQ constraint: -I @ x <= -lb)
+-                    extra_rows.append(-sp.eye_array(n, format='csc'))
+-                    extra_b.append(-psd_lb)
+-                    dims[s.LEQ_DIM] += n
+-                A = sp.vstack([A] + extra_rows, format='csc')
+-                b = np.concatenate([b] + extra_b)
++                A, b = _add_psd_bound_rows(A, b, dims, psd_lb, psd_ub)
+ 
+             # Solve the dualized problem
+-            # TODO switch to `A.transpose().tocsc()` when COPT supports sparray
+-            rowmap = model.loadConeMatrix(-b, sp.csc_matrix(A.transpose()), -c, dims)
++            rowmap = model.loadConeMatrix(-b, A.transpose().tocsc(), -c, dims)
+             model.objsense = copt.COPT.MAXIMIZE
+         else:
+             # Build problem data
+@@ -285,8 +312,7 @@ def solve_via_data(self, data, warm_start: bool, verbose: bool, solver_opts, sol
+                     vtype = np.append(vtype, [copt.COPT.CONTINUOUS] * nexpconedim)
+ 
+             # Load matrix data
+-            # TODO remove `sp.csc_matrix` when COPT starts supporting sparray
+-            model.loadMatrix(c, sp.csc_matrix(A), lhs, rhs, lb, ub, vtype)
++            model.loadMatrix(c, A.tocsc(), lhs, rhs, lb, ub, vtype)
+ 
+             # Load cone data
+             if dims[s.SOC_DIM]:
+diff --git a/cvxpy/reductions/solvers/nlp_solvers/copt_nlpif.py b/cvxpy/reductions/solvers/nlp_solvers/copt_nlpif.py
+index 93b4d9acd6..c6c6183ddb 100644
+--- a/cvxpy/reductions/solvers/nlp_solvers/copt_nlpif.py
++++ b/cvxpy/reductions/solvers/nlp_solvers/copt_nlpif.py
+@@ -256,6 +256,15 @@ def EvalHess(self, xdata, sigma, lambdata, outdata):
+         for key, value in solver_opts.items():
+             model.setParam(key, value)
+ 
++        # COPT may evaluate the gradient/Jacobian/Hessian callbacks at the
++        # initial point before calling the objective/constraint callbacks.
++        # The oracles cache intermediate values from a forward pass, so prime
++        # them here to ensure the first derivative evaluation uses correct
++        # values rather than stale defaults.
++        oracles.objective(x0)
++        if m > 0:
++            oracles.constraints(x0)
++
+         # Solve problem
+         model.solve()
+ 
+diff --git a/cvxpy/reductions/solvers/qp_solvers/copt_qpif.py b/cvxpy/reductions/solvers/qp_solvers/copt_qpif.py
+index e5fdbcf10b..08d8e0ae57 100644
+--- a/cvxpy/reductions/solvers/qp_solvers/copt_qpif.py
++++ b/cvxpy/reductions/solvers/qp_solvers/copt_qpif.py
+@@ -33,8 +33,10 @@ class COPT(QpSolver):
+                   7: s.OPTIMAL_INACCURATE,  # imprecise
+                   8: s.USER_LIMIT,          # time out
+                   9: s.SOLVER_ERROR,        # unfinished
+-                 10: s.USER_LIMIT,          # interrupted
+-                 11: s.USER_LIMIT           # iteration limit
++                  10: s.USER_LIMIT,         # interrupted
++                  11: s.USER_LIMIT,         # iteration limit
++                  20: s.OPTIMAL,            # local optimal
++                  21: s.INFEASIBLE          # local infeasible
+                  }
+ 
+     def name(self):
+@@ -170,8 +172,7 @@ def solve_via_data(self, data, warm_start: bool, verbose: bool, solver_opts, sol
+                 vtype[data[s.INT_IDX]] = copt.COPT.INTEGER
+ 
+         # Load matrix data
+-        # TODO remove `sp.csc_matrix` when COPT starts supporting sparray
+-        model.loadMatrix(q, sp.csc_matrix(Amat), lhs, rhs, lb, ub, vtype)
++        model.loadMatrix(q, Amat.tocsc(), lhs, rhs, lb, ub, vtype)
+ 
+         # Load Q data
+         if P.count_nonzero():
+diff --git a/pyproject.toml b/pyproject.toml
+index a0a6e09531..1174a448da 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -103,6 +103,10 @@ dynamic = ["version"]
+ # Solver names as in cvxpy.settings = pip-installable distribution providing it
+ CBC = ["cylp>=0.91.5"]
+ CLARABEL = []
++# coptpy >= 8.0.3 provides the NLP callback API (NlpCallbackBase, loadNlData)
++# the COPT NLP interface relies on. It also accepts scipy sparse arrays
++# (csc_array) in loadMatrix / loadConeMatrix, supported since 7.2.5.
++COPT = ["coptpy>=8.0.3"]
+ # CUOPT dependency group is disabled since it was breaking uv sync.
+ # CUOPT = ["cuopt-cu12>=25.5", "nvidia-cuda-runtime-cu12>=12.8,<13.0"]
+ CVXOPT = ["cvxopt"]
+@@ -127,6 +131,7 @@ SCS = []
+ XPRESS = ["xpress>=9.5"]
+ DAQP = ["daqp"]
+ KNITRO = ["knitro"]
++UNO = ["unopy"]
+ # IPOPT = ["cyipopt"]  # requires system IPOPT; excluded from --all-extras
+ testing = ["pytest", "hypothesis"]
+ doc = ["sphinx",

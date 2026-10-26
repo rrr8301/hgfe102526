@@ -1,0 +1,134 @@
+diff --git a/pandas/tests/tools/test_to_datetime.py b/pandas/tests/tools/test_to_datetime.py
+index ae5f60a64d901..a522706d72546 100644
+--- a/pandas/tests/tools/test_to_datetime.py
++++ b/pandas/tests/tools/test_to_datetime.py
+@@ -1839,9 +1839,14 @@ def test_to_datetime_mixed_offsets_with_utc_false_removed(self, date):
+ 
+ class TestToDatetimeUnit:
+     @pytest.mark.parametrize("unit", ["Y", "M"])
+-    @pytest.mark.parametrize("item", [150, float(150)])
++    @pytest.mark.parametrize(
++        "item", [150, float(150), np.int64(150), np.int32(150), np.int8(15)]
++    )
+     def test_to_datetime_month_or_year_unit_int(self, cache, unit, item, request):
+         # GH#50870 Note we have separate tests that pd.Timestamp gets these right
++        # GH#56996 np.datetime64() rejects *any* NumPy integer scalar, so the
++        #  object path used to raise ValueError for these until cast_from_unit
++        #  started widening to a Python int first
+         ts = Timestamp(item, unit=unit)
+         dtype = "M8[s]"
+         expected = DatetimeIndex([ts], dtype=dtype)
+@@ -1950,6 +1955,48 @@ def test_unit_with_numeric(self, cache, errors, dtype):
+         result = to_datetime(arr, errors=errors, cache=cache)
+         tm.assert_index_equal(result, expected)
+ 
++    @pytest.mark.parametrize(
++        "dtype",
++        [np.int8, np.int16, np.int32, np.uint8, np.uint16, np.uint32, np.int64],
++    )
++    def test_unit_subint64_scalars(self, dtype, cache):
++        # GH#56996 cast_from_unit did base/frac arithmetic in the input's own
++        #  narrow dtype, so `frac * m` overflowed and raised OutOfBoundsDatetime
++        #  on the object path below. The scalar constructor casts to int64 up
++        #  front so it never hit this, but is checked here to keep it that way.
++        expected = Timestamp("1970-01-02")
++        assert Timestamp(dtype(1), unit="D") == expected
++
++        result = to_datetime([dtype(1)], unit="D", cache=cache)
++        tm.assert_index_equal(result, DatetimeIndex([expected], dtype="M8[s]"))
++
++        # mixing in a nanosecond value forces "ns", so the unit factor is
++        #  86400 * 10**9 and the 32-bit dtypes overflow it too
++        other = Timestamp("1970-01-01 00:00:00.000000001")
++        result = to_datetime([dtype(1), other], unit="D", cache=cache)
++        tm.assert_index_equal(result, DatetimeIndex([expected, other], dtype="M8[ns]"))
++
++    @pytest.mark.parametrize("dtype", [np.float16, np.float32, np.float64])
++    def test_unit_narrow_float_scalars(self, dtype, cache):
++        # GH#56996 np.float32(1.5) with unit="D" picked up bogus sub-second
++        #  digits from float32-precision arithmetic; np.float16 overflowed
++        expected = Timestamp("1970-01-02 12:00:00")
++        assert Timestamp(dtype(1.5), unit="D") == expected
++
++        result = to_datetime([dtype(1.5)], unit="D", cache=cache)
++        tm.assert_index_equal(result, DatetimeIndex([expected], dtype="M8[ns]"))
++
++    @pytest.mark.parametrize("dtype", [np.float16, np.float32, np.float64])
++    def test_unit_float_neg_inf_raises(self, dtype, cache):
++        # GH#56996 NPY_NAT (-2**63) saturates to -inf when cast down to float16,
++        #  so the NaT-sentinel check matched and np.float16("-inf") silently
++        #  became NaT instead of raising like the wider float dtypes
++        with pytest.raises(OutOfBoundsDatetime, match="cannot convert input"):
++            Timestamp(dtype("-inf"), unit="D")
++
++        with pytest.raises(OutOfBoundsDatetime, match="cannot convert input"):
++            to_datetime([dtype("-inf")], unit="D", cache=cache)
++
+     @pytest.mark.parametrize(
+         "exp, arr, warning",
+         [
+@@ -4454,6 +4501,17 @@ def test_to_datetime_missing_component_no_runtime_warning():
+     assert result.iloc[1] is NaT
+ 
+ 
++def test_to_datetime_narrow_float_with_format_no_runtime_warning():
++    # GH#56996 the NaT-sentinel check compared the raw np.float16 against the
++    #  int64 sentinel, which cast the sentinel down to float16 and emitted a
++    #  spurious RuntimeWarning before the value reached the parser
++    arr = np.array([np.float16(1970)], dtype=object)
++    with tm.assert_produces_warning(Pandas4Warning, match="integer or float"):
++        result = to_datetime(arr, format="%Y", errors="coerce")
++
++    assert result[0] is NaT
++
++
+ def test_to_datetime_format_N_directive():
+     # GH 65863
+     result = to_datetime("2024-05-01 12:00:00.123456789", format="%Y-%m-%d %H:%M:%S.%N")
+diff --git a/pandas/tests/tools/test_to_timedelta.py b/pandas/tests/tools/test_to_timedelta.py
+index 4a4edc5bb542b..820d65ef5bd42 100644
+--- a/pandas/tests/tools/test_to_timedelta.py
++++ b/pandas/tests/tools/test_to_timedelta.py
+@@ -547,6 +547,42 @@ def test_to_timedelta_subint64_with_unit(dtype):
+     assert pd.Timedelta(dtype(1), unit="D") == pd.Timedelta(1, unit="D")
+ 
+ 
++@pytest.mark.parametrize(
++    "dtype", [np.int8, np.int16, np.int32, np.uint8, np.uint16, np.uint32, np.int64]
++)
++def test_to_timedelta_subint64_with_unit_object_path(dtype):
++    # GH#56996 the object-array path reaches cast_from_unit with the raw numpy
++    #  scalar, where `frac * m` overflowed the narrow dtype and got reported as
++    #  OutOfBoundsTimedelta (or silently coerced to NaT).
++    # a list is always converted to object dtype, so this is the object path
++    expected = TimedeltaIndex([pd.Timedelta(1, unit="D")]).as_unit("s")
++
++    result = to_timedelta([dtype(1)], unit="D")
++    tm.assert_index_equal(result, expected)
++
++    result = to_timedelta([dtype(1)], unit="D", errors="coerce")
++    tm.assert_index_equal(result, expected)
++
++    # the issue's own repro, mixing in a Timedelta
++    result = to_timedelta([dtype(1), pd.Timedelta(1, "ns")], unit="D")
++    expected = TimedeltaIndex([pd.Timedelta(1, unit="D"), pd.Timedelta(1, "ns")])
++    tm.assert_index_equal(result, expected)
++
++
++@pytest.mark.parametrize("dtype", [np.float16, np.float32, np.float64])
++def test_to_timedelta_narrow_float_with_unit(dtype):
++    # GH#56996 the base/frac arithmetic used to happen in the input's own float
++    #  dtype, so e.g. np.float32(1.5) with unit="D" picked up bogus sub-second
++    #  digits, and rounding np.float16 to 13 places overflowed to NaN.
++    expected = pd.Timedelta("1 days 12:00:00")
++
++    assert pd.Timedelta(dtype(1.5), unit="D") == expected
++    assert to_timedelta(dtype(1.5), unit="D") == expected
++
++    result = to_timedelta([dtype(1.5)], unit="D")
++    tm.assert_index_equal(result, TimedeltaIndex([expected]).as_unit("ns"))
++
++
+ @pytest.mark.parametrize("unit", ["ns", "ms"])
+ def test_from_timedelta_arrow_dtype(unit):
+     # GH 54298

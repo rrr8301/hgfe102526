@@ -1,0 +1,107 @@
+{
+  "input": "pipeline_no_historic/pandas_68557/mined/pandas-dev__pandas_68557.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 15129,
+    "output_tokens": 6514,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 68557,
+      "reference": "https://github.com/pandas-dev/pandas/pull/68557",
+      "buggy_commit": "a547f69e8cfd60ff2ee17946066c099fa64ee933",
+      "fixed_commit": "6336a58aac392d9e910d5a13038f95b9379b85e3",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5389,
+      "withheld": [],
+      "strategy": {
+        "summary": "Build pandas at the buggy commit a547f69e8cfd from source, then run the two new accumulate tests in pandas/tests/arrays/sparse/test_array.py. On the buggy revision, _accumulate densifies a Sparse[int64, nan] (and uint8/bool) via to_dense(), which casts NaN gaps to 0/False, so cumprod/cummin/cummax and cumsum(skipna=False) disagree with the dense reference. On the fixed revision (_densify with maybe_promote), the gaps stay NaN and the subtype/dtype assertions hold.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy>=1.24,<3",
+            "python-dateutil",
+            "tzdata",
+            "cython",
+            "meson-python",
+            "meson",
+            "versioneer[toml]",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain (gcc or clang)",
+            "git"
+          ],
+          "build_commands": [
+            "git checkout a547f69e8cfd",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy: no documented constraint and no era table entry; numpy>=1.24 is chosen by me (era-inferred, not documented) because the leaked 'invalid value encountered in cast' RuntimeWarning on NaN-to-int casts is the NumPy behaviour that matches the report; the upper bound is a choice, not evidence.",
+            "python-dateutil, tzdata, Cython: unbounded in the evidence; left unpinned beyond what the build needs; Cython is needed for the build per the README installation commands.",
+            "meson/meson-python: needed by the pandas build system at this revision (era-inferred from the editable install command; not stated in the evidence)."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/arrays/sparse/test_array.py -k 'accumulate' -v -p no:cacheprovider",
+        "reproducing_test": "pandas/tests/arrays/sparse/test_array.py::test_accumulate_na_gaps_subtype_cannot_hold_na (parametrized over op_name in cumsum, cumprod, cummin, cummax and skipna in True, False) and pandas/tests/arrays/sparse/test_array.py::test_accumulate_bool_subtype_promotes_to_object (parametrized over cumprod, cummin, cummax)",
+        "success_criterion": "On the buggy revision a547f69e8cfd, the cumprod, cummin, cummax cases and the cumsum[skipna=False] case fail: the result either has the wrong subtype dtype or the values differ from the dense result at the NaN gaps (0 or INT_MIN where NaN is expected), so tm.assert_series_equal raises. On the fixed revision, all parametrized cases pass: the dtype equals SparseDtype(subtype, nan) with subtype int64 only for cumsum with skipna=True, float64 otherwise, and object for the bool case; values match the dense Series result.",
+        "numerical_probe": "python -c \"import numpy as np, pandas as pd; a=pd.arrays.SparseArray([1.0,np.nan,5.0,np.nan]).astype(pd.SparseDtype('int64',np.nan)); print(list(pd.Series(a).cumprod()))\"",
+        "input_output_examples": [
+          {
+            "input": "arr = pd.arrays.SparseArray([1.0, np.nan, 5.0, np.nan]).astype(pd.SparseDtype(\"int64\", np.nan)); ser = pd.Series(arr); list(ser.cumprod())",
+            "buggy_output": "[1, 0, 0, 0]",
+            "expected_output": "[1.0, nan, 5.0, nan]"
+          }
+        ],
+        "risks": [
+          "Platform dependence: the reported gap value of 0 comes from the NaN-to-int64 cast. On x86 NumPy this cast typically yields INT64_MIN rather than 0, and on some ARM builds it yields 0. The test still fails on either (values differ from NaN), but the exact buggy value will differ; the bug is not architecture-specific in outcome, though the observed numbers are.",
+          "NumPy version: the leaked RuntimeWarning 'invalid value encountered in cast' appears only on NumPy versions that warn on invalid float-to-int casts (roughly >=1.24). On older NumPy the buggy run may pass the warning check silently; the value-level failure should still occur.",
+          "Warning filters: pandas' pytest configuration may escalate warnings to errors for pandas-origin warnings, which could turn the leaked RuntimeWarning into a different failure on the buggy revision. This does not change the pass/fail transition but can change the failure message.",
+          "Sanitisers and debug builds are not needed and not expected to change the outcome; the defect is a logic-level densification choice, not undefined behaviour in pandas code.",
+          "Test-to-PR mismatch: the added tests cite GH#68187 while the PR is #68557. Confirm the buggy and fixed commits are the right pair before trusting the transition.",
+          "Editable build compile time is significant; if the build fails on the buggy revision for unrelated reasons, the transition cannot be checked, so verify the build succeeds before running the tests.",
+          "The bool-subtype test's expected dtype (object) and the cumsum skipna=True fast path depend on exact pandas result-dtype rules at this revision; if those rules differ from the PR's expectations, the test may fail on the fixed revision for reasons unrelated to the bug.",
+          "No documented NumPy constraint exists in the evidence; the chosen range is my assumption and may need adjustment if the build or dtype behaviour differs."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "tm.assert_series_equal default (check_exact=False, rtol=1e-5) on float64 after astype('float64'); dtype checks are exact",
+          "reference_source": "dense pandas.Series computation of cumprod/cummin/cummax/cumsum on the same float values with NaN gaps",
+          "why": "The dense Series result is the reference; the sparse result is compared after casting to float64 so NaN positions are compared as NaN, and the dtype assertion is exact."
+        },
+        "fails_on_buggy": "On a547f69e8cfd, result.dtype may already differ (e.g. int64 subtype where float64 is expected), and where the values are compared, the gap positions hold 0 (or INT64_MIN) instead of NaN, so assert_series_equal raises AssertionError for cumprod, cummin, cummax and cumsum(skipna=False). The bool test fails the same way because gaps become False instead of NaN.",
+        "passes_on_fixed": "On the fixed revision, _densify promotes the NaN fill via maybe_promote so gaps stay NaN; dtypes match SparseDtype(subtype, nan) per the parametrization, and the values match the dense Series results, so all parametrized cases pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5071,
+        "output_tokens": 3682,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 10058,
+        "output_tokens": 2832,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

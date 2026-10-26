@@ -1,0 +1,111 @@
+diff --git a/burn-autodiff/src/ops/activation.rs b/burn-autodiff/src/ops/activation.rs
+index 0a34499f288..29f6c3dfd68 100644
+--- a/burn-autodiff/src/ops/activation.rs
++++ b/burn-autodiff/src/ops/activation.rs
+@@ -54,4 +54,27 @@ impl<B: Backend> ActivationOps<Autodiff<B>> for Autodiff<B> {
+             OpsKind::UnTracked(prep) => prep.finish(output),
+         }
+     }
++
++    fn sigmoid<const D: usize>(tensor: FloatTensor<Self, D>) -> FloatTensor<Self, D> {
++        #[derive(Debug)]
++        struct Sigmoid;
++
++        impl<B: Backend, const D: usize> Backward<B, D, 1> for Sigmoid {
++            type State = B::TensorPrimitive<D>;
++
++            fn backward(self, ops: Ops<Self::State, 1>, grads: &mut Gradients) {
++                unary::<B, D, D, _>(ops.parents, ops.node, grads, |grad| {
++                    B::sigmoid_backward(ops.state, grad)
++                });
++            }
++        }
++
++        match Sigmoid.prepare([tensor.node], [tensor.graph]).stateful() {
++            OpsKind::Tracked(prep) => {
++                let output = B::sigmoid(tensor.primitive);
++                prep.finish(output.clone(), output)
++            }
++            OpsKind::UnTracked(prep) => prep.finish(B::sigmoid(tensor.primitive)),
++        }
++    }
+ }
+diff --git a/burn-tch/src/ops/activation.rs b/burn-tch/src/ops/activation.rs
+index 386e87c4937..7d8ecfc9651 100644
+--- a/burn-tch/src/ops/activation.rs
++++ b/burn-tch/src/ops/activation.rs
+@@ -22,4 +22,8 @@ impl<E: TchElement> ActivationOps<Self> for LibTorch<E> {
+ 
+         TchTensor::from_existing(tensor, storage)
+     }
++
++    fn sigmoid<const D: usize>(tensor: TchTensor<E, D>) -> TchTensor<E, D> {
++        tensor.unary_ops(|mut tensor| tensor.sigmoid_(), |tensor| tensor.sigmoid())
++    }
+ }
+diff --git a/burn-tensor/src/tensor/activation/base.rs b/burn-tensor/src/tensor/activation/base.rs
+index 35ba058877b..0143e03b605 100644
+--- a/burn-tensor/src/tensor/activation/base.rs
++++ b/burn-tensor/src/tensor/activation/base.rs
+@@ -78,7 +78,7 @@ pub fn log_softmax<const D: usize, B: Backend>(tensor: Tensor<B, D>, dim: usize)
+ 
+ /// Applies the sigmoid function.
+ pub fn sigmoid<const D: usize, B: Backend>(tensor: Tensor<B, D>) -> Tensor<B, D> {
+-    log_sigmoid(tensor).exp()
++    Tensor::from_primitive(B::sigmoid(tensor.primitive))
+ }
+ 
+ /// Applies the log sigmoid function.
+diff --git a/burn-tensor/src/tensor/ops/activation.rs b/burn-tensor/src/tensor/ops/activation.rs
+index b0aef546d51..9c02dad8891 100644
+--- a/burn-tensor/src/tensor/ops/activation.rs
++++ b/burn-tensor/src/tensor/ops/activation.rs
+@@ -1,3 +1,4 @@
++use crate::tensor::ops::tensor::TensorOps;
+ use crate::{backend::Backend, ElementConversion};
+ use core::f64::consts::SQRT_2;
+ 
+@@ -102,4 +103,43 @@ pub trait ActivationOps<B: Backend> {
+ 
+         B::mul(y, grad)
+     }
++
++    /// Applies the Sigmoid activation function.
++    ///
++    /// # Arguments
++    ///
++    /// * `tensor` - The tensor.
++    ///
++    /// # Returns
++    ///
++    /// The output tensor.
++    fn sigmoid<const D: usize>(tensor: FloatTensor<B, D>) -> FloatTensor<B, D> {
++        let tensor_full = B::to_full_precision(&tensor);
++        let tensor_tmp = B::FullPrecisionBackend::exp(B::FullPrecisionBackend::neg(
++            B::FullPrecisionBackend::log(B::FullPrecisionBackend::add_scalar(
++                B::FullPrecisionBackend::exp(B::FullPrecisionBackend::neg(tensor_full)),
++                1.0.elem(),
++            )),
++        ));
++
++        B::from_full_precision(tensor_tmp)
++    }
++
++    /// Applies the Sigmoid activation function backward.
++    ///
++    /// # Arguments
++    ///
++    /// * `output` - The output tensor of the sigmoid function.
++    /// * `grad` - The gradient.
++    ///
++    /// # Returns
++    ///
++    /// The output tensor.
++    fn sigmoid_backward<const D: usize>(
++        output: FloatTensor<B, D>,
++        grad: FloatTensor<B, D>,
++    ) -> FloatTensor<B, D> {
++        let value = B::mul(output.clone(), B::add_scalar(B::neg(output), 1.0.elem()));
++        B::mul(value, grad)
++    }
+ }

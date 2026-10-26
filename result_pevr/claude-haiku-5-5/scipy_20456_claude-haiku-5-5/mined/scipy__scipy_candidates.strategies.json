@@ -1,0 +1,109 @@
+{
+  "input": "pipeline-haiku-eradyn-inloop/scipy_20456_claude-haiku-5-5/mined/scipy__scipy_20456.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-23",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 16147,
+    "output_tokens": 6503,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 20456,
+      "reference": "https://github.com/scipy/scipy/pull/20456",
+      "buggy_commit": "8960e4a7268524b65914537f32180d0e07c0b6f6",
+      "fixed_commit": "efff26b05689a92b3771ec3142c8a2524d78a516",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 4855,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the int32 overflow in iirfilter's Wn normalization by building scipy at the buggy commit 8960e4a72685 and running the developer's test_int_inputs, which calls iirfilter(20, [1000000000, 1100000000], btype='bp', analog=False, fs=6250000000). The transition is expected only where Wn is stored as int32, which the PR body documents; on the usual 64-bit Linux integer default the buggy code may not overflow, so the test may not fail there.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy<2 (era-inferred from NumPy <=1.26 at PR date; not documented)",
+            "pytest",
+            "meson-python",
+            "ninja",
+            "cython",
+            "pythran",
+            "pybind11",
+            "hypothesis",
+            "threadpoolctl"
+          ],
+          "system_packages": [
+            "C and C++ compiler (gcc or clang, or MSVC on Windows)",
+            "gfortran",
+            "OpenBLAS or system BLAS/LAPACK development headers",
+            "pkg-config"
+          ],
+          "build_commands": [
+            "git checkout 8960e4a72685",
+            "git submodule update --init --recursive",
+            "pip install -r requirements/build.txt",
+            "pip install -e . --no-build-isolation"
+          ],
+          "pinned_because": [
+            "NumPy <2 is era-inferred: at PR date 2024-04-12 the newest NumPy was 1.26, and before NumPy 2 the default integer on Windows was int32 (C long), which is what makes Wn an int32 array; this is not a documented constraint.",
+            "The int32 storage of Wn integers is documented in the PR body (pr_body:PR#20456), so that dependency is documented rather than era-inferred.",
+            "Python version is not stated by the evidence, so it is left null; pick a Python version that the chosen NumPy 1.26 wheels support (3.9 to 3.12)."
+          ]
+        },
+        "test_command": "python -m pytest scipy/signal/tests/test_filter_design.py -k test_int_inputs -q",
+        "reproducing_test": "scipy/signal/tests/test_filter_design.py::test_int_inputs (the method in the filter-design test class that contains the k2 = 9.999999999999989e+47 assertion), with the added iirfilter(20, [1000000000, 1100000000], btype='bp', analog=False, fs=6250000000) call",
+        "success_criterion": "On the buggy revision 8960e4a72685 the added iirfilter call should raise (ValueError from the out-of-range critical frequency check, because 2*Wn wraps negative in int32), so test_int_inputs errors. On the fixed revision (the PR with Wn = Wn / (fs/2)) the call returns without exception, the k2 assertion passes, and test_int_inputs passes. Expected transition: FAIL on buggy, PASS on fixed, but only on a platform where Wn becomes int32.",
+        "numerical_probe": "Compare np.asarray([1000000000, 1100000000]).dtype on the target platform: int32 (for example Windows with NumPy 1.x) means the buggy path overflows; int64 (typical 64-bit Linux) means 2*Wn does not overflow and the buggy revision may pass the test. Do not use this probe as the transition check.",
+        "input_output_examples": [
+          {
+            "input": "iirfilter(20, [1000000000, 1100000000], btype='bp', analog=False, fs=6250000000)",
+            "buggy_output": "raises an exception on int32 platforms (2*Wn overflows int32, so the normalized Wn is out of range); may return silently on int64 platforms",
+            "expected_output": "returns without raising; normalized Wn computed as Wn / (fs/2) without int32 overflow"
+          }
+        ],
+        "risks": [
+          "The transition depends on the platform: the bug requires Wn to be int32. Linux x86_64 with NumPy 1.x defaults to int64 for Python int lists, so the buggy revision may pass test_int_inputs there and no transition occurs. Plan to run on Windows with NumPy 1.x, or force int32 explicitly (np.array(..., dtype=np.int32)) in a supplemental check, which is not the developer's test.",
+          "With NumPy 2.x on Windows the default integer is int64, so the overflow would not reproduce; the NumPy <=1.26 constraint is era-inferred and is needed for the transition.",
+          "The in-place form Wn /= (fs/2) fails for integer Wn with UFuncOutputCastingError (float64 cannot be cast to int32 under same_kind), so the fix must use the non-in-place Wn = Wn / (fs/2).",
+          "The expected numeric output of the overflow case is not stated in the evidence; the test only asserts that no exception is raised, so the oracle is not a value comparison.",
+          "Python version is unspecified by the evidence; building scipy at this revision requires matching build dependencies (meson-python, Cython, pythran) and may fail on newer toolchains.",
+          "The test name and class are taken from the diff context; confirm the exact class with pytest --collect-only if -k selects nothing."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": "Existing assertion in test_int_inputs: assert_allclose(k, 9.999999999999989e+47), with no explicit tolerance",
+          "why": "The new check only asserts that the call does not raise; there is no expected numeric output for the overflow case in the evidence."
+        },
+        "fails_on_buggy": "On an int32 platform, 2*Wn wraps in int32 so the normalized critical frequencies are out of range and iirfilter raises ValueError, failing the added call inside test_int_inputs. On int64 platforms the buggy code may not raise, so the test would pass there and the transition would not be observed.",
+        "passes_on_fixed": "With Wn = Wn / (fs/2) the division is done in float64 with no int32 overflow, the call returns normally, and the existing k2 assertion still holds, so test_int_inputs passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4002,
+        "output_tokens": 3801,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 12145,
+        "output_tokens": 2702,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

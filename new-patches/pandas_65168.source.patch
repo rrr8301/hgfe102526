@@ -1,0 +1,78 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 882464a2d5441..6af500f6cc0b0 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -221,6 +221,7 @@ Timedelta
+ ^^^^^^^^^
+ - Bug in :attr:`TimedeltaIndex.resolution` raising when the index has no frequency (:issue:`65186`)
+ - Bug in :class:`DateOffset` where ``DateOffset(1)`` and ``DateOffset(days=1)`` returned different results near daylight saving time transitions (:issue:`61862`)
++- Bug in :class:`Timedelta` constructor where keyword arguments (e.g. ``days=365000``) that exceeded nanosecond int64 bounds raised ``OutOfBoundsTimedelta`` instead of falling back to a coarser resolution (:issue:`46587`)
+ - Bug in :func:`to_timedelta` where passing ``np.str_`` objects would fail in Cython string parsing (:issue:`48974`)
+ - Fixed regression in :meth:`Timedelta.round`, :meth:`Timedelta.floor`, and :meth:`Timedelta.ceil` raising ``ZeroDivisionError`` for sub-second ``freq`` (:issue:`64828`)
+ 
+diff --git a/pandas/_libs/tslibs/timedeltas.pyx b/pandas/_libs/tslibs/timedeltas.pyx
+index e2075f1f88270..1e4ec1d4a642d 100644
+--- a/pandas/_libs/tslibs/timedeltas.pyx
++++ b/pandas/_libs/tslibs/timedeltas.pyx
+@@ -2192,27 +2192,42 @@ class Timedelta(_Timedelta):
+             ns = kwargs.get("nanoseconds", 0)
+             us = kwargs.get("microseconds", 0)
+             ms = kwargs.get("milliseconds", 0)
++            total_ns = (
++                int(ns)
++                + int(us * 1_000)
++                + int(ms * 1_000_000)
++                + seconds
++            )
++
+             try:
+-                value = np.timedelta64(
+-                    int(ns)
+-                    + int(us * 1_000)
+-                    + int(ms * 1_000_000)
+-                    + seconds, "ns"
+-                )
+-            except OverflowError as err:
+-                # GH#55503
+-                msg = (
+-                    f"seconds={seconds}, milliseconds={ms}, "
+-                    f"microseconds={us}, nanoseconds={ns}"
+-                )
+-                raise OutOfBoundsTimedelta(msg) from err
++                value = np.timedelta64(total_ns, "ns")
++            except OverflowError:
++                # GH#46587 - fall back to coarser resolutions
++                if total_ns % 1_000 != 0:
++                    reso_value, reso_abbrev = total_ns, "ns"
++                elif total_ns % 1_000_000 != 0:
++                    reso_value, reso_abbrev = total_ns // 1_000, "us"
++                elif total_ns % 1_000_000_000 != 0:
++                    reso_value, reso_abbrev = total_ns // 1_000_000, "ms"
++                else:
++                    reso_value, reso_abbrev = total_ns // 1_000_000_000, "s"
+ 
+-            if (
+-                "nanoseconds" not in kwargs
+-                and cnp.get_timedelta64_value(value) % 1000 == 0
+-            ):
+-                # If possible, give a microsecond unit
+-                value = value.astype("m8[us]")
++                try:
++                    value = np.timedelta64(reso_value, reso_abbrev)
++                except OverflowError as err:
++                    # GH#55503
++                    msg = (
++                        f"seconds={seconds}, milliseconds={ms}, "
++                        f"microseconds={us}, nanoseconds={ns}"
++                    )
++                    raise OutOfBoundsTimedelta(msg) from err
++            else:
++                if (
++                    "nanoseconds" not in kwargs
++                    and cnp.get_timedelta64_value(value) % 1000 == 0
++                ):
++                    # If possible, give a microsecond unit
++                    value = value.astype("m8[us]")
+ 
+         disallow_ambiguous_unit(unit)
+ 

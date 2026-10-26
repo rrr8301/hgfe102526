@@ -1,0 +1,2074 @@
+[
+  {
+    "slug": "numpy_28653",
+    "bug_type": "special_value",
+    "image": "python:3.11",
+    "status": "NOT_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "test passes on BOTH revisions (it does not expose the bug); the numerical probe still shows the defect on fixed",
+    "transition": "pass->pass",
+    "fail_to_pass": false,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "not_reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "armhf_sqrt_inf_probe": "import numpy as np\n\n# Match the report exactly\nx = np.array([0.5, 0.5, 0.5, np.inf] * 32, dtype=np.float64)\n\n# Capture invalid-value warnings; NumPy may not expose SIMD FP flags, so we record warnings and values.\nimport warnings\n\nwith warnings.catch_warnings(record=True) as w:\n    warnings.simplefilter('always')\n    with np.errstate(invalid='warn', divide='warn', over='warn', under='warn'):\n        y = np.sqrt(x)\n\n# Record whether any invalid warnings occurred\ninvalid_warnings = [wi for wi in w if 'invalid' in str(wi.message).lower()]\n\n# Record summary stats to compare against fixed\nfinite_count = int(np.isfinite(y).sum())\ninf_count = int(np.isinf(y).sum())\nnan_count = int(np.isnan(y).sum())\n\n# Also record first 8 values for compactness\nprobe('sqrt_x_first8', x[:8].tolist())\nprobe('sqrt_y_first8', y[:8].tolist())\nprobe('sqrt_counts', [finite_count, inf_count, nan_count, len(invalid_warnings)])\n",
+        "sqrt_inf_invalid_probe": "import numpy as np\nimport sys\n\narr = np.array([0.5, 0.5, 0.5, np.inf]*32, dtype=np.float32)\n\n# Capture whether invalid fp was raised and the resulting values.\ninvalid_raised = False\ntry:\n    with np.errstate(invalid='raise', divide='raise', over='raise', under='ignore'):\n        out = np.sqrt(arr)\nexcept FloatingPointError:\n    invalid_raised = True\n    out = np.sqrt(arr)  # best-effort: compute without raising to observe values\n\n# Record a compact summary and exact element types for comparability.\nvals = out.astype(np.float32)\nfinite_mask = np.isfinite(vals)\nfinite_vals = vals[finite_mask]\ninf_count = int(np.isinf(vals).sum())\n\nprobe('out_first4', vals[:4].tolist())\nprobe('invalid_raised', float(invalid_raised))\nprobe('inf_count', float(inf_count))\nif finite_vals.size:\n    probe('finite_mean', float(finite_vals.mean()))\nelse:\n    probe('finite_mean', float('nan'))\n",
+        "sqrt_inf_invalid_probe_recut": "import numpy as np\nimport math\n\n# Reproduce the reported expression\narr = np.array([0.5, 0.5, 0.5, np.inf] * 32, dtype=np.float32)\n\n# Capture warnings and any FP invalid exception signals via NumPy error state.\n# We intentionally use errstate(invalid='raise') so that spurious invalids become exceptions.\nres = None\nexception = None\nwarning = None\n\ntry:\n    with np.errstate(invalid='raise', over='raise', divide='raise', under='ignore'):\n        res = np.sqrt(arr)\nexcept FloatingPointError as e:\n    exception = str(e)\n\nout = {}\nout['dtype'] = str(arr.dtype)\nout['input_inf_count'] = int(np.isinf(arr).sum())\nout['input_nan_count'] = int(np.isnan(arr).sum())\nif exception is None:\n    # Ensure the sqrt at the inf positions is exactly +inf (not nan)\n    inf_pos = np.isinf(arr)\n    out['output_inf_count'] = int(np.isinf(res[inf_pos]).sum())\n    out['output_nan_count_at_inf'] = int(np.isnan(res[inf_pos]).sum())\n    out['output_min'] = float(np.nanmin(res))\n    out['output_max'] = float(np.nanmax(res))\n    # Store a small digest for determinism\n    out['output_tail'] = [float(x) for x in res[-4:]]\nelse:\n    out['exception'] = exception\n\n# Store the full output array also (may be truncated by the harness but must exist)\nout['output_summary'] = out\nprobe('sqrt_inf_invalid_probe_recut', out)\n",
+        "reported_examples": "import numpy as np\nimport platform\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)\", \"np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)\", [], \"No FP invalid exception; sqrt(+inf) remains +inf.\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\n\n# Scenario: np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)\nname = 'np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)'\ntry:\n    x = np.array([0.5, 0.5, 0.5, np.inf]*32)\n    res = np.sqrt(x)\n    probe(name, res)\nexcept Exception as e:\n    probe_exception(name, e)"
+      },
+      "fixed": {
+        "armhf_sqrt_inf_probe": "import numpy as np\n\nx = np.array([0.5, 0.5, 0.5, np.inf] * 32, dtype=np.float64)\n\nimport warnings\nwith warnings.catch_warnings(record=True) as w:\n    warnings.simplefilter('always')\n    with np.errstate(invalid='warn', divide='warn', over='warn', under='warn'):\n        y = np.sqrt(x)\n\ninvalid_warnings = [wi for wi in w if 'invalid' in str(wi.message).lower()]\n\nfinite_count = int(np.isfinite(y).sum())\ninf_count = int(np.isinf(y).sum())\nnan_count = int(np.isnan(y).sum())\n\nprobe('sqrt_x_first8', x[:8].tolist())\nprobe('sqrt_y_first8', y[:8].tolist())\nprobe('sqrt_counts', [finite_count, inf_count, nan_count, len(invalid_warnings)])\n",
+        "sqrt_inf_invalid_probe": "import numpy as np\nimport sys\n\narr = np.array([0.5, 0.5, 0.5, np.inf]*32, dtype=np.float32)\n\ninvalid_raised = False\ntry:\n    with np.errstate(invalid='raise', divide='raise', over='raise', under='ignore'):\n        out = np.sqrt(arr)\nexcept FloatingPointError:\n    invalid_raised = True\n    out = np.sqrt(arr)\n\nvals = out.astype(np.float32)\nfinite_mask = np.isfinite(vals)\nfinite_vals = vals[finite_mask]\ninf_count = int(np.isinf(vals).sum())\n\nprobe('out_first4', vals[:4].tolist())\nprobe('invalid_raised', float(invalid_raised))\nprobe('inf_count', float(inf_count))\nif finite_vals.size:\n    probe('finite_mean', float(finite_vals.mean()))\nelse:\n    probe('finite_mean', float('nan'))\n",
+        "sqrt_inf_invalid_probe_recut": "import numpy as np\nimport math\n\narr = np.array([0.5, 0.5, 0.5, np.inf] * 32, dtype=np.float32)\n\nres = None\nexception = None\n\ntry:\n    with np.errstate(invalid='raise', over='raise', divide='raise', under='ignore'):\n        res = np.sqrt(arr)\nexcept FloatingPointError as e:\n    exception = str(e)\n\nout = {}\nout['dtype'] = str(arr.dtype)\nout['input_inf_count'] = int(np.isinf(arr).sum())\nout['input_nan_count'] = int(np.isnan(arr).sum())\nif exception is None:\n    inf_pos = np.isinf(arr)\n    out['output_inf_count'] = int(np.isinf(res[inf_pos]).sum())\n    out['output_nan_count_at_inf'] = int(np.isnan(res[inf_pos]).sum())\n    out['output_min'] = float(np.nanmin(res))\n    out['output_max'] = float(np.nanmax(res))\n    out['output_tail'] = [float(x) for x in res[-4:]]\nelse:\n    out['exception'] = exception\n\nout['output_summary'] = out\nprobe('sqrt_inf_invalid_probe_recut', out)\n",
+        "reported_examples": "import numpy as np\nimport platform\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)\", \"np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)\", [], \"No FP invalid exception; sqrt(+inf) remains +inf.\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\n\n# Scenario: np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)\nname = 'np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)'\ntry:\n    x = np.array([0.5, 0.5, 0.5, np.inf]*32)\n    res = np.sqrt(x)\n    probe(name, res)\nexcept Exception as e:\n    probe_exception(name, e)"
+      }
+    },
+    "report": {
+      "status": "NOT_REPRODUCED",
+      "rationale": "test passes on BOTH revisions (it does not expose the bug); the numerical probe still shows the defect on fixed",
+      "transition": "pass->pass",
+      "fail_to_pass": false,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "not_reproduced",
+      "success_criterion": "The reproducing run at the buggy commit must produce a non-xfail pytest failure for test_denormal_numbers on ARMHF/ARMv7 (and/or a spurious FP invalid error for np.sqrt of the +inf-containing array). The same run at the fixed commit would report no real failure: the +inf sqrt case is clean and test_denormal_numbers is xfailed.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 1,
+            "failed": null,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 1,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "armhf_sqrt_inf_probe",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced Inf",
+                "values do not match the reference (finite compare: abs_err=5.000e-01, tol=0.000e+00)"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced Inf",
+                "values do not match the reference (finite compare: abs_err=5.000e-01, tol=0.000e+00)"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "sqrt_x_first8": [
+                0.5,
+                0.5,
+                0.5,
+                "inf",
+                0.5,
+                0.5,
+                0.5,
+                "inf"
+              ],
+              "sqrt_y_first8": [
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf"
+              ],
+              "sqrt_counts": [
+                96,
+                32,
+                0,
+                0
+              ]
+            },
+            "fixed_values": {
+              "sqrt_x_first8": [
+                0.5,
+                0.5,
+                0.5,
+                "inf",
+                0.5,
+                0.5,
+                0.5,
+                "inf"
+              ],
+              "sqrt_y_first8": [
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf"
+              ],
+              "sqrt_counts": [
+                96,
+                32,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "label": "described_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)": [
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                "\u2026 78 more"
+              ]
+            },
+            "fixed_values": {
+              "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)": [
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                "\u2026 78 more"
+              ]
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          },
+          {
+            "label": "sqrt_inf_invalid_probe",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "out_first4": [
+                0.7071067690849304,
+                0.7071067690849304,
+                0.7071067690849304,
+                "inf"
+              ],
+              "invalid_raised": 0.0,
+              "inf_count": 32.0,
+              "finite_mean": 0.7071066498756409
+            },
+            "fixed_values": {
+              "out_first4": [
+                0.7071067690849304,
+                0.7071067690849304,
+                0.7071067690849304,
+                "inf"
+              ],
+              "invalid_raised": 0.0,
+              "inf_count": 32.0,
+              "finite_mean": 0.7071066498756409
+            }
+          },
+          {
+            "label": "sqrt_inf_invalid_probe_recut",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "sqrt_inf_invalid_probe_recut": {
+                "dtype": "float32",
+                "input_inf_count": 32,
+                "input_nan_count": 0,
+                "output_inf_count": 32,
+                "output_nan_count_at_inf": 0,
+                "output_min": 0.7071067690849304,
+                "output_max": "inf",
+                "output_tail": [
+                  0.7071067690849304,
+                  0.7071067690849304,
+                  0.7071067690849304,
+                  "inf"
+                ],
+                "output_summary": {
+                  "dtype": "float32",
+                  "input_inf_count": 32,
+                  "input_nan_count": 0,
+                  "output_inf_count": 32,
+                  "output_nan_count_at_inf": 0,
+                  "output_min": 0.7071067690849304,
+                  "output_max": "inf",
+                  "output_tail": [
+                    0.7071067690849304,
+                    0.7071067690849304,
+                    0.7071067690849304,
+                    "inf"
+                  ],
+                  "output_summary": {
+                    "dtype": "float32",
+                    "input_inf_count": 32,
+                    "input_nan_count": 0,
+                    "output_inf_count": 32,
+                    "output_nan_count_at_inf": 0,
+                    "output_min": 0.7071067690849304,
+                    "output_max": "inf",
+                    "output_tail": [
+                      0.7071067690849304,
+                      0.7071067690849304,
+                      0.7071067690849304,
+                      "inf"
+                    ],
+                    "output_summary": {
+                      "dtype": "float32",
+                      "input_inf_count": 32,
+                      "input_nan_count": 0,
+                      "output_inf_count": 32,
+                      "output_nan_count_at_inf": 0,
+                      "output_min": 0.7071067690849304,
+                      "output_max": "inf",
+                      "output_tail": [
+                        "0.7071067690849304",
+                        "0.7071067690849304",
+                        "0.7071067690849304",
+                        "inf"
+                      ],
+                      "output_summary": {
+                        "dtype": "'float32'",
+                        "input_inf_count": "32",
+                        "input_nan_count": "0",
+                        "output_inf_count": "32",
+                        "output_nan_count_at_inf": "0",
+                        "output_min": "0.7071067690849304",
+                        "output_max": "inf",
+                        "output_tail": "[0.7071067690849304, 0.7071067690849304, 0.7071067690849304, inf]",
+                        "output_summary": "{'dtype': 'float32', 'input_inf_count': 32, 'input_nan_count': 0, 'output_inf_count': 32, 'output_nan_count_at_inf': 0, 'output_min': 0.7071067690849304, 'output_max': inf, 'output_tail': [0.707106769"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "fixed_values": {
+              "sqrt_inf_invalid_probe_recut": {
+                "dtype": "float32",
+                "input_inf_count": 32,
+                "input_nan_count": 0,
+                "output_inf_count": 32,
+                "output_nan_count_at_inf": 0,
+                "output_min": 0.7071067690849304,
+                "output_max": "inf",
+                "output_tail": [
+                  0.7071067690849304,
+                  0.7071067690849304,
+                  0.7071067690849304,
+                  "inf"
+                ],
+                "output_summary": {
+                  "dtype": "float32",
+                  "input_inf_count": 32,
+                  "input_nan_count": 0,
+                  "output_inf_count": 32,
+                  "output_nan_count_at_inf": 0,
+                  "output_min": 0.7071067690849304,
+                  "output_max": "inf",
+                  "output_tail": [
+                    0.7071067690849304,
+                    0.7071067690849304,
+                    0.7071067690849304,
+                    "inf"
+                  ],
+                  "output_summary": {
+                    "dtype": "float32",
+                    "input_inf_count": 32,
+                    "input_nan_count": 0,
+                    "output_inf_count": 32,
+                    "output_nan_count_at_inf": 0,
+                    "output_min": 0.7071067690849304,
+                    "output_max": "inf",
+                    "output_tail": [
+                      0.7071067690849304,
+                      0.7071067690849304,
+                      0.7071067690849304,
+                      "inf"
+                    ],
+                    "output_summary": {
+                      "dtype": "float32",
+                      "input_inf_count": 32,
+                      "input_nan_count": 0,
+                      "output_inf_count": 32,
+                      "output_nan_count_at_inf": 0,
+                      "output_min": 0.7071067690849304,
+                      "output_max": "inf",
+                      "output_tail": [
+                        "0.7071067690849304",
+                        "0.7071067690849304",
+                        "0.7071067690849304",
+                        "inf"
+                      ],
+                      "output_summary": {
+                        "dtype": "'float32'",
+                        "input_inf_count": "32",
+                        "input_nan_count": "0",
+                        "output_inf_count": "32",
+                        "output_nan_count_at_inf": "0",
+                        "output_min": "0.7071067690849304",
+                        "output_max": "inf",
+                        "output_tail": "[0.7071067690849304, 0.7071067690849304, 0.7071067690849304, inf]",
+                        "output_summary": "{'dtype': 'float32', 'input_inf_count': 32, 'input_nan_count': 0, 'output_inf_count': 32, 'output_nan_count_at_inf': 0, 'output_min': 0.7071067690849304, 'output_max': inf, 'output_tail': [0.707106769"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)",
+            "expected_output": "No FP invalid exception; sqrt(+inf) remains +inf.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Spurious FP invalid error is raised for +inf input; reported in the INF_INVALID_ERR / LTONE_INVALID_ERR escape sets.",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)",
+              "observed": [
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                "\u2026 78 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)",
+              "observed": [
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                "\u2026 78 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 2,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 5,
+            "n_failed": 1,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "cython>=3.0.6",
+            "meson-python>=0.15.0",
+            "setuptools==65.5.1",
+            "meson>=1.2.99"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2025-04-06T10:10:33-06:00",
+        "fixed_commit_date": "2025-04-06T12:00:24-06:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ],
+          "unavailable": [
+            "libatlas-base-dev"
+          ]
+        },
+        "era": "2025-04-06T12:00:24-06:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/numpy/__init__.py",
+            "build_requires": [
+              "meson-python>=0.15.0",
+              "Cython>=3.0.6"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "pandas": "2.2.3",
+              "matplotlib": "3.10.1",
+              "pyparsing": "3.2.3"
+            },
+            "test_extras": [],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nBuilding wheels for collected packages: numpy\n  Building wheel for numpy (pyproject.toml): started\n  Building wheel for numpy (pyproject.toml): finished with status 'done'\n  Created wheel for numpy: filename=numpy-2.3.0.dev0-cp311-cp311-linux_x86_64.whl size=8720419 sha256=1bb14517ebd5b80209f1cb926271194cd5b0332bbd5f031af53b10dd4c3319b3\n  Stored in directory: /tmp/pip-ephem-wheel-cache-t00a0cnv/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built numpy\nInstalling collected packages: numpy\n  Attempting uninstall: numpy\n    Found existing installation: numpy 2.4.6\n    Uninstalling numpy-2.4.6:\n      Successfully uninstalled numpy-2.4.6\nSuccessfully installed numpy-2.3.0.dev0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/numpy/__init__.py",
+            "build_requires": [
+              "meson-python>=0.15.0",
+              "Cython>=3.0.6"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "pandas": "2.2.3",
+              "matplotlib": "3.10.1",
+              "pyparsing": "3.2.3"
+            },
+            "test_extras": [],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nBuilding wheels for collected packages: numpy\n  Building wheel for numpy (pyproject.toml): started\n  Building wheel for numpy (pyproject.toml): finished with status 'done'\n  Created wheel for numpy: filename=numpy-2.3.0.dev0-cp311-cp311-linux_x86_64.whl size=8720421 sha256=1faa09273575fe969cafa80483bdde64d0aacd5c862102c7881dc0f399548a89\n  Stored in directory: /tmp/pip-ephem-wheel-cache-2pmx1ee3/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built numpy\nInstalling collected packages: numpy\n  Attempting uninstall: numpy\n    Found existing installation: numpy 2.4.6\n    Uninstalling numpy-2.4.6:\n      Successfully uninstalled numpy-2.4.6\nSuccessfully installed numpy-2.3.0.dev0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 1,
+        "failed": null,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 1,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "pass->pass",
+      "fail_to_pass": false,
+      "numeric": {
+        "n_pairs": 5,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "armhf_sqrt_inf_probe",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced Inf",
+                "values do not match the reference (finite compare: abs_err=5.000e-01, tol=0.000e+00)"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced Inf",
+                "values do not match the reference (finite compare: abs_err=5.000e-01, tol=0.000e+00)"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "sqrt_x_first8": [
+                0.5,
+                0.5,
+                0.5,
+                "inf",
+                0.5,
+                0.5,
+                0.5,
+                "inf"
+              ],
+              "sqrt_y_first8": [
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf"
+              ],
+              "sqrt_counts": [
+                96,
+                32,
+                0,
+                0
+              ]
+            },
+            "fixed_values": {
+              "sqrt_x_first8": [
+                0.5,
+                0.5,
+                0.5,
+                "inf",
+                0.5,
+                0.5,
+                0.5,
+                "inf"
+              ],
+              "sqrt_y_first8": [
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf"
+              ],
+              "sqrt_counts": [
+                96,
+                32,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "label": "described_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)": [
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                "\u2026 78 more"
+              ]
+            },
+            "fixed_values": {
+              "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)": [
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                "\u2026 78 more"
+              ]
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          },
+          {
+            "label": "sqrt_inf_invalid_probe",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "out_first4": [
+                0.7071067690849304,
+                0.7071067690849304,
+                0.7071067690849304,
+                "inf"
+              ],
+              "invalid_raised": 0.0,
+              "inf_count": 32.0,
+              "finite_mean": 0.7071066498756409
+            },
+            "fixed_values": {
+              "out_first4": [
+                0.7071067690849304,
+                0.7071067690849304,
+                0.7071067690849304,
+                "inf"
+              ],
+              "invalid_raised": 0.0,
+              "inf_count": 32.0,
+              "finite_mean": 0.7071066498756409
+            }
+          },
+          {
+            "label": "sqrt_inf_invalid_probe_recut",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced Inf"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "sqrt_inf_invalid_probe_recut": {
+                "dtype": "float32",
+                "input_inf_count": 32,
+                "input_nan_count": 0,
+                "output_inf_count": 32,
+                "output_nan_count_at_inf": 0,
+                "output_min": 0.7071067690849304,
+                "output_max": "inf",
+                "output_tail": [
+                  0.7071067690849304,
+                  0.7071067690849304,
+                  0.7071067690849304,
+                  "inf"
+                ],
+                "output_summary": {
+                  "dtype": "float32",
+                  "input_inf_count": 32,
+                  "input_nan_count": 0,
+                  "output_inf_count": 32,
+                  "output_nan_count_at_inf": 0,
+                  "output_min": 0.7071067690849304,
+                  "output_max": "inf",
+                  "output_tail": [
+                    0.7071067690849304,
+                    0.7071067690849304,
+                    0.7071067690849304,
+                    "inf"
+                  ],
+                  "output_summary": {
+                    "dtype": "float32",
+                    "input_inf_count": 32,
+                    "input_nan_count": 0,
+                    "output_inf_count": 32,
+                    "output_nan_count_at_inf": 0,
+                    "output_min": 0.7071067690849304,
+                    "output_max": "inf",
+                    "output_tail": [
+                      0.7071067690849304,
+                      0.7071067690849304,
+                      0.7071067690849304,
+                      "inf"
+                    ],
+                    "output_summary": {
+                      "dtype": "float32",
+                      "input_inf_count": 32,
+                      "input_nan_count": 0,
+                      "output_inf_count": 32,
+                      "output_nan_count_at_inf": 0,
+                      "output_min": 0.7071067690849304,
+                      "output_max": "inf",
+                      "output_tail": [
+                        "0.7071067690849304",
+                        "0.7071067690849304",
+                        "0.7071067690849304",
+                        "inf"
+                      ],
+                      "output_summary": {
+                        "dtype": "'float32'",
+                        "input_inf_count": "32",
+                        "input_nan_count": "0",
+                        "output_inf_count": "32",
+                        "output_nan_count_at_inf": "0",
+                        "output_min": "0.7071067690849304",
+                        "output_max": "inf",
+                        "output_tail": "[0.7071067690849304, 0.7071067690849304, 0.7071067690849304, inf]",
+                        "output_summary": "{'dtype': 'float32', 'input_inf_count': 32, 'input_nan_count': 0, 'output_inf_count': 32, 'output_nan_count_at_inf': 0, 'output_min': 0.7071067690849304, 'output_max': inf, 'output_tail': [0.707106769"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "fixed_values": {
+              "sqrt_inf_invalid_probe_recut": {
+                "dtype": "float32",
+                "input_inf_count": 32,
+                "input_nan_count": 0,
+                "output_inf_count": 32,
+                "output_nan_count_at_inf": 0,
+                "output_min": 0.7071067690849304,
+                "output_max": "inf",
+                "output_tail": [
+                  0.7071067690849304,
+                  0.7071067690849304,
+                  0.7071067690849304,
+                  "inf"
+                ],
+                "output_summary": {
+                  "dtype": "float32",
+                  "input_inf_count": 32,
+                  "input_nan_count": 0,
+                  "output_inf_count": 32,
+                  "output_nan_count_at_inf": 0,
+                  "output_min": 0.7071067690849304,
+                  "output_max": "inf",
+                  "output_tail": [
+                    0.7071067690849304,
+                    0.7071067690849304,
+                    0.7071067690849304,
+                    "inf"
+                  ],
+                  "output_summary": {
+                    "dtype": "float32",
+                    "input_inf_count": 32,
+                    "input_nan_count": 0,
+                    "output_inf_count": 32,
+                    "output_nan_count_at_inf": 0,
+                    "output_min": 0.7071067690849304,
+                    "output_max": "inf",
+                    "output_tail": [
+                      0.7071067690849304,
+                      0.7071067690849304,
+                      0.7071067690849304,
+                      "inf"
+                    ],
+                    "output_summary": {
+                      "dtype": "float32",
+                      "input_inf_count": 32,
+                      "input_nan_count": 0,
+                      "output_inf_count": 32,
+                      "output_nan_count_at_inf": 0,
+                      "output_min": 0.7071067690849304,
+                      "output_max": "inf",
+                      "output_tail": [
+                        "0.7071067690849304",
+                        "0.7071067690849304",
+                        "0.7071067690849304",
+                        "inf"
+                      ],
+                      "output_summary": {
+                        "dtype": "'float32'",
+                        "input_inf_count": "32",
+                        "input_nan_count": "0",
+                        "output_inf_count": "32",
+                        "output_nan_count_at_inf": "0",
+                        "output_min": "0.7071067690849304",
+                        "output_max": "inf",
+                        "output_tail": "[0.7071067690849304, 0.7071067690849304, 0.7071067690849304, inf]",
+                        "output_summary": "{'dtype': 'float32', 'input_inf_count': 32, 'input_nan_count': 0, 'output_inf_count': 32, 'output_nan_count_at_inf': 0, 'output_min': 0.7071067690849304, 'output_max': inf, 'output_tail': [0.707106769"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 1,
+        "n_judged": 1,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 0,
+        "n_contested": 0,
+        "unobserved": [],
+        "verdict": "not_reproduced",
+        "examples": [
+          {
+            "input": "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)",
+            "expected_output": "No FP invalid exception; sqrt(+inf) remains +inf.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Spurious FP invalid error is raised for +inf input; reported in the INF_INVALID_ERR / LTONE_INVALID_ERR escape sets.",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)",
+              "observed": [
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                "\u2026 78 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.sqrt(np.array([0.5, 0.5, 0.5, np.inf]*32)) on ARMv7 (NEON SIMD sqrt path)",
+              "observed": [
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                0.7071067811865476,
+                "inf",
+                0.7071067811865476,
+                0.7071067811865476,
+                "\u2026 78 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 2,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 5,
+          "n_failed": 1,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "The reproducing run at the buggy commit must produce a non-xfail pytest failure for test_denormal_numbers on ARMHF/ARMv7 (and/or a spurious FP invalid error for np.sqrt of the +inf-containing array). The same run at the fixed commit would report no real failure: the +inf sqrt case is clean and test_denormal_numbers is xfailed."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "cython>=3.0.6",
+          "meson-python>=0.15.0",
+          "setuptools==65.5.1",
+          "meson>=1.2.99"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2025-04-06T10:10:33-06:00",
+      "fixed_commit_date": "2025-04-06T12:00:24-06:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ],
+        "unavailable": [
+          "libatlas-base-dev"
+        ]
+      },
+      "era": "2025-04-06T12:00:24-06:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/numpy/__init__.py",
+          "build_requires": [
+            "meson-python>=0.15.0",
+            "Cython>=3.0.6"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "pandas": "2.2.3",
+            "matplotlib": "3.10.1",
+            "pyparsing": "3.2.3"
+          },
+          "test_extras": [],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nBuilding wheels for collected packages: numpy\n  Building wheel for numpy (pyproject.toml): started\n  Building wheel for numpy (pyproject.toml): finished with status 'done'\n  Created wheel for numpy: filename=numpy-2.3.0.dev0-cp311-cp311-linux_x86_64.whl size=8720419 sha256=1bb14517ebd5b80209f1cb926271194cd5b0332bbd5f031af53b10dd4c3319b3\n  Stored in directory: /tmp/pip-ephem-wheel-cache-t00a0cnv/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built numpy\nInstalling collected packages: numpy\n  Attempting uninstall: numpy\n    Found existing installation: numpy 2.4.6\n    Uninstalling numpy-2.4.6:\n      Successfully uninstalled numpy-2.4.6\nSuccessfully installed numpy-2.3.0.dev0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/numpy/__init__.py",
+          "build_requires": [
+            "meson-python>=0.15.0",
+            "Cython>=3.0.6"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "pandas": "2.2.3",
+            "matplotlib": "3.10.1",
+            "pyparsing": "3.2.3"
+          },
+          "test_extras": [],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nBuilding wheels for collected packages: numpy\n  Building wheel for numpy (pyproject.toml): started\n  Building wheel for numpy (pyproject.toml): finished with status 'done'\n  Created wheel for numpy: filename=numpy-2.3.0.dev0-cp311-cp311-linux_x86_64.whl size=8720421 sha256=1faa09273575fe969cafa80483bdde64d0aacd5c862102c7881dc0f399548a89\n  Stored in directory: /tmp/pip-ephem-wheel-cache-2pmx1ee3/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built numpy\nInstalling collected packages: numpy\n  Attempting uninstall: numpy\n    Found existing installation: numpy 2.4.6\n    Uninstalling numpy-2.4.6:\n      Successfully uninstalled numpy-2.4.6\nSuccessfully installed numpy-2.3.0.dev0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 7,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the architecture-dependent special-value bug by showing the reproducing test fails on the buggy revision and passes on the fixed revision, and (where possible) confirm the reported spurious invalid behavior for sqrt(+inf) across both revisions.",
+          "milestones": [
+            "buggy_build_and_probe [buggy] \u2014 Verify the buggy revision can run the focused reproducing test and capture any value-level sqrt(+inf) symptom. (2 steps, verify: test_ran, test_fails)",
+            "fixed_build_and_probe [fixed] \u2014 Verify the fixed revision runs the focused reproducing test successfully (xfail/absence of failure) and shows no sqrt(+inf) invalid symptom. (2 steps, verify: test_ran, test_passes)",
+            "compare_and_finalize [fixed] \u2014 Demonstrate that the buggy and fixed revisions behave differently for the reproducing selection (and ideally the sqrt(+inf) symptom) to confirm the numerical bug reproduction. (2 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs numpy._core.tests.test_function_base -k test_denormal_numbers --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 2.48
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "armhf_sqrt_inf_probe",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(armhf_sqrt_inf_probe) \u2014 Evaluate the reported expression np.sqrt(array([0.5,0.5,0.5,inf]*32)) in the buggy revision to observe invalid/fp behavior and result values."
+      },
+      {
+        "verification": {
+          "milestone": "buggy_build_and_probe",
+          "verified": false,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": false,
+              "detail": "test pass on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Re-establish a reliable reproduction on the available execution platform by directly probing the reported sqrt(+inf) special-value behavior and re-running the focused test on fixed, replacing the failed architecture-dependent \u201cbuggy test must fail\u201d milestone.",
+          "milestones": [
+            "buggy_focus_probe_sqrt_inf [buggy] \u2014 Confirm the buggy revision exhibits the reported sqrt(+inf) special-value symptom (invalid FP behavior and/or mismatched values) using a direct numerical probe, since the focused test unexpectedly passed on this platform. (1 steps, verify: steps_succeeded, probe_ran)",
+            "fixed_runs_focused_test_and_probe [fixed] \u2014 Verify the fixed revision runs the focused reproducing selection successfully and also confirm sqrt(+inf) behavior is clean using the same probe as in the buggy revision. (2 steps, verify: steps_succeeded, test_ran, test_passes, probe_ran, probe_clean)",
+            "compare_buggy_vs_fixed_sqrt_inf [fixed] \u2014 Demonstrate that buggy and fixed revisions differ for the reported sqrt(+inf) special-value behavior using the paired numerical probe outputs. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "armhf_sqrt_inf_probe",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced Inf",
+          "values do not match the reference (finite compare: abs_err=5.000e-01, tol=0.000e+00)"
+        ],
+        "expected": [
+          0
+        ],
+        "observed": [
+          0.5,
+          0.5,
+          0.5,
+          "inf",
+          0.5,
+          0.5,
+          0.5,
+          "inf",
+          0.7071067811865476,
+          0.7071067811865476
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_focus_probe_sqrt_inf",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -m pytest --pyargs numpy._core.tests.test_funct -k test_denormal_numbers --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 4,
+        "runtime_s": 0.59
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "armhf_sqrt_inf_probe",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced Inf",
+          "values do not match the reference (finite compare: abs_err=5.000e-01, tol=0.000e+00)"
+        ],
+        "expected": [
+          0
+        ],
+        "observed": [
+          0.5,
+          0.5,
+          0.5,
+          "inf",
+          0.5,
+          0.5,
+          0.5,
+          "inf",
+          0.7071067811865476,
+          0.7071067811865476
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "fixed_runs_focused_test_and_probe",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/fixed && python -I -m pytest --pyargs numpy._core.tests.test_funct` exited 4: ERROR: module or package not found: numpy._core.tests.test_funct (missing __init__.py?)"
+            },
+            {
+              "check": "test_ran",
+              "passed": false,
+              "detail": "test no_tests on fixed: ERROR: module or package not found: numpy._core.tests.test_funct (missing __init__.py?)"
+            },
+            {
+              "check": "test_passes",
+              "passed": false,
+              "detail": "test no_tests on fixed (milestone required pass): ERROR: module or package not found: numpy._core.tests.test_funct (missing __init__.py?)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "probe 'armhf_sqrt_inf_probe' is not clean on fixed: produced Inf; values do not match the reference (finite compare: abs_err=5.000e-01, tol=0.000e+00)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failed fixed-milestone with architecture-agnostic verification: (1) run the correct focused test module selection on both revisions, and (2) directly probe the sqrt(+inf) special-value behavior using the same expression on buggy vs fixed, confirming they differ as expected.",
+          "milestones": [
+            "fixed_run_focused_test_module_correct [fixed] \u2014 Ensure the fixed revision executes the focused reproducing selection for test_denormal_numbers without module/path errors by discovering the correct pytest invocation and then running that case. (3 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "sqrt_inf_probe_direct_compare [buggy] \u2014 Directly reproduce the reported sqrt(+inf) special-value behavior on both revisions using the same numerical probe code, then confirm buggy vs fixed differ (buggy produces an invalid/exceptional behavior while fixed is clean). (2 steps, verify: steps_succeeded, probe_ran, revisions_differ)",
+            "compare_buggy_vs_fixed_sqrt_inf_via_probe_records [fixed] \u2014 Establish that the paired probe recorded a buggy special-value symptom (invalid FP raised / mismatch) and that the fixed probe record is clean. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -c \"import numpy, pkgutil; import numpy._core.tests as t; import os; print('numpy', numpy.__version__); print('numpy._core.tests path', list(getattr(t,'__path__',[]))); print('has test_function_base', any(m.name.endswith('test_function_base') for m in pkgutil.iter_modules(t.__path__)));\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.28
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -m pytest --pyargs numpy._core.tests.test_function_base -k test_denormal_numbers --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 0.68
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -m pytest --pyargs numpy._core.tests.test_function_base -k test_denormal_numbers --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning --maxfail=1",
+        "purpose": "debug",
+        "exit_code": 0,
+        "runtime_s": 0.67
+      },
+      {
+        "verification": {
+          "milestone": "fixed_run_focused_test_module_correct",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on fixed"
+            },
+            {
+              "check": "test_passes",
+              "passed": true,
+              "detail": "test pass on fixed (milestone required pass)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "sqrt_inf_invalid_probe",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced Inf"
+        ],
+        "expected": null,
+        "observed": [
+          0.7071067690849304,
+          0.7071067690849304,
+          0.7071067690849304,
+          "inf",
+          0.0,
+          32.0,
+          0.7071066498756409
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "sqrt_inf_invalid_probe",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced Inf"
+        ],
+        "expected": null,
+        "observed": [
+          0.7071067690849304,
+          0.7071067690849304,
+          0.7071067690849304,
+          "inf",
+          0.0,
+          32.0,
+          0.7071066498756409
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "sqrt_inf_probe_direct_compare",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": false,
+              "detail": "no difference established (transition pass->pass, numeric persistent)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Re-establish an architecture-agnostic, step-verifiable reproduction of the reported sqrt(+inf) special-value issue by re-running the focused test and re-probing the exact sqrt(+inf) expression with explicit FP-exception/NaN/Inf-status checks, since the previous probe showed no buggy-vs-fixed difference.",
+          "milestones": [
+            "focused_test_module_and_baseline_probe [buggy] \u2014 Run the focused reproducing pytest selection on both revisions and run a fresh numerical probe of the sqrt(+inf) expression that records whether FP exceptions/warnings occur and the returned values match +inf, using identical probe code on buggy and fixed. (2 steps, verify: steps_succeeded, test_ran, test_fails, probe_ran)",
+            "focused_test_and_probe_fixed_match_clean [fixed] \u2014 On the fixed revision, confirm the focused test does not fail and re-run the same sqrt(+inf) numerical probe code to show it is clean (no invalid exception; output at +inf positions stays +inf). (2 steps, verify: steps_succeeded, test_ran, test_passes, probe_ran, probe_clean)",
+            "sqrt_inf_probe_direct_compare [fixed] \u2014 Establish that the buggy and fixed probe records differ in the specific sqrt(+inf) special-value behavior: buggy raises invalid FP exception and/or produces NaNs at inf positions, while fixed does not and returns +inf for the inf inputs. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs numpy._core.tests.test_function_base -k test_denormal_numbers --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 0.67
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "sqrt_inf_invalid_probe_recut",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced Inf"
+        ],
+        "expected": null,
+        "observed": [
+          32.0,
+          0.0,
+          32.0,
+          0.0,
+          0.7071067690849304,
+          "inf",
+          0.7071067690849304,
+          0.7071067690849304,
+          0.7071067690849304,
+          "inf"
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "focused_test_module_and_baseline_probe",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": false,
+              "detail": "test pass on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "focused_test_module_and_baseline_probe",
+          "revision": "buggy",
+          "failed": [
+            "test_fails"
+          ],
+          "attempts": 2,
+          "detail": [
+            "test pass on buggy (milestone required fail)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -m pytest --pyargs numpy._core.tests.test_function_base -k test_denormal_numbers --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 0.62
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "sqrt_inf_invalid_probe_recut",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced Inf"
+        ],
+        "expected": null,
+        "observed": [
+          32.0,
+          0.0,
+          32.0,
+          0.0,
+          0.7071067690849304,
+          "inf",
+          0.7071067690849304,
+          0.7071067690849304,
+          0.7071067690849304,
+          "inf"
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "focused_test_and_probe_fixed_match_clean",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on fixed"
+            },
+            {
+              "check": "test_passes",
+              "passed": true,
+              "detail": "test pass on fixed (milestone required pass)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "probe 'sqrt_inf_invalid_probe_recut' is not clean on fixed: produced Inf"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 1,
+            "recorded": 1,
+            "error": null,
+            "could_not_evaluate": 1
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 1,
+            "recorded": 1,
+            "error": null,
+            "could_not_evaluate": 1
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced Inf"
+        ],
+        "expected": null,
+        "observed": [
+          0.7071067811865476,
+          0.7071067811865476,
+          0.7071067811865476,
+          "inf",
+          0.7071067811865476,
+          0.7071067811865476,
+          0.7071067811865476,
+          "inf",
+          0.7071067811865476,
+          0.7071067811865476
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced Inf"
+        ],
+        "expected": null,
+        "observed": [
+          0.7071067811865476,
+          0.7071067811865476,
+          0.7071067811865476,
+          "inf",
+          0.7071067811865476,
+          0.7071067811865476,
+          0.7071067811865476,
+          "inf",
+          0.7071067811865476,
+          0.7071067811865476
+        ]
+      },
+      {
+        "described_examples": {
+          "n_described": 1,
+          "buggy": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "pass->pass",
+        "fail_to_pass": false,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "not_reproduced",
+        "examples": "0/1"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "NOT_REPRODUCED",
+        "rationale": "test passes on BOTH revisions (it does not expose the bug); the numerical probe still shows the defect on fixed"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 7,
+      "input_tokens": 16895,
+      "output_tokens": 5113,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.00977
+    }
+  }
+]

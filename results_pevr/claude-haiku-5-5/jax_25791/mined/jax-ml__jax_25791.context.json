@@ -1,0 +1,344 @@
+{
+  "repo": "jax-ml/jax",
+  "pr_number": 25791,
+  "reference": "https://github.com/jax-ml/jax/pull/25791",
+  "buggy_commit": "8f2f4b45fb07b2e1ad74909573142b8119471fa6",
+  "fixed_commit": "aed79707e29451156058025c0a5d349493fd8669",
+  "pr_date": "",
+  "category": "special_value",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "XLA",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "readme:README.md: JAX uses XLA to compile and run NumPy programs on GPUs and TPUs"
+      },
+      {
+        "name": "NumPy",
+        "constraint": null,
+        "documented": false,
+        "numerically_relevant": true,
+        "source": "readme:README.md mentions NumPy dtype promotion semantics only; no version or install requirement is stated"
+      }
+    ],
+    "installation_commands": [],
+    "build_commands": [],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: XLA \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: NumPy \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": "XLA (documented as the compiler used by JAX; no BLAS/LAPACK backend is mentioned in the passages)",
+    "dependency_constraints": [
+      {
+        "package": "XLA",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "readme:README.md: JAX uses XLA to compile and run NumPy programs on GPUs and TPUs"
+      },
+      {
+        "package": "NumPy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "readme:README.md mentions NumPy dtype promotion semantics only; no version or install requirement is stated"
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "special_value",
+    "affected_api": "jax._src.ops.special.logsumexp",
+    "observed_behavior": "Gradient of logsumexp with where= is nan at positions where where is False: jax.grad(lambda x: lsp_special.logsumexp(x, where=where))(x) returns [0.5, 0.5, nan]",
+    "expected_behavior": "Gradient should be 0 at positions where where is False, i.e. [0.5, 0.5, 0.0]",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "logsumexp called with a where= mask that contains False entries",
+      "gradient taken with jax.grad through logsumexp",
+      "masked-out input value is large (100.) so the unmasked exp overflows or produces nan in the gradient"
+    ],
+    "input_output_examples": [
+      {
+        "input": "x = jnp.array([0., 0., 100.]); where = jnp.array([True, True, False]); g = jax.grad(lambda x: lsp_special.logsumexp(x, where=where))(x)",
+        "buggy_output": "[0.5, 0.5, nan]",
+        "expected_output": "[0.5, 0.5, 0.0]",
+        "value_kind": "array",
+        "source": "pr_body:PR#25791"
+      }
+    ],
+    "oracle_clues": [
+      "PR body states the fix makes grad(logsumexp) produce 0s where where is False",
+      "The example in the PR body reads jnp.array([0., 0. 100.]) with a missing comma; the intended input is taken as [0., 0., 100.]",
+      "The fix projects the input: a = jnp.where(where, a, 0) when where is not None, in jax/_src/ops"
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": null,
+    "precision": null,
+    "magnitude": "x contains 100. at the masked-out index (value 100 where where is False); other entries are 0.",
+    "tolerance": null,
+    "category_specific_evidence": [
+      "Special value involved: NaN in the gradient (not the forward value). PR body: jax.grad of logsumexp with where=[True, True, False] on x=[0., 0., 100.] returns [0.5, 0.5, nan] where the expected gradient is 0 at the masked position.",
+      "Where it enters: the gradient of the masked-out input (value 100) propagates NaN through the unmasked exp computation in logsumexp when where is not None.",
+      "Correct handling: masked inputs must get zero gradient. Fix in jax/_src/ops/special.py adds 'if where is not None: a = jnp.where(where, a, 0)' before computation, which projects masked inputs out. PR says this is 'just to project the input', with a custom_jvp given as an alternative.",
+      "Test testLogSumExpWhereGrad: x=[0,0,0,0,100] with where=arange(5)<4 has expected gradient [0.25, 0.25, 0.25, 0.25, 0.], checked with assertAllClose.",
+      "The passages do not mention signed zero or subnormals. The only inf in the diff is the -jnp.inf substitution in the separate b != 0 branch, which is not part of the where fix and should not be conflated with it.",
+      "The passages do not state a dtype or precision for this bug. The forward test testLogSumExpWhere is parameterized over dtype, but the grad test has no dtype, and no tolerance is stated for assertAllClose.",
+      "PR body example has a missing comma ('[0., 0. 100.]'); the intended input [0., 0., 100.] is taken from the oracle clues and the test."
+    ],
+    "reproduction_risks": [
+      "The NaN appears only in the gradient; the reproduction must use jax.grad and check the gradient, not just the primal logsumexp output.",
+      "Masked entries must be large (e.g. 100) to expose the NaN; a test with all-zero masked inputs may not reproduce the defect.",
+      "No dtype, precision or numerical tolerance is stated in the passages, so these fields are null and a tolerance must not be assumed.",
+      "The -inf substitution in the b branch is a different code path and must not be conflated with the where handling.",
+      "The buggy commit 8f2f4b45fb07 and PR date are not given in the passages, so the commit-level reproduction environment cannot be confirmed."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.numerical_backend",
+      "value": "XLA (documented as the compiler used by JAX; no BLAS/LAPACK backend is mentioned in the passages)",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "XLA",
+      "source": "readme:README.md: JAX uses XLA to compile and run NumPy programs on GPUs and TPUs",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "NumPy",
+      "source": "readme:README.md mentions NumPy dtype promotion semantics only; no version or install requirement is stated",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "jax._src.ops.special.logsumexp",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#25791"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "Gradient of logsumexp with where= is nan at positions where where is False: jax.grad(lambda x: lsp_special.logsumexp(x, where=where))(x) returns [0.5, 0.5, nan]",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#25791"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "Gradient should be 0 at positions where where is False, i.e. [0.5, 0.5, 0.0]",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#25791"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#25791"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 3,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#25791"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 3,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#25791"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 1,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#25791"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "x contains 100. at the masked-out index (value 100 where where is False); other entries are 0.",
+      "source": "test_diff",
+      "evidence_location": "test_diff:tests/lax_scipy_test.py:202-212"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 4,
+      "source": "test_diff",
+      "evidence_location": "test_diff:tests/lax_scipy_test.py:202-212"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 4,
+      "source": "test_diff",
+      "evidence_location": "test_diff:tests/lax_scipy_test.py:202-212"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "x contains 100. at the masked-out index (value 100 where where is False); other entries are 0.",
+      "source": "test_diff",
+      "evidence_location": "test_diff:tests/lax_scipy_test.py"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 7,
+      "source": "test_diff",
+      "evidence_location": "test_diff:tests/lax_scipy_test.py"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 5,
+      "source": "test_diff",
+      "evidence_location": "test_diff:tests/lax_scipy_test.py"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "readme:README.md",
+        "pr_body:PR#25791",
+        "commit:commits",
+        "diff:jax/_src/ops/special.py:69-76",
+        "readme:README.md",
+        "readme:README.md",
+        "readme:README.md"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "pr_body:PR#25791",
+        "commit:commits",
+        "diff:jax/_src/ops/special.py:69-76"
+      ],
+      "n_passages": 3
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "test_diff:tests/lax_scipy_test.py:202-212",
+        "pr_body:PR#25791",
+        "commit:commits",
+        "diff:jax/_src/ops/special.py:69-76"
+      ],
+      "n_passages": 4
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "special_value",
+        "checked": 4,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          },
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          }
+        ],
+        "present": [
+          "environment.dependencies"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "special_value",
+        "checked": 8,
+        "score": 0.833,
+        "required_total": 6,
+        "required_present": 5,
+        "required_missing": [
+          {
+            "path": "numerical_characteristics.dtype",
+            "why": "the defect appears for one dtype and not another"
+          }
+        ],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "budget": {
+      "max_calls": 1,
+      "max_rung": "widened",
+      "spent": 1,
+      "log": [
+        {
+          "rung": "targeted",
+          "note": "characteristics: The first pass left these REQUIRED fields empty. Search the ",
+          "input_tokens": 3273,
+          "output_tokens": 1343,
+          "cost_usd": 0.0
+        }
+      ]
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 10076,
+    "output_tokens": 4605,
+    "cache_read_tokens": 0,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "errors": {},
+  "expansions": [
+    {
+      "rung": "targeted",
+      "question": "characteristics",
+      "error": "",
+      "n_passages": 4,
+      "fields_added": [
+        "category_specific_evidence",
+        "confidence",
+        "dtype",
+        "magnitude",
+        "precision",
+        "reproduction_risks",
+        "tolerance"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1158 @@
+[
+  {
+    "slug": "jax_24074",
+    "bug_type": "correctness",
+    "image": "python:3.11-slim",
+    "status": "REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 1/2 reported example(s) show the reported difference between the revisions; no probe is pathological, but the two revisions record different values",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "diverged",
+    "examples_verdict": "diverged",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import numpy as np\nimport jax.numpy as jnp\nx = np.arange(10, dtype=np.float32)\nnum_rhs = 5\ny = np.random.randn(10, 3).astype(np.float32)\nrhs_shape = x.shape + (num_rhs,)\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]\", \"jnp.polyfit(x, y, 1, cov=True)[1]\", [\"np.random.seed(1)\", \"x = np.arange(10).astype('float32')\", \"num_rhs = 3\", \"y = np.random.randn(10, 3)\"], \"array shape (2, 2, 3): [[[ 0.01583048, 0.00850339, 0.0145006 ], [-0.07123718, -0.03826527, -0.0652527]], [[-0.07123718, -0.03826527, -0.0652527], [ 0.45116882, 0.24234668, 0.41326709]]] (one covariance matrix per rhs)\"], [\"testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)\", \"testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)\", [], \"jnp.polyfit returns one covariance matrix per rhs, shape (deg+1, deg+1, num_rhs), matching np.polyfit within tol (float32 1e-3, float64 1e-13, complex64 1e-5)\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "polyfit_cov_multirhs_reproducer": "import jax.numpy as jnp\nimport numpy as np\n\nnp.random.seed(1)\n\nx = np.arange(10).astype('float32')\ny = np.random.randn(10, 3)\n\ndef rec(arr):\n    a = np.array(arr)\n    return a.shape, a.flatten()[:6]\n\ncov = jnp.polyfit(x, y, 1, cov=True)[1]\n\nprobe('jnp_cov_shape', np.array(cov).shape)\nprobe('jnp_cov_head', np.array(cov).flatten()[:6])\n",
+        "described_examples": "import numpy as np\nimport jax\nimport jax.numpy as jnp\n\n\ndef _record(name, value):\n    probe(name, value)\n\n\ndef _run_one_case(deg, rcond, full, w, cov):\n    # fixed seed for reproducibility\n    rng = np.random.default_rng(0)\n\n    # Use small x,y so both jnp and np succeed.\n    n = 8\n    x = np.linspace(-1.0, 1.0, n)\n    # y is shape (n,)\n    y = rng.normal(size=(n,))\n\n    # RHS shape: shape + (5,) where shape is y shape (n,)\n    # So y_rhs should be (n, 5)\n    y_rhs = np.stack([y + 0.05 * rng.normal(size=y.shape) for _ in range(5)], axis=-1)\n\n    # Weights shape must match y over rhs dims: (n,5)\n    if w:\n        weights = np.abs(1.0 + rng.normal(size=y_rhs.shape))\n    else:\n        weights = None\n\n    # Covariance option\n    if cov in (False, True):\n        covar = cov\n    elif cov == 'unscaled':\n        covar = 'unscaled'\n    else:\n        covar = cov\n\n    # Prepare kwargs\n    kwargs = {'deg': deg}\n    if rcond is not None:\n        kwargs['rcond'] = rcond\n    else:\n        # omit rcond entirely when None to match JAX signature behavior\n        pass\n\n    # full and cov\n    kwargs['full'] = full\n\n    # If JAX polyfit accepts w and cov keywords\n    if w:\n        kwargs['w'] = weights\n    if covar is not False:\n        kwargs['cov'] = covar\n    else:\n        # omit cov when False\n        pass\n\n    # Call jnp.polyfit\n    if w:\n        jnp_res = jnp.polyfit(jnp.asarray(x), jnp.asarray(y_rhs), **kwargs)\n        np_res = np.polyfit(np.asarray(x), np.asarray(y_rhs), **{k: v for k, v in kwargs.items() if k != 'full'} , full=full, w=weights, cov=(covar if covar is not False else False))\n    else:\n        jnp_res = jnp.polyfit(jnp.asarray(x), jnp.asarray(y_rhs), **kwargs)\n        # Build np kwargs similarly\n        np_kwargs = {'deg': deg, 'full': full}\n        if rcond is not None:\n            np_kwargs['rcond'] = rcond\n        if covar is not False:\n            np_kwargs['cov'] = covar\n        if w:\n            np_kwargs['w'] = weights\n        np_res = np.polyfit(np.asarray(x), np.asarray(y_rhs), **np_kwargs)\n\n    return jnp_res, np_res\n\n\ndef main():\n    # The harness expects this probe file to create exactly one record per description.\n    # We encode the comparison for the entire cartesian product by storing aggregate booleans.\n    name = \"testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)\"\n\n    degs = [1, 2, 3]\n    rconds = [None, -1, 10e-3, 10e-5, 10e-10]\n    fulls = [False, True]\n    ws = [False, True]\n    covs = [False, True, 'unscaled']\n\n    failures = []\n    any_exception = None\n\n    for deg in degs:\n        for rcond in rconds:\n            for full in fulls:\n                for w in ws:\n                    for cov in covs:\n                        try:\n                            jnp_res, np_res = _run_one_case(deg, rcond, full, w, cov)\n\n                            # Normalize for comparison: polyfit may return different tuple lengths.\n                            # We compare numpy-converted arrays.\n                            def norm(z):\n                                if isinstance(z, (list, tuple)):\n                                    return tuple(norm(t) for t in z)\n                                try:\n                                    return np.array(z)\n                                except Exception:\n                                    return z\n\n                            jnp_n = norm(jnp_res)\n                            np_n = norm(np_res)\n\n                            # Compare elementwise with tolerance\n                            def close(a, b):\n                                if isinstance(a, tuple) and isinstance(b, tuple):\n                                    return all(close(x, y) for x, y in zip(a, b))\n                                if isinstance(a, (str, bytes)) or isinstance(b, (str, bytes)):\n                                    return a == b\n                                a_arr = np.array(a)\n                                b_arr = np.array(b)\n                                # Some outputs might be scalars/None\n                                if a_arr.shape != b_arr.shape:\n                                    return False\n                                if not np.allclose(a_arr, b_arr, rtol=1e-5, atol=1e-6, equal_nan=True):\n                                    return False\n                                return True\n\n                            ok = close(jnp_n, np_n)\n                            if not ok:\n                                failures.append((deg, rcond, full, w, cov))\n                        except Exception as e:\n                            any_exception = (deg, rcond, full, w, cov, e)\n                            # Record the exception directly for this revision.\n                            probe_exception(name, e)\n                            return\n\n    # Record one aggregate result\n    probe(name, np.array(failures, dtype=object))\n\n\n# Execute\nmain()"
+      },
+      "fixed": {
+        "reported_examples": "import numpy as np\nimport jax.numpy as jnp\nx = np.arange(10, dtype=np.float32)\nnum_rhs = 5\ny = np.random.randn(10, 3).astype(np.float32)\nrhs_shape = x.shape + (num_rhs,)\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]\", \"jnp.polyfit(x, y, 1, cov=True)[1]\", [\"np.random.seed(1)\", \"x = np.arange(10).astype('float32')\", \"num_rhs = 3\", \"y = np.random.randn(10, 3)\"], \"array shape (2, 2, 3): [[[ 0.01583048, 0.00850339, 0.0145006 ], [-0.07123718, -0.03826527, -0.0652527]], [[-0.07123718, -0.03826527, -0.0652527], [ 0.45116882, 0.24234668, 0.41326709]]] (one covariance matrix per rhs)\"], [\"testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)\", \"testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)\", [], \"jnp.polyfit returns one covariance matrix per rhs, shape (deg+1, deg+1, num_rhs), matching np.polyfit within tol (float32 1e-3, float64 1e-13, complex64 1e-5)\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nimport jax\nimport jax.numpy as jnp\n\n\ndef _record(name, value):\n    probe(name, value)\n\n\ndef _run_one_case(deg, rcond, full, w, cov):\n    # fixed seed for reproducibility\n    rng = np.random.default_rng(0)\n\n    # Use small x,y so both jnp and np succeed.\n    n = 8\n    x = np.linspace(-1.0, 1.0, n)\n    # y is shape (n,)\n    y = rng.normal(size=(n,))\n\n    # RHS shape: shape + (5,) where shape is y shape (n,)\n    # So y_rhs should be (n, 5)\n    y_rhs = np.stack([y + 0.05 * rng.normal(size=y.shape) for _ in range(5)], axis=-1)\n\n    # Weights shape must match y over rhs dims: (n,5)\n    if w:\n        weights = np.abs(1.0 + rng.normal(size=y_rhs.shape))\n    else:\n        weights = None\n\n    # Covariance option\n    if cov in (False, True):\n        covar = cov\n    elif cov == 'unscaled':\n        covar = 'unscaled'\n    else:\n        covar = cov\n\n    # Prepare kwargs\n    kwargs = {'deg': deg}\n    if rcond is not None:\n        kwargs['rcond'] = rcond\n    else:\n        # omit rcond entirely when None to match JAX signature behavior\n        pass\n\n    # full and cov\n    kwargs['full'] = full\n\n    # If JAX polyfit accepts w and cov keywords\n    if w:\n        kwargs['w'] = weights\n    if covar is not False:\n        kwargs['cov'] = covar\n    else:\n        # omit cov when False\n        pass\n\n    # Call jnp.polyfit\n    if w:\n        jnp_res = jnp.polyfit(jnp.asarray(x), jnp.asarray(y_rhs), **kwargs)\n        np_res = np.polyfit(np.asarray(x), np.asarray(y_rhs), **{k: v for k, v in kwargs.items() if k != 'full'} , full=full, w=weights, cov=(covar if covar is not False else False))\n    else:\n        jnp_res = jnp.polyfit(jnp.asarray(x), jnp.asarray(y_rhs), **kwargs)\n        # Build np kwargs similarly\n        np_kwargs = {'deg': deg, 'full': full}\n        if rcond is not None:\n            np_kwargs['rcond'] = rcond\n        if covar is not False:\n            np_kwargs['cov'] = covar\n        if w:\n            np_kwargs['w'] = weights\n        np_res = np.polyfit(np.asarray(x), np.asarray(y_rhs), **np_kwargs)\n\n    return jnp_res, np_res\n\n\ndef main():\n    # The harness expects this probe file to create exactly one record per description.\n    # We encode the comparison for the entire cartesian product by storing aggregate booleans.\n    name = \"testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)\"\n\n    degs = [1, 2, 3]\n    rconds = [None, -1, 10e-3, 10e-5, 10e-10]\n    fulls = [False, True]\n    ws = [False, True]\n    covs = [False, True, 'unscaled']\n\n    failures = []\n    any_exception = None\n\n    for deg in degs:\n        for rcond in rconds:\n            for full in fulls:\n                for w in ws:\n                    for cov in covs:\n                        try:\n                            jnp_res, np_res = _run_one_case(deg, rcond, full, w, cov)\n\n                            # Normalize for comparison: polyfit may return different tuple lengths.\n                            # We compare numpy-converted arrays.\n                            def norm(z):\n                                if isinstance(z, (list, tuple)):\n                                    return tuple(norm(t) for t in z)\n                                try:\n                                    return np.array(z)\n                                except Exception:\n                                    return z\n\n                            jnp_n = norm(jnp_res)\n                            np_n = norm(np_res)\n\n                            # Compare elementwise with tolerance\n                            def close(a, b):\n                                if isinstance(a, tuple) and isinstance(b, tuple):\n                                    return all(close(x, y) for x, y in zip(a, b))\n                                if isinstance(a, (str, bytes)) or isinstance(b, (str, bytes)):\n                                    return a == b\n                                a_arr = np.array(a)\n                                b_arr = np.array(b)\n                                # Some outputs might be scalars/None\n                                if a_arr.shape != b_arr.shape:\n                                    return False\n                                if not np.allclose(a_arr, b_arr, rtol=1e-5, atol=1e-6, equal_nan=True):\n                                    return False\n                                return True\n\n                            ok = close(jnp_n, np_n)\n                            if not ok:\n                                failures.append((deg, rcond, full, w, cov))\n                        except Exception as e:\n                            any_exception = (deg, rcond, full, w, cov, e)\n                            # Record the exception directly for this revision.\n                            probe_exception(name, e)\n                            return\n\n    # Record one aggregate result\n    probe(name, np.array(failures, dtype=object))\n\n\n# Execute\nmain()"
+      }
+    },
+    "report": {
+      "status": "REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 1/2 reported example(s) show the reported difference between the revisions; no probe is pathological, but the two revisions record different values",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "diverged",
+      "examples_verdict": "diverged",
+      "success_criterion": "The reproduction fails on the buggy commit 437d7d88b992c9f511a3019823104d176e84064f: jnp.polyfit covariance shape is (2,2,1) for a 3-rhs input and testPolyfit raises an assertion failure for num_rhs=5, and it would pass once the fix in jax/_src/numpy/polynomial.py is applied.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": 5,
+            "failed": 5,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 10,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)": {
+                "raised": "TypeError",
+                "message": "expected a 1-d array for weights",
+                "origin": "/workspace/buggy/jax/_src/numpy/polynomial.py",
+                "in_repository": true
+              }
+            },
+            "fixed_values": {
+              "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)": {
+                "raised": "TypeError",
+                "message": "expected a 1-d array for weights",
+                "origin": "/workspace/fixed/jax/_src/numpy/polynomial.py",
+                "in_repository": true
+              }
+            }
+          },
+          {
+            "label": "polyfit_cov_multirhs_reproducer",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "jnp_cov_shape": [
+                2,
+                2,
+                1
+              ],
+              "jnp_cov_head": [
+                0.015830477699637413,
+                -0.07123713940382004,
+                -0.07123713940382004,
+                0.4511685371398926
+              ]
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]": [
+                [
+                  [
+                    0.015830477699637413
+                  ],
+                  [
+                    -0.07123713940382004
+                  ]
+                ],
+                [
+                  [
+                    -0.07123713940382004
+                  ],
+                  [
+                    0.4511685371398926
+                  ]
+                ]
+              ],
+              "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]": [
+                [
+                  [
+                    0.015830477699637413,
+                    0.008503388613462448,
+                    0.014500592835247517
+                  ],
+                  [
+                    -0.07123713940382004,
+                    -0.03826524317264557,
+                    -0.06525266170501709
+                  ]
+                ],
+                [
+                  [
+                    -0.07123713940382004,
+                    -0.03826524317264557,
+                    -0.06525266170501709
+                  ],
+                  [
+                    0.4511685371398926,
+                    0.24234655499458313,
+                    0.4132668673992157
+                  ]
+                ]
+              ],
+              "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]",
+            "expected_output": "array shape (2, 2, 3): [[[ 0.01583048, 0.00850339, 0.0145006 ], [-0.07123718, -0.03826527, -0.0652527]], [[-0.07123718, -0.03826527, -0.0652527], [ 0.45116882, 0.24234668, 0.41326709]]] (one covariance matrix per rhs)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "array shape (2, 2, 1): [[[ 0.01583048], [-0.07123714]], [[-0.07123714], [ 0.45116854]]] (only the first rhs gets a covariance matrix)",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]",
+              "observed": [
+                [
+                  [
+                    0.015830477699637413
+                  ],
+                  [
+                    -0.07123713940382004
+                  ]
+                ],
+                [
+                  [
+                    -0.07123713940382004
+                  ],
+                  [
+                    0.4511685371398926
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]",
+              "observed": [
+                [
+                  [
+                    0.015830477699637413,
+                    0.008503388613462448,
+                    0.014500592835247517
+                  ],
+                  [
+                    -0.07123713940382004,
+                    -0.03826524317264557,
+                    -0.06525266170501709
+                  ]
+                ],
+                [
+                  [
+                    -0.07123713940382004,
+                    -0.03826524317264557,
+                    -0.06525266170501709
+                  ],
+                  [
+                    0.4511685371398926,
+                    0.24234655499458313,
+                    0.4132668673992157
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)",
+            "expected_output": "jnp.polyfit returns one covariance matrix per rhs, shape (deg+1, deg+1, num_rhs), matching np.polyfit within tol (float32 1e-3, float64 1e-13, complex64 1e-5)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "jnp.polyfit returns a covariance array of shape (deg+1, deg+1, 1) for multi-rhs y, so it does not match np.polyfit and the assertion fails",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)",
+              "observed": {
+                "raised": "TypeError",
+                "message": "expected a 1-d array for weights",
+                "origin": "/workspace/buggy/jax/_src/numpy/polynomial.py",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)",
+              "observed": {
+                "raised": "TypeError",
+                "message": "expected a 1-d array for weights",
+                "origin": "/workspace/fixed/jax/_src/numpy/polynomial.py",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 2,
+            "n_failed": 2,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 1,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2025-04-22T09:45:08-07:00",
+        "fixed_commit_date": "2025-04-22T09:52:08-07:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [],
+          "skipped": "the instance names no system packages"
+        },
+        "era": "2025-04-22T09:52:08-07:00",
+        "build": {
+          "skipped": "not a compiled Python instance"
+        },
+        "runtime": {
+          "era_pins": {
+            "numpy": "2.2.5",
+            "pandas": "2.2.3",
+            "matplotlib": "3.10.1",
+            "pyparsing": "3.2.3"
+          },
+          "companion": {
+            "wheel": "jaxlib",
+            "declared": [
+              "0.6.0",
+              "0.6.0"
+            ],
+            "wanted": "0.6.0",
+            "installed": true
+          },
+          "dependencies_installed": {
+            "buggy": true,
+            "fixed": true
+          },
+          "imports_from": {
+            "buggy": "/workspace/buggy/jax/__init__.py",
+            "fixed": "/workspace/fixed/jax/__init__.py"
+          },
+          "ok": true
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": [
+              "build/test-requirements.txt"
+            ],
+            "installed_whole": true,
+            "failed": []
+          },
+          "fixed": {
+            "files": [
+              "build/test-requirements.txt"
+            ],
+            "installed_whole": true,
+            "failed": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": 5,
+        "failed": 5,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 10,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 3,
+        "verdict": "diverged",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)": {
+                "raised": "TypeError",
+                "message": "expected a 1-d array for weights",
+                "origin": "/workspace/buggy/jax/_src/numpy/polynomial.py",
+                "in_repository": true
+              }
+            },
+            "fixed_values": {
+              "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)": {
+                "raised": "TypeError",
+                "message": "expected a 1-d array for weights",
+                "origin": "/workspace/fixed/jax/_src/numpy/polynomial.py",
+                "in_repository": true
+              }
+            }
+          },
+          {
+            "label": "polyfit_cov_multirhs_reproducer",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "jnp_cov_shape": [
+                2,
+                2,
+                1
+              ],
+              "jnp_cov_head": [
+                0.015830477699637413,
+                -0.07123713940382004,
+                -0.07123713940382004,
+                0.4511685371398926
+              ]
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]": [
+                [
+                  [
+                    0.015830477699637413
+                  ],
+                  [
+                    -0.07123713940382004
+                  ]
+                ],
+                [
+                  [
+                    -0.07123713940382004
+                  ],
+                  [
+                    0.4511685371398926
+                  ]
+                ]
+              ],
+              "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]": [
+                [
+                  [
+                    0.015830477699637413,
+                    0.008503388613462448,
+                    0.014500592835247517
+                  ],
+                  [
+                    -0.07123713940382004,
+                    -0.03826524317264557,
+                    -0.06525266170501709
+                  ]
+                ],
+                [
+                  [
+                    -0.07123713940382004,
+                    -0.03826524317264557,
+                    -0.06525266170501709
+                  ],
+                  [
+                    0.4511685371398926,
+                    0.24234655499458313,
+                    0.4132668673992157
+                  ]
+                ]
+              ],
+              "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 2,
+        "n_judged": 2,
+        "n_reproduced": 1,
+        "evaluable": true,
+        "n_diverged": 1,
+        "n_unobserved": 0,
+        "n_contested": 0,
+        "unobserved": [],
+        "verdict": "diverged",
+        "examples": [
+          {
+            "input": "np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]",
+            "expected_output": "array shape (2, 2, 3): [[[ 0.01583048, 0.00850339, 0.0145006 ], [-0.07123718, -0.03826527, -0.0652527]], [[-0.07123718, -0.03826527, -0.0652527], [ 0.45116882, 0.24234668, 0.41326709]]] (one covariance matrix per rhs)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "array shape (2, 2, 1): [[[ 0.01583048], [-0.07123714]], [[-0.07123714], [ 0.45116854]]] (only the first rhs gets a covariance matrix)",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]",
+              "observed": [
+                [
+                  [
+                    0.015830477699637413
+                  ],
+                  [
+                    -0.07123713940382004
+                  ]
+                ],
+                [
+                  [
+                    -0.07123713940382004
+                  ],
+                  [
+                    0.4511685371398926
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]",
+              "observed": [
+                [
+                  [
+                    0.015830477699637413,
+                    0.008503388613462448,
+                    0.014500592835247517
+                  ],
+                  [
+                    -0.07123713940382004,
+                    -0.03826524317264557,
+                    -0.06525266170501709
+                  ]
+                ],
+                [
+                  [
+                    -0.07123713940382004,
+                    -0.03826524317264557,
+                    -0.06525266170501709
+                  ],
+                  [
+                    0.4511685371398926,
+                    0.24234655499458313,
+                    0.4132668673992157
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)",
+            "expected_output": "jnp.polyfit returns one covariance matrix per rhs, shape (deg+1, deg+1, num_rhs), matching np.polyfit within tol (float32 1e-3, float64 1e-13, complex64 1e-5)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "jnp.polyfit returns a covariance array of shape (deg+1, deg+1, 1) for multi-rhs y, so it does not match np.polyfit and the assertion fails",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)",
+              "observed": {
+                "raised": "TypeError",
+                "message": "expected a 1-d array for weights",
+                "origin": "/workspace/buggy/jax/_src/numpy/polynomial.py",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)",
+              "observed": {
+                "raised": "TypeError",
+                "message": "expected a 1-d array for weights",
+                "origin": "/workspace/fixed/jax/_src/numpy/polynomial.py",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 2,
+          "n_failed": 2,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 1,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "The reproduction fails on the buggy commit 437d7d88b992c9f511a3019823104d176e84064f: jnp.polyfit covariance shape is (2,2,1) for a 3-rhs input and testPolyfit raises an assertion failure for num_rhs=5, and it would pass once the fix in jax/_src/numpy/polynomial.py is applied."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2025-04-22T09:45:08-07:00",
+      "fixed_commit_date": "2025-04-22T09:52:08-07:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [],
+        "skipped": "the instance names no system packages"
+      },
+      "era": "2025-04-22T09:52:08-07:00",
+      "build": {
+        "skipped": "not a compiled Python instance"
+      },
+      "runtime": {
+        "era_pins": {
+          "numpy": "2.2.5",
+          "pandas": "2.2.3",
+          "matplotlib": "3.10.1",
+          "pyparsing": "3.2.3"
+        },
+        "companion": {
+          "wheel": "jaxlib",
+          "declared": [
+            "0.6.0",
+            "0.6.0"
+          ],
+          "wanted": "0.6.0",
+          "installed": true
+        },
+        "dependencies_installed": {
+          "buggy": true,
+          "fixed": true
+        },
+        "imports_from": {
+          "buggy": "/workspace/buggy/jax/__init__.py",
+          "fixed": "/workspace/fixed/jax/__init__.py"
+        },
+        "ok": true
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": [
+            "build/test-requirements.txt"
+          ],
+          "installed_whole": true,
+          "failed": []
+        },
+        "fixed": {
+          "files": [
+            "build/test-requirements.txt"
+          ],
+          "installed_whole": true,
+          "failed": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 7,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the jnp.polyfit(cov=True) multi-RHS covariance shape bug on the buggy revision and show it matches NumPy on the fixed revision, verified by running testPolyfit and direct example/probe checks.",
+          "milestones": [
+            "buggy_test_setup [buggy] \u2014 Set up and verify that the reproducing pytest selection fails on the buggy revision. (1 steps, verify: test_ran, test_fails, steps_succeeded)",
+            "buggy_examples_observed [buggy] \u2014 Show the reported covariance shape/value mismatch for the provided examples on the buggy revision. (2 steps, verify: steps_succeeded, examples_reproduced)",
+            "fixed_test_setup [fixed] \u2014 Run the same targeted test case on the fixed revision and verify it passes. (1 steps, verify: test_ran, test_passes, steps_succeeded)",
+            "fixed_examples_clean [fixed] \u2014 Show the reported covariance examples match the expected outputs on the fixed revision. (2 steps, verify: steps_succeeded, examples_reproduced)",
+            "reproduce_via_probe_shape [buggy] \u2014 Directly probe covariance shapes from jnp.polyfit for multi-RHS y and confirm buggy vs fixed behavior deterministically. (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "reproduce_via_probe_shape_fixed [fixed] \u2014 Run the identical probe on fixed and confirm covariance has one covariance matrix per RHS (shape (deg+1,deg+1,num_rhs)). (1 steps, verify: steps_succeeded, probe_ran, probe_clean)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && JAX_ENABLE_X64=true JAX_PLATFORM_NAME=cpu python -m pytest tests/lax_numpy_test.py -k testPolyfit -x -q",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 4.57
+      },
+      {
+        "verification": {
+          "milestone": "buggy_test_setup",
+          "verified": false,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && JAX_ENABLE_X64=true JAX_PLATFORM_NAME=cpu python -m pytes` exited 1:  tests/lax_numpy_test.py::LaxBackedNumpyTests::testPolyfit1 - ValueErro...\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 1 passed, 3285 deselected in 3.83s"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the jnp.polyfit(cov=True) multi-RHS covariance shape bug by direct example/probe checks, and verify the fix on the fixed revision (without relying on the failing/updated test selection).",
+          "milestones": [
+            "buggy_polyfit_examples_observed [buggy] \u2014 On the buggy revision, evaluate the report's example(s) for jnp.polyfit multi-RHS covariance and record the buggy-shaped covariance output. (1 steps, verify: steps_succeeded, examples_reproduced)",
+            "fixed_polyfit_examples_clean [fixed] \u2014 On the fixed revision, evaluate the same report example(s) and record the expected per-RHS covariance output. (1 steps, verify: steps_succeeded, examples_reproduced)",
+            "reproduce_via_probe_shape [buggy] \u2014 Deterministically probe covariance shapes and values from jnp.polyfit for a multi-RHS y and compare buggy vs fixed behavior against NumPy. (1 steps, verify: steps_succeeded)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.015830477699637413,
+          -0.07123713940382004,
+          -0.07123713940382004,
+          0.4511685371398926
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_polyfit_examples_observed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/2 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 2 never evaluated \u2014 the preamble does not bind everything they need: np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]; testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the jnp.polyfit(cov=True) multi-RHS covariance shape bug via direct example/probe (without relying on the failing/updated test selection), and verify the fix on the fixed revision.",
+          "milestones": [
+            "buggy_polyfit_direct_examples_observed [buggy] \u2014 On the buggy revision, run the concrete covariance example expressions from the report (including the explicit multi-RHS polyfit call) and record the covariance-shaped output. (2 steps, verify: steps_succeeded, examples_reproduced, probe_ran, probe_shows_defect)",
+            "fixed_polyfit_direct_examples_clean [fixed] \u2014 On the fixed revision, evaluate the same concrete multi-RHS covariance example(s) and confirm the covariance has the correct per-RHS shape and matches expected values from the report. (2 steps, verify: steps_succeeded, examples_reproduced, probe_ran, probe_clean)",
+            "reproduce_shape_mismatch_multi_rhs_num_rhs_5 [buggy] \u2014 Decide the bug mechanism by probing a multi-RHS input with num_rhs=5 and comparing covariance shape and a few entries against NumPy in both revisions; buggy should return shape (deg+1,deg+1,1), fixed should return (deg+1,deg+1,5) and agree with np.polyfit. (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "fixed_polyfit_num_rhs_5_matches_numpy [fixed] \u2014 On fixed revision, confirm num_rhs=5 covariance shape matches NumPy and differs from buggy collapsed behavior. (1 steps, verify: steps_succeeded, probe_ran, probe_clean, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.015830477699637413,
+          -0.07123713940382004,
+          -0.07123713940382004,
+          0.4511685371398926
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "polyfit_cov_multirhs_shape_values",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(polyfit_cov_multirhs_shape_values) \u2014 Run a deterministic numerical probe for the same input to capture shape and key values for covariance; this bypasses the report test-language example that was not bound correctly."
+      },
+      {
+        "verification": {
+          "milestone": "buggy_polyfit_direct_examples_observed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(polyfit_cov_multirhs_shape_values) \u2014 Run a deterministic numerical probe for the same input to capture shape and key values for covariance; this bypasses the report test-language example that was not bound correctly. did not execute"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/2 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 2 never evaluated \u2014 the preamble does not bind everything they need: np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]; testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Establish a direct, deterministic reproducer of the jnp.polyfit(cov=True) multi-RHS covariance shape/value bug and confirm the fix on the fixed revision, without relying on the failing test selection.",
+          "milestones": [
+            "buggy_polyfit_direct_examples_observed [buggy] \u2014 On the buggy revision, evaluate a concrete multi-RHS polyfit covariance expression with explicit bindings and record covariance shape and first few entries to demonstrate the collapsed (deg+1,deg+1,1) behavior. (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "compare_against_numpy_and_fixed [fixed] \u2014 Check that the buggy covariance disagrees with NumPy for the same inputs, and that the fixed revision returns covariance with the correct per-RHS shape/values matching NumPy. (2 steps, verify: steps_succeeded, probe_ran, probe_clean)",
+            "multi_rhs_num_rhs_5_shape_value_sanity [buggy] \u2014 Directly test the multi-RHS behavior for num_rhs=5 (deg=2) and ensure the fixed revision matches the expected covariance shape (deg+1,deg+1,5) while the buggy revision collapses to (deg+1,deg+1,1), using a probe that records shapes and selected entries for both revisions. (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "multi_rhs_num_rhs_5_matches_fixed [fixed] \u2014 Run the same num_rhs=5 probe on the fixed revision so we can verify the rhs dimension is preserved and values agree with NumPy. (2 steps, verify: steps_succeeded, probe_ran, probe_clean, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "polyfit_cov_multirhs_reproducer",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          2.0,
+          2.0,
+          1.0,
+          0.015830477699637413,
+          -0.07123713940382004,
+          -0.07123713940382004,
+          0.4511685371398926
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_polyfit_direct_examples_observed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "no probe exhibited the defect on buggy (values [2.0, 2.0, 1.0, 0.015830477699637413])"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -m pytest tests/lax_numpy_test.py -k testPolyfit -q -rs -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 8.26
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -m pytest tests/lax_numpy_test.py -k testPolyfit -q -rs -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 5.01
+      },
+      {
+        "reproducing_test_run": {
+          "case": "testPolyfit",
+          "command": "python -m pytest tests/lax_numpy_test.py -k testPolyfit -q -rs -W ignore::pytest.PytestDeprecationWarning",
+          "package": "jax",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "testPolyfit",
+              "command": "python -m pytest tests/lax_numpy_test.py -k testPolyfit -q -rs -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.015830477699637413,
+          -0.07123713940382004,
+          -0.07123713940382004,
+          0.4511685371398926
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.015830477699637413,
+          0.008503388613462448,
+          0.014500592835247517,
+          -0.07123713940382004,
+          -0.03826524317264557,
+          -0.06525266170501709,
+          -0.07123713940382004,
+          -0.03826524317264557,
+          -0.06525266170501709,
+          0.4511685371398926
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.015830477699637413,
+          -0.07123713940382004,
+          -0.07123713940382004,
+          0.4511685371398926
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.015830477699637413,
+          0.008503388613462448,
+          0.014500592835247517,
+          -0.07123713940382004,
+          -0.03826524317264557,
+          -0.06525266170501709,
+          -0.07123713940382004,
+          -0.03826524317264557,
+          -0.06525266170501709,
+          0.4511685371398926
+        ]
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 2,
+            "recorded": 2,
+            "error": null,
+            "could_not_evaluate": 1
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 2,
+            "recorded": 2,
+            "error": null,
+            "could_not_evaluate": 1
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "described_examples": {
+          "n_described": 1,
+          "buggy": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "diverged",
+        "examples_verdict": "diverged",
+        "examples": "1/2"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 1/2 reported example(s) show the reported difference between the revisions; no probe is pathological, but the two revisions record different values"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 7,
+      "input_tokens": 16791,
+      "output_tokens": 6570,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.011571
+    }
+  }
+]

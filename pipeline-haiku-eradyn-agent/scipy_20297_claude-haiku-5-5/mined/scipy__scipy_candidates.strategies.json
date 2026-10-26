@@ -1,0 +1,105 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/scipy_20297_claude-haiku-5-5/mined/scipy__scipy_20297.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 20043,
+    "output_tokens": 4869,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 20297,
+      "reference": "https://github.com/scipy/scipy/pull/20297",
+      "buggy_commit": "237b6915e37ed433c18e87952cb3b8c4880ad774",
+      "fixed_commit": "bb92c8014e21052e7dde67a76b28214dd1dcb94a",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5729,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce scipy.linalg.pinvh on the near-singular Hermitian matrix [[1,-1,0],[-1,2,-1],[0,-1,1]] using the project's new test_zero_eigenvalue; on the buggy revision (pinvh using the default evr eigh driver) the Moore-Penrose residual check fails at atol=1e-15, while on the fixed revision (driver='ev', SYEV) it passes. Dependency versions are unconstrained in the evidence, so the strategy picks a modern numpy/scipy build from source at the buggy commit.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "scipy",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "gfortran",
+            "libopenblas-dev or reference LAPACK (default scipy build backend)"
+          ],
+          "build_commands": [
+            "git checkout 237b6915e37e",
+            "python -m pip install -r requirements/build.txt",
+            "python -m pip install -e . --no-build-isolation"
+          ],
+          "pinned_because": [
+            "numpy and scipy versions are null in documented constraints; the 1.18.1/1.4.1 versions in issue #12515 are reported in a version block, not a constraint, so they are not pinned and a buildable modern pair is chosen instead",
+            "LAPACK backend is the one scipy builds against; the SYEVR behaviour is driven by the LAPACK library, so the backend must be recorded when reproducing"
+          ]
+        },
+        "test_command": "python -m pytest scipy/linalg/tests/test_basic.py -k 'PinvhTests and test_zero_eigenvalue' -v",
+        "reproducing_test": "test_zero_eigenvalue in PinvhTests: a = [[1,-1,0],[-1,2,-1],[0,-1,1]]; p = pinvh(a); assert_allclose(p @ a @ p, p, atol=1e-15); assert_allclose(a @ p @ a, a, atol=1e-15)",
+        "success_criterion": "Buggy revision 237b6915e37e: test_zero_eigenvalue FAILS, because pinvh with the default evr driver keeps a spurious eigenvalue near 1e-17 (or 2.7e-15 per the evr report) above the cutoff, so p@a@p differs from p by more than atol=1e-15. Fixed revision (driver='ev'): test_zero_eigenvalue PASSES, because the SYEV driver yields a zero eigenvalue below the cutoff and the pseudoinverse satisfies the conditions to within atol.",
+        "numerical_probe": "python -c \"import numpy as np; from scipy.linalg import pinvh, eigh; a=np.array([[1,-1,0],[-1,2,-1],[0,-1,1]]); print(eigh(a,driver='evr',eigvals_only=True)); print(eigh(a,driver='ev',eigvals_only=True))\"",
+        "input_output_examples": [
+          {
+            "input": "x = np.array([[1,-1, 0], [-1, 2, -1], [0, -1, 1]]); y1 = pinvh(x)",
+            "buggy_output": "np.allclose(np.matmul(np.matmul(y1, x), y1), y1) returns False",
+            "expected_output": "np.allclose(np.matmul(np.matmul(y1, x), y1), y1) returns True (y1 should match pinv(x))"
+          },
+          {
+            "input": "sp.linalg.eigh(a, driver='evr') on the same matrix",
+            "buggy_output": "eigenvalues array([2.66453526e-15, 1.00000000e+00, 3.00000000e+00])",
+            "expected_output": "smallest eigenvalue approximately 0 (analytic eigenvalues 3, 1, 0)"
+          }
+        ],
+        "risks": [
+          "The defect is LAPACK-dependent: SYEVR's zero-eigenvalue error appears only with certain LAPACK builds (reference LAPACK vs OpenBLAS) and may not reproduce on a different backend, so the transition may not occur on every machine.",
+          "Dtype is not stated; the example uses integer literals which pinvh converts to float64, but a float32 run would have a different epsilon and could change the outcome.",
+          "The atol=1e-15 threshold is the developer's choice; the evidence does not state the separation point between correct and incorrect answers beyond that, so a different LAPACK may give residuals just below or above it.",
+          "Reproduction rate is not stated in the passages; the test may pass on the buggy revision on some machines, so a passing buggy run does not disprove the bug.",
+          "The fix is not to be backported, so running the test on other branches gives different results; use the exact commit pair only.",
+          "Dependency versions 1.18.1/1.4.1 are from the issue report and are not a documented constraint; building against modern numpy/scipy may not reproduce the era-specific LAPACK behaviour."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "atol=1e-15 on the Moore-Penrose residuals in test_zero_eigenvalue",
+          "reference_source": "analytic eigenvalues 3, 1, 0 of the example matrix; pinv comparison in the issue",
+          "why": "The residual check is the developer's own oracle; the zero eigenvalue is epsilon-scale so an absolute tolerance is required."
+        },
+        "fails_on_buggy": "On the buggy revision pinvh uses the default evr driver, which returns a zero eigenvalue of about 3.9e-17 (or 2.7e-15) that the cutoff does not discard; the pseudoinverse then has a large component along that direction, so p@a@p differs from p by more than atol=1e-15 and assert_allclose raises AssertionError.",
+        "passes_on_fixed": "On the fixed revision pinvh uses driver='ev' (SYEV), which gives the zero eigenvalue below the cutoff, so the pseudoinverse satisfies both Moore-Penrose residuals within atol=1e-15 and the test passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4624,
+        "output_tokens": 1978,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 15419,
+        "output_tokens": 2891,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

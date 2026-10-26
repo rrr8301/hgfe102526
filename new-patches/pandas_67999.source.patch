@@ -1,0 +1,39 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index cbab648a8adfa..0d3c5f705a7a5 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -892,6 +892,7 @@ Reshaping
+ 
+ Sparse
+ ^^^^^^
++- Bug in :meth:`DataFrame.count`, :meth:`DataFrame.sum`, :meth:`DataFrame.mean`, :meth:`DataFrame.min`, and :meth:`DataFrame.max` on :class:`SparseDtype` columns forcing the result into the column's own dtype: ``count`` returned ``1`` for every sparse column, the sum of a narrow integer column silently wrapped around, the mean of an integer column was truncated to an integer, and a missing result (e.g. from ``min_count`` or an empty column) came back as a fill value or raised (:issue:`55123`)
+ - Bug in :meth:`Series.mean` with ``skipna=False`` ignoring missing values for :class:`SparseDtype`-backed :class:`Series` (:issue:`65478`)
+ - Bug in :meth:`Series.reindex` and alignment raising when extending a boolean :class:`SparseDtype`-backed :class:`Series`; missing entries now upcast to ``object`` to match the dense behavior (:issue:`32119`)
+ - Bug in :meth:`Series.sum`, :meth:`Series.min`, and :meth:`Series.max` with ``skipna=False`` ignoring missing values for :class:`SparseDtype`-backed :class:`Series` (:issue:`65478`)
+diff --git a/pandas/core/arrays/sparse/array.py b/pandas/core/arrays/sparse/array.py
+index eae712f776998..3e021e0c9075f 100644
+--- a/pandas/core/arrays/sparse/array.py
++++ b/pandas/core/arrays/sparse/array.py
+@@ -1616,7 +1616,21 @@ def _reduce(
+             result = getattr(arr, name)(**kwargs)
+ 
+         if keepdims:
+-            return type(self)([result], dtype=self.dtype)
++            dtype = self.dtype
++            if dtype.subtype.kind in "biufc":
++                # The reduction is not always closed over self.dtype, e.g. the
++                # mean of an integer column, the sum of a narrow one, or the
++                # NaN that min_count inserts; casting the result back to
++                # self.dtype would silently truncate it.
++                subtype = np.result_type(dtype.subtype, result)
++                if subtype != dtype.subtype:
++                    fill_value = self.fill_value
++                    if notna(fill_value):
++                        # keep the fill value so that reducing a frame of
++                        # sparse columns does not mix fill values
++                        fill_value = subtype.type(fill_value).item()
++                    dtype = SparseDtype(subtype, fill_value)
++            return type(self)([result], dtype=dtype)
+         else:
+             return result
+ 

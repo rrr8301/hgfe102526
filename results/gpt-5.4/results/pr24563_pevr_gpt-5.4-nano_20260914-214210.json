@@ -1,0 +1,1163 @@
+[
+  {
+    "slug": "scipy_24563",
+    "bug_type": "correctness",
+    "image": "python:3.12",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/1 reported example(s))",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "not_reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import numpy as np\nimport scipy.special as special\nnan = np.float64('nan')\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)\", \"Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)\", [], \"np.float64(nan) once NaN-specific handling is added; currently hyp2f1 is excluded from test_nep50\"], [\"Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)\", \"Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)\", [], \"np.asarray([np.float64(nan)]) with strict=True comparison matching the output typecode\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "nep50_nan_dtype_signature_probe_v2": "import numpy as np\nimport scipy.special as special\n\n# Helper: record one ufunc call outcome\n# We will attempt to use NEP50's multi-arg public ufunc mapping if available.\n\ndef get_multi_arg_ufuncs():\n    # SciPy test suite uses this; try internal import first.\n    for modname in [\n        'scipy.special.tests.test_ufunc_signatures',\n    ]:\n        try:\n            mod = __import__(modname, fromlist=['_multi_arg_public_ufuncs'])\n            return getattr(mod, '_multi_arg_public_ufuncs')\n        except Exception:\n            pass\n    # Fallback: try to locate candidates by scanning special module for ufuncs\n    # whose name is known to be in NEP50 coverage.\n    fallback = {}\n    known = [\n        'modstruve', 'struvel', 'hyp1f1', 'hyp2f1', 'hyperu',\n        'i0', 'i1', 'j0', 'j1',\n        'wofz' # might not be NEP50 multi-arg\n    ]\n    for name in dir(special):\n        if name in known:\n            obj = getattr(special, name)\n            if isinstance(obj, np.ufunc):\n                fallback[name] = obj\n    return fallback\n\nmulti = get_multi_arg_ufuncs()\n\n# Select a small, stable subset from the mapping/dict/structure.\n# The test module typically stores descriptors with signature/typecodes.\n# We introspect available info and then call a representative signature.\n\ncandidates = []\n\n# multi may be list of tuples/dicts; normalize best-effort.\nif isinstance(multi, dict):\n    candidates = list(multi.items())\nelse:\n    try:\n        candidates = list(multi)\n    except Exception:\n        candidates = []\n\n# We'll gather actual ufunc objects + (optional) signature info.\nselected = []\nfor item in candidates:\n    if isinstance(item, tuple) and len(item) >= 1:\n        # could be (ufunc, ...) or (name, ufunc)\n        u = None\n        name = None\n        if hasattr(item[0], 'nin') and isinstance(item[0], np.ufunc):\n            u = item[0]\n            name = getattr(u, '__name__', 'ufunc')\n        elif len(item) >= 2 and isinstance(item[1], np.ufunc):\n            u = item[1]\n            name = str(item[0])\n        if u is not None and hasattr(u, '__name__'):\n            selected.append((name, u))\n    elif isinstance(item, np.ufunc):\n        selected.append((getattr(item, '__name__','ufunc'), item))\n\n# Further reduce to known NEP50 multi-arg functions likely to show dtype behavior.\npreferred_names = {'modstruve','struvel','hyp1f1','hyp2f1','hyperu','ellipf','ellipk','ellipkm1','ellipj'}\nselected = [s for s in selected if s[0] in preferred_names]\nif not selected:\n    # If mapping structure differs, explicitly add known ufuncs when present.\n    for name in ['modstruve','hyp1f1','hyp2f1','hyperu','struvel']:\n        if hasattr(special, name):\n            u = getattr(special, name)\n            if isinstance(u, np.ufunc):\n                selected.append((name, u))\n\n# Keep at most 4 for speed.\nselected = selected[:4]\n\n# Record helper\n\ndef isnan_array(x):\n    try:\n        return bool(np.isnan(x))\n    except Exception:\n        try:\n            # complex: isnan checks elementwise; treat scalar complex\n            return bool(np.isnan(np.real(x)) or np.isnan(np.imag(x)))\n        except Exception:\n            return None\n\n\ndef make_nan_and_args(ufunc, dtype):\n    # Create dtype-appropriate nan scalar and placeholders.\n    nan = dtype(type(np.nan)) if np.dtype(dtype).kind in ['f'] else dtype(np.nan+0j)\n    # Build generic arguments based on ufunc.nin with heuristic: fill with 1.5 of dtype.\n    nin = ufunc.nin\n    args = []\n    for i in range(nin):\n        # Put distinctive non-NaN defaults\n        if np.dtype(dtype).kind == 'c':\n            args.append(dtype(1.25 + 0.0j))\n        else:\n            args.append(dtype(1.25))\n    # Replace one argument with python float nan to mimic test behavior.\n    idx = 0 if nin > 0 else None\n    if idx is not None:\n        args[idx] = float('nan')\n    return args\n\n# Run calls and record.\n# Use both float64 and float32 to trigger dtype promotion differences.\nfor name, u in selected:\n    # attempt two dtypes\n    for dtype in [np.float32, np.float64]:\n        args = make_nan_and_args(u, dtype)\n        try:\n            res = u(*args)\n            # Some ufuncs may return tuples; normalize\n            if isinstance(res, tuple):\n                out = res[0]\n            else:\n                out = res\n            # dtype capture\n            odt = getattr(out, 'dtype', None)\n            # NaN capture\n            nanflag = isnan_array(out)\n            # record\n            probe(f\"{name}|dtype_in={np.dtype(dtype).name}|out_dtype={odt}\", nanflag)\n            probe(f\"{name}|dtype_in={np.dtype(dtype).name}|out_value_dtype\", 0 if odt is None else str(odt))\n        except Exception as e:\n            probe(f\"{name}|dtype_in={np.dtype(dtype).name}|exception\", 1)\n\n# Ensure at least one observation exists even if selection empty.\nif not selected:\n    probe('nep50_selection_empty', 0)\n",
+        "described_examples": "import numpy as np\nimport scipy.special as special\n\nnan = float('nan')\n\n# 1) Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan')\nname = \"Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)\"\ntry:\n    args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]\n    args[0] = float('nan')\n    res = special.hyp2f1(*args)\n    probe(name, res)\nexcept Exception as e:\n    probe_exception(name, e)\n\n# 2) Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types\n# Example: modstruve with signature ddd->d\nname = \"Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)\"\ntry:\n    ufunc = special.modstruve\n    args = [np.float64(nan), np.float64(nan), np.float64(nan)]\n    idx = 0\n    args[idx] = float('nan')\n    res = ufunc(*args)\n    probe(name, res)\nexcept Exception as e:\n    probe_exception(name, e)"
+      },
+      "fixed": {
+        "nep50_nan_dtype_signature_probe_v2": "import numpy as np\nimport scipy.special as special\n\ndef get_multi_arg_ufuncs():\n    for modname in [\n        'scipy.special.tests.test_ufunc_signatures',\n    ]:\n        try:\n            mod = __import__(modname, fromlist=['_multi_arg_public_ufuncs'])\n            return getattr(mod, '_multi_arg_public_ufuncs')\n        except Exception:\n            pass\n    fallback = {}\n    known = [\n        'modstruve', 'struvel', 'hyp1f1', 'hyp2f1', 'hyperu',\n        'i0', 'i1', 'j0', 'j1',\n        'wofz'\n    ]\n    for name in dir(special):\n        if name in known:\n            obj = getattr(special, name)\n            if isinstance(obj, np.ufunc):\n                fallback[name] = obj\n    return fallback\n\nmulti = get_multi_arg_ufuncs()\n\ncandidates = []\nif isinstance(multi, dict):\n    candidates = list(multi.items())\nelse:\n    try:\n        candidates = list(multi)\n    except Exception:\n        candidates = []\n\nselected = []\nfor item in candidates:\n    if isinstance(item, tuple) and len(item) >= 1:\n        u = None\n        name = None\n        if hasattr(item[0], 'nin') and isinstance(item[0], np.ufunc):\n            u = item[0]\n            name = getattr(u, '__name__', 'ufunc')\n        elif len(item) >= 2 and isinstance(item[1], np.ufunc):\n            u = item[1]\n            name = str(item[0])\n        if u is not None and hasattr(u, '__name__'):\n            selected.append((name, u))\n    elif isinstance(item, np.ufunc):\n        selected.append((getattr(item, '__name__','ufunc'), item))\n\npreferred_names = {'modstruve','struvel','hyp1f1','hyp2f1','hyperu','ellipf','ellipk','ellipkm1','ellipj'}\nselected = [s for s in selected if s[0] in preferred_names]\nif not selected:\n    for name in ['modstruve','hyp1f1','hyp2f1','hyperu','struvel']:\n        if hasattr(special, name):\n            u = getattr(special, name)\n            if isinstance(u, np.ufunc):\n                selected.append((name, u))\n\nselected = selected[:4]\n\n\ndef isnan_array(x):\n    try:\n        return bool(np.isnan(x))\n    except Exception:\n        try:\n            return bool(np.isnan(np.real(x)) or np.isnan(np.imag(x)))\n        except Exception:\n            return None\n\n\ndef make_nan_and_args(ufunc, dtype):\n    nan = dtype(type(np.nan)) if np.dtype(dtype).kind in ['f'] else dtype(np.nan+0j)\n    nin = ufunc.nin\n    args = []\n    for i in range(nin):\n        if np.dtype(dtype).kind == 'c':\n            args.append(dtype(1.25 + 0.0j))\n        else:\n            args.append(dtype(1.25))\n    idx = 0 if nin > 0 else None\n    if idx is not None:\n        args[idx] = float('nan')\n    return args\n\nfor name, u in selected:\n    for dtype in [np.float32, np.float64]:\n        args = make_nan_and_args(u, dtype)\n        try:\n            res = u(*args)\n            out = res[0] if isinstance(res, tuple) else res\n            odt = getattr(out, 'dtype', None)\n            nanflag = isnan_array(out)\n            probe(f\"{name}|dtype_in={np.dtype(dtype).name}|out_dtype={odt}\", nanflag)\n            probe(f\"{name}|dtype_in={np.dtype(dtype).name}|out_value_dtype\", 0 if odt is None else str(odt))\n        except Exception:\n            probe(f\"{name}|dtype_in={np.dtype(dtype).name}|exception\", 1)\n\nif not selected:\n    probe('nep50_selection_empty', 0)\n",
+        "reported_examples": "import numpy as np\nimport scipy.special as special\nnan = np.float64('nan')\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)\", \"Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)\", [], \"np.float64(nan) once NaN-specific handling is added; currently hyp2f1 is excluded from test_nep50\"], [\"Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)\", \"Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)\", [], \"np.asarray([np.float64(nan)]) with strict=True comparison matching the output typecode\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nimport scipy.special as special\n\nnan = float('nan')\n\n# 1) Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan')\nname = \"Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)\"\ntry:\n    args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]\n    args[0] = float('nan')\n    res = special.hyp2f1(*args)\n    probe(name, res)\nexcept Exception as e:\n    probe_exception(name, e)\n\n# 2) Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types\n# Example: modstruve with signature ddd->d\nname = \"Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)\"\ntry:\n    ufunc = special.modstruve\n    args = [np.float64(nan), np.float64(nan), np.float64(nan)]\n    idx = 0\n    args[idx] = float('nan')\n    res = ufunc(*args)\n    probe(name, res)\nexcept Exception as e:\n    probe_exception(name, e)"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/1 reported example(s))",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "not_reproduced",
+      "success_criterion": "The test scipy/special/tests/test_ufunc_signatures.py::test_nep50 FAILS at the buggy commit (test discovery and parametrization works, but assertions fail for ufuncs not respecting NEP50 promotion). After the fix is applied, test_nep50 PASSES for all parametrized ufuncs in _multi_arg_public_ufuncs, confirming that NEP50 dtype promotion is correctly respected and NaN values are propagated with correct dtypes.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": 115,
+            "failed": 18,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 133,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)": "np.float64(nan)",
+              "Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)": {
+                "raised": "TypeError",
+                "message": "return arrays must be of ArrayType",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              }
+            },
+            "fixed_values": {
+              "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)": "np.float64(nan)",
+              "Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)": {
+                "raised": "TypeError",
+                "message": "return arrays must be of ArrayType",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              }
+            }
+          },
+          {
+            "label": "nep50_nan_dtype_signature_probe_v2",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: float() argument must be a string or a real number, not 'type'"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: float() argument must be a string or a real number, not 'type'"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)",
+            "expected_output": "np.float64(nan) once NaN-specific handling is added; currently hyp2f1 is excluded from test_nep50",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Abort with Assertion '__rho >= 0' failed at /usr/include/c++/13/complex:964 from std::polar (core dumped) when NaN is passed to std::polar in a GCC debug build",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)",
+              "observed": "np.float64(nan)",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)",
+              "observed": "np.float64(nan)",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = fl",
+            "expected_output": "np.asarray([np.float64(nan)]) with strict=True comparison matching the output typecode",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Result dtype does not match expected output typecode dtype (e.g., float64 when float32 expected, or vice versa); NaN not propagated with correct dtype",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 4,
+            "n_failed": 1,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 1,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "numpy>=2.0.0",
+            "meson-python>=0.15.0",
+            "Cython>=3.0.8",
+            "pybind11>=2.4.3",
+            "pythran>=0.18.1",
+            "pytest>=8.0.0",
+            "pytest-xdist==2.5.0",
+            "pytest-timeout",
+            "pytest-cov",
+            "hypothesis>=6.30",
+            "array-api-strict>=2.3.1",
+            "pooch",
+            "setuptools<67.3",
+            "meson",
+            "ninja"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-02-25T11:21:35-06:00",
+        "fixed_commit_date": "2026-02-25T12:09:01-08:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev",
+            "python3-dev"
+          ]
+        },
+        "era": "2026-02-25T12:09:01-08:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.12/site-packages/scipy/__init__.py",
+            "build_requires": [
+              "meson-python>=0.15.0",
+              "Cython>=3.0.8",
+              "pybind11>=2.13.2",
+              "pythran>=0.18.1"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.2",
+              "pandas": "3.0.1",
+              "matplotlib": "3.10.8",
+              "pyparsing": "3.3.2",
+              "meson-python": "0.19.0",
+              "cython": "3.2.4",
+              "pybind11": "3.0.2",
+              "pythran": "0.18.1"
+            },
+            "test_extras": [
+              "pytest>=8.0.0",
+              "pytest-cov",
+              "pytest-timeout",
+              "pytest-xdist",
+              "asv",
+              "mpmath",
+              "gmpy2",
+              "threadpoolctl",
+              "scikit-umfpack",
+              "pooch",
+              "hypothesis>=6.30",
+              "array-api-strict>=2.3.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.0 in ./.venv/lib/python3.12/site-packages (from scipy==1.18.0.dev0) (2.4.2)\nBuilding wheels for collected packages: scipy\n  Building wheel for scipy (pyproject.toml): started\n  Building wheel for scipy (pyproject.toml): finished with status 'done'\n  Created wheel for scipy: filename=scipy-1.18.0.dev0-cp312-cp312-linux_x86_64.whl size=24831517 sha256=c7bfd4046479400759cb30070e2cff23ef14310d5210a429f3bd003333169742\n  Stored in directory: /tmp/pip-ephem-wheel-cache-p75ygf3e/wheels/7a/8e/f6/6361a05021faea16c41b60355501cb8542c208befbd0798736\nSuccessfully built scipy\nInstalling collected packages: scipy\nSuccessfully installed scipy-1.18.0.dev0\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.12/site-packages/scipy/__init__.py",
+            "build_requires": [
+              "meson-python>=0.15.0",
+              "Cython>=3.0.8",
+              "pybind11>=2.13.2",
+              "pythran>=0.18.1"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.2",
+              "pandas": "3.0.1",
+              "matplotlib": "3.10.8",
+              "pyparsing": "3.3.2",
+              "meson-python": "0.19.0",
+              "cython": "3.2.4",
+              "pybind11": "3.0.2",
+              "pythran": "0.18.1"
+            },
+            "test_extras": [
+              "pytest>=8.0.0",
+              "pytest-cov",
+              "pytest-timeout",
+              "pytest-xdist",
+              "asv",
+              "mpmath",
+              "gmpy2",
+              "threadpoolctl",
+              "scikit-umfpack",
+              "pooch",
+              "hypothesis>=6.30",
+              "array-api-strict>=2.3.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.0 in ./.venv/lib/python3.12/site-packages (from scipy==1.18.0.dev0) (2.4.2)\nBuilding wheels for collected packages: scipy\n  Building wheel for scipy (pyproject.toml): started\n  Building wheel for scipy (pyproject.toml): finished with status 'done'\n  Created wheel for scipy: filename=scipy-1.18.0.dev0-cp312-cp312-linux_x86_64.whl size=24830375 sha256=fb819da0fd1a9d7a5fdfd9d3c25748e4e63e33f166c0b979c9b6c8e14735e77c\n  Stored in directory: /tmp/pip-ephem-wheel-cache-y9unjb0m/wheels/71/38/20/6358bc83d061b0e5b7f2ca1588a2c1d520ab055cf84e576666\nSuccessfully built scipy\nInstalling collected packages: scipy\nSuccessfully installed scipy-1.18.0.dev0\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": [
+              "requirements/test.txt"
+            ],
+            "installed_whole": true,
+            "failed": []
+          },
+          "fixed": {
+            "files": [
+              "requirements/test.txt"
+            ],
+            "installed_whole": true,
+            "failed": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": 115,
+        "failed": 18,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 133,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 3,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)": "np.float64(nan)",
+              "Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)": {
+                "raised": "TypeError",
+                "message": "return arrays must be of ArrayType",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              }
+            },
+            "fixed_values": {
+              "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)": "np.float64(nan)",
+              "Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)": {
+                "raised": "TypeError",
+                "message": "return arrays must be of ArrayType",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              }
+            }
+          },
+          {
+            "label": "nep50_nan_dtype_signature_probe_v2",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: float() argument must be a string or a real number, not 'type'"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: TypeError: float() argument must be a string or a real number, not 'type'"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = float('nan'); result = ufunc(*args)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 2,
+        "n_judged": 1,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 1,
+        "n_contested": 0,
+        "unobserved": [
+          "Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = fl"
+        ],
+        "verdict": "not_reproduced",
+        "examples": [
+          {
+            "input": "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)",
+            "expected_output": "np.float64(nan) once NaN-specific handling is added; currently hyp2f1 is excluded from test_nep50",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Abort with Assertion '__rho >= 0' failed at /usr/include/c++/13/complex:964 from std::polar (core dumped) when NaN is passed to std::polar in a GCC debug build",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)",
+              "observed": "np.float64(nan)",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args)",
+              "observed": "np.float64(nan)",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = fl",
+            "expected_output": "np.asarray([np.float64(nan)]) with strict=True comparison matching the output typecode",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Result dtype does not match expected output typecode dtype (e.g., float64 when float32 expected, or vice versa); NaN not propagated with correct dtype",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 4,
+          "n_failed": 1,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 1,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "The test scipy/special/tests/test_ufunc_signatures.py::test_nep50 FAILS at the buggy commit (test discovery and parametrization works, but assertions fail for ufuncs not respecting NEP50 promotion). After the fix is applied, test_nep50 PASSES for all parametrized ufuncs in _multi_arg_public_ufuncs, confirming that NEP50 dtype promotion is correctly respected and NaN values are propagated with correct dtypes."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "numpy>=2.0.0",
+          "meson-python>=0.15.0",
+          "Cython>=3.0.8",
+          "pybind11>=2.4.3",
+          "pythran>=0.18.1",
+          "pytest>=8.0.0",
+          "pytest-xdist==2.5.0",
+          "pytest-timeout",
+          "pytest-cov",
+          "hypothesis>=6.30",
+          "array-api-strict>=2.3.1",
+          "pooch",
+          "setuptools<67.3",
+          "meson",
+          "ninja"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-02-25T11:21:35-06:00",
+      "fixed_commit_date": "2026-02-25T12:09:01-08:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev",
+          "python3-dev"
+        ]
+      },
+      "era": "2026-02-25T12:09:01-08:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.12/site-packages/scipy/__init__.py",
+          "build_requires": [
+            "meson-python>=0.15.0",
+            "Cython>=3.0.8",
+            "pybind11>=2.13.2",
+            "pythran>=0.18.1"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.2",
+            "pandas": "3.0.1",
+            "matplotlib": "3.10.8",
+            "pyparsing": "3.3.2",
+            "meson-python": "0.19.0",
+            "cython": "3.2.4",
+            "pybind11": "3.0.2",
+            "pythran": "0.18.1"
+          },
+          "test_extras": [
+            "pytest>=8.0.0",
+            "pytest-cov",
+            "pytest-timeout",
+            "pytest-xdist",
+            "asv",
+            "mpmath",
+            "gmpy2",
+            "threadpoolctl",
+            "scikit-umfpack",
+            "pooch",
+            "hypothesis>=6.30",
+            "array-api-strict>=2.3.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.0 in ./.venv/lib/python3.12/site-packages (from scipy==1.18.0.dev0) (2.4.2)\nBuilding wheels for collected packages: scipy\n  Building wheel for scipy (pyproject.toml): started\n  Building wheel for scipy (pyproject.toml): finished with status 'done'\n  Created wheel for scipy: filename=scipy-1.18.0.dev0-cp312-cp312-linux_x86_64.whl size=24831517 sha256=c7bfd4046479400759cb30070e2cff23ef14310d5210a429f3bd003333169742\n  Stored in directory: /tmp/pip-ephem-wheel-cache-p75ygf3e/wheels/7a/8e/f6/6361a05021faea16c41b60355501cb8542c208befbd0798736\nSuccessfully built scipy\nInstalling collected packages: scipy\nSuccessfully installed scipy-1.18.0.dev0\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.12/site-packages/scipy/__init__.py",
+          "build_requires": [
+            "meson-python>=0.15.0",
+            "Cython>=3.0.8",
+            "pybind11>=2.13.2",
+            "pythran>=0.18.1"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.2",
+            "pandas": "3.0.1",
+            "matplotlib": "3.10.8",
+            "pyparsing": "3.3.2",
+            "meson-python": "0.19.0",
+            "cython": "3.2.4",
+            "pybind11": "3.0.2",
+            "pythran": "0.18.1"
+          },
+          "test_extras": [
+            "pytest>=8.0.0",
+            "pytest-cov",
+            "pytest-timeout",
+            "pytest-xdist",
+            "asv",
+            "mpmath",
+            "gmpy2",
+            "threadpoolctl",
+            "scikit-umfpack",
+            "pooch",
+            "hypothesis>=6.30",
+            "array-api-strict>=2.3.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.0 in ./.venv/lib/python3.12/site-packages (from scipy==1.18.0.dev0) (2.4.2)\nBuilding wheels for collected packages: scipy\n  Building wheel for scipy (pyproject.toml): started\n  Building wheel for scipy (pyproject.toml): finished with status 'done'\n  Created wheel for scipy: filename=scipy-1.18.0.dev0-cp312-cp312-linux_x86_64.whl size=24830375 sha256=fb819da0fd1a9d7a5fdfd9d3c25748e4e63e33f166c0b979c9b6c8e14735e77c\n  Stored in directory: /tmp/pip-ephem-wheel-cache-y9unjb0m/wheels/71/38/20/6358bc83d061b0e5b7f2ca1588a2c1d520ab055cf84e576666\nSuccessfully built scipy\nInstalling collected packages: scipy\nSuccessfully installed scipy-1.18.0.dev0\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": [
+            "requirements/test.txt"
+          ],
+          "installed_whole": true,
+          "failed": []
+        },
+        "fixed": {
+          "files": [
+            "requirements/test.txt"
+          ],
+          "installed_whole": true,
+          "failed": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 7,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the NEP50-related dtype/NaN behavior bug in scipy.special ufunc signatures and show it differs from the fixed revision via the targeted test and example/probe checks.",
+          "milestones": [
+            "buggy_build_and_observe_test_fail [buggy] \u2014 Build (if needed) and verify that test_nep50 fails on the buggy revision. (2 steps, verify: steps_succeeded, test_ran, test_fails)",
+            "fixed_build_and_observe_test_pass [fixed] \u2014 Verify the same test_nep50 passes on the fixed revision. (2 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "reported_example_values_pairing [buggy] \u2014 Check the reported NEP50/NaN behavior examples on both revisions using the same expression inputs, to demonstrate the value-level defect and its fix. (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "reported_example_values_on_fixed [fixed] \u2014 Run the same value-level probe on the fixed revision to confirm the dtype/NaN behavior matches the expected NEP50-preserving behavior. (1 steps, verify: steps_succeeded, probe_ran, probe_clean)",
+            "final_verdict_revisions_differ [fixed] \u2014 Confirm that buggy and fixed revisions differ on the NEP50 test/probe outcomes. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "ls -la /workspace/buggy && ls -la /workspace/buggy/.venv || true && python -V && which python",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.15
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs scipy.special.tests.test_ufunc_signatures -k test_nep50 --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning -v",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 2.16
+      },
+      {
+        "verification": {
+          "milestone": "buggy_build_and_observe_test_fail",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -I -m pytest --pyargs scipy.special.tests.test_ufu` exited 1: ep50[xlog1py]\nFAILED .venv/lib/python3.12/site-packages/scipy/special/tests/test_ufunc_signatures.py::test_nep50[xlogy]\n================ 18 failed, 115 passed, 322 deselected in 1.41s ================"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Demonstrate the NEP50 dtype/NaN behavior defect by running value-based probes/examples on buggy vs fixed revisions, since the provided reproducing test already fails on buggy but cannot be used for further milestones here.",
+          "milestones": [
+            "fixed_build_and_observe_test_pass [fixed] \u2014 Verify that the same NEP50-related test case passes on the fixed revision using the targeted test selector invocation. (1 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "nep50_reported_example_values_on_buggy_and_fixed [buggy] \u2014 Reproduce the reported NEP50/NaN value-level behavior using the report\u2019s expressions, recording outputs on both revisions and showing they differ appropriately (buggy vs fixed). (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "nep50_reported_example_values_on_fixed [fixed] \u2014 Run the same reported examples on the fixed revision to confirm the dtype/NaN behavior matches the expected (no defect). (1 steps, verify: steps_succeeded, probe_ran, probe_clean)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -m pytest --pyargs scipy.special.tests.test_ufunc_signatures -k test_nep50 --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.31
+      },
+      {
+        "verification": {
+          "milestone": "fixed_build_and_observe_test_pass",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on fixed"
+            },
+            {
+              "check": "test_passes",
+              "passed": true,
+              "detail": "test pass on fixed (milestone required pass)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "nep50_reported_example_values_on_buggy_and_fixed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Demonstrate the NEP50 dtype/NaN behavior difference by running value-based probes tied to the NEP50 test\u2019s ufunc calls on both buggy and fixed revisions, since the report-example probe recorded no values on buggy.",
+          "milestones": [
+            "nep50_value_probe_replacer [buggy] \u2014 Run a direct numerical probe that calls the NEP50 multi-argument ufuncs with NaN-containing inputs and records (a) resulting dtype and (b) whether the value is NaN, on both buggy and fixed revisions; confirm buggy differs from fixed. (4 steps, verify: steps_succeeded, probe_ran, probe_shows_defect, revisions_differ)",
+            "nep50_regression_specific_examples_check [buggy] \u2014 Additionally attempt to evaluate the report\u2019s NEP50-related expressions using the report harness, but require that it actually records at least one value; if it still records none on buggy, rely on the direct probe only. (2 steps, verify: steps_succeeded)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import inspect, scipy.special.tests.test_ufunc_signatures as t; import textwrap; import sys; print(t.__file__);\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.66
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I - <<'PY'\nimport json\nimport scipy.special.tests.test_ufunc_signatures as t\n# Find the function/param list backing test_nep50\nitems=[]\nfor name,obj in sorted(vars(t).items()):\n    if 'nep50' in name.lower() and isinstance(obj,(list,tuple)):\n        items.append((name,obj))\nprint('candidates', [n for n,_ in items])\n# Prefer a known variable name if present\nkeys=[k for k in vars(t) if 'multi' in k.lower() or 'nep50' in k.lower()]\nfor k in sorted(keys):\n    pass\n# Print relevant module globals that look like ufunc/signature tables\nfor k,v in vars(t).items():\n    if isinstance(v,list) and v and isinstance(v[0],tuple):\n        if any('->' in str(x) or 'input' in str(x).lower() or 'output' in str(x).lower() for x in v[0]):\n            print('list_tuple_candidate',k, type(v[0]), v[0])\n# Fallback: show source of test_nep50\nimport inspect\nsrc=inspect.getsource(t.test_nep50)\nprint('---test_nep50_source---')\nprint(src)\nPY",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.63
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "nep50_nan_dtype_signature_probe",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(nep50_nan_dtype_signature_probe) \u2014 Run numerical probe that directly calls a small, representative subset of NEP50 multi-arg ufuncs with NaN replacing one argument, recording dtype and isnan-ness for each ufunc; use stable selection consistent with test_nep50 (e.g., modstruve/hyp1f1 equivalents) discovered from introspection."
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "nep50_nan_dtype_signature_probe",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[fixed] run_numerical_probe(nep50_nan_dtype_signature_probe) \u2014 Run the same numerical probe on the fixed revision to capture paired outputs."
+      },
+      {
+        "verification": {
+          "milestone": "nep50_value_probe_replacer",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(nep50_nan_dtype_signature_probe) \u2014 Run numerical probe that directly calls a small, representative subset of NEP50 multi-arg ufuncs with NaN replacing one argument, recording dtype and isnan-ness for each ufunc; use stable selection consistent with test_nep50 (e.g., modstruve/hyp1f1 equivalents) discovered from introspection. did not execute; [fixed] run_numerical_probe(nep50_nan_dtype_signature_probe) \u2014 Run the same numerical probe on the fixed revision to capture paired outputs. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": true,
+              "detail": "the reproducing test goes FAIL -> PASS"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failed NEP50 regression milestone with a direct value-based probe (no reliance on the report harness) that records dtype and isnan-ness for representative special multi-arg ufuncs with NaN, and confirm buggy vs fixed differ.",
+          "milestones": [
+            "nep50_value_probe_replacer_v2 [buggy] \u2014 Run a custom numerical probe that calls representative NEP50 multi-argument ufuncs with NaN-containing inputs (one argument set to Python float('nan')) and records (i) output dtype(s) and (ii) whether the output value is NaN for each ufunc; verify that at least one ufunc shows a dtype/value differen (2 steps, verify: steps_succeeded, probe_ran, probe_shows_defect, revisions_differ)",
+            "nep50_regression_specific_examples_check_v2 [buggy] \u2014 Evaluate the report's NEP50-related expressions again on both revisions but do not require any values on buggy; instead, record whether the report harness captures values and compare that it differs or is empty consistently, relying on the direct probe for the defect. (2 steps, verify: steps_succeeded, examples_reproduced)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "nep50_nan_dtype_signature_probe_v2",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: TypeError: float() argument must be a string or a real number, not 'type'"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "nep50_nan_dtype_signature_probe_v2",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: TypeError: float() argument must be a string or a real number, not 'type'"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "nep50_value_probe_replacer_v2",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'nep50_nan_dtype_signature_probe_v2': probe raised: TypeError: float() argument must be a string or a real number, not 'type'"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": true,
+              "detail": "the reproducing test goes FAIL -> PASS"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "nep50_regression_specific_examples_check_v2",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/2 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 2 never evaluated \u2014 the preamble does not bind everything they need: Call special.hyp2f1 with signature dddd->d where one argument is set to Python float('nan'): args = [np.float64(nan), np.float64(nan), np.float64(nan), np.float64(nan)]; args[0] = float('nan'); special.hyp2f1(*args); Multi-argument ufunc from _multi_arg_public_ufuncs called with NaN-typed arguments matching signature input_types, where one argument is replaced by Python float('nan') or complex('nan'): e.g. modstruve with signature ddd->d: args = [np.float64(nan), np.float64(nan), np.float64(nan)]; args[idx] = fl"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 2,
+            "recorded": 2,
+            "error": null,
+            "could_not_evaluate": 2
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 2,
+            "recorded": 2,
+            "error": null,
+            "could_not_evaluate": 2
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "described_examples": {
+          "n_described": 2,
+          "buggy": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "not_reproduced",
+        "examples": "0/1"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/1 reported example(s))"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 7,
+      "input_tokens": 18005,
+      "output_tokens": 7180,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.012576
+    }
+  }
+]

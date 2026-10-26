@@ -1,0 +1,62 @@
+diff --git a/pandas/tests/arrays/sparse/test_astype.py b/pandas/tests/arrays/sparse/test_astype.py
+index d839c77521000..59305dcf75993 100644
+--- a/pandas/tests/arrays/sparse/test_astype.py
++++ b/pandas/tests/arrays/sparse/test_astype.py
+@@ -245,3 +245,29 @@ def test_astype_fully_dense_na_fill_to_int_no_raise(self):
+         result = arr.astype("Sparse[int64]")
+         expected = SparseArray(np.array([1, 2, 3], dtype="int64"))
+         tm.assert_sp_array_equal(result, expected)
++
++    def test_astype_uint64_dense_exact(self):
++        # GH#68573 densifying for astype must not promote on type(fill_value):
++        #  np.result_type(uint64, int) is float64, which rounds above 2**53
++        values = np.array([1, 0, 2**63 + 12345], dtype="uint64")
++        arr = SparseArray(values, fill_value=0)
++
++        result = arr.astype("uint64")
++        tm.assert_numpy_array_equal(result, values)
++
++    @pytest.mark.parametrize(
++        "unit_dtype, fill_type", [("M8[ns]", pd.Timestamp), ("m8[ns]", pd.Timedelta)]
++    )
++    @pytest.mark.parametrize("target", ["coarser_unit", "int64", object])
++    def test_astype_dense_boxed_datetimelike_fill_value(
++        self, unit_dtype, fill_type, target
++    ):
++        # GH#68573 a boxed Timestamp/Timedelta fill_value made the densified
++        #  values object dtype, so the cast saw the stored values as raw integers
++        values = np.array([10**9, 2 * 10**9]).astype(unit_dtype)
++        arr = SparseArray(values, fill_value=fill_type(values[0]))
++        dtype = unit_dtype.replace("ns", "s") if target == "coarser_unit" else target
++
++        result = arr.astype(dtype)
++        expected = pd.array(values).astype(dtype)
++        tm.assert_equal(result, expected)
+diff --git a/pandas/tests/copy_view/index/test_index.py b/pandas/tests/copy_view/index/test_index.py
+index fd92bd0f1abc5..5e83230798006 100644
+--- a/pandas/tests/copy_view/index/test_index.py
++++ b/pandas/tests/copy_view/index/test_index.py
+@@ -250,6 +250,23 @@ def test_index_array_inplace_op_raises(data, dtype):
+     tm.assert_index_equal(idx, expected)
+ 
+ 
++def test_sparse_index_astype_readonly():
++    # GH#38547 a fully dense SparseArray densifies to sp_values itself, so
++    #  astype must not hand back a writeable alias of an immutable Index
++    idx = pd.Index(
++        pd.arrays.SparseArray(np.array([1, 2, 3], dtype="int64"), fill_value=0)
++    )
++    expected = idx.copy(deep=True)
++
++    # copy=False keeps the result aliasing sp_values, which is the case under test
++    result = idx.array.astype(np.dtype("int64"), copy=False)
++    assert result.flags.writeable is False
++    with pytest.raises(ValueError, match="read-only"):
++        result[0] = 99
++
++    tm.assert_index_equal(idx, expected)
++
++
+ def test_index_array_inplace_op_raises_interval():
+     # GH#38547 IntervalArray._putmask has its own path mutating _left/_right
+     idx = pd.interval_range(0, 2)

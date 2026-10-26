@@ -1,0 +1,1496 @@
+[
+  {
+    "slug": "astropy_16550",
+    "bug_type": "",
+    "image": "python:3.10",
+    "status": "REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 2/4 reported example(s) show the reported difference between the revisions; the numerical probe still shows the defect on fixed",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "integer_blank_reading": "import sys\nimport numpy as np\nfrom astropy.io import fits\nimport tempfile\nimport os\nfrom io import BytesIO\n\n# Create a simple integer compressed FITS file with blank pixels\ndef create_test_fits():\n    # Create a simple 8x8 int16 array with some data\n    data = np.array([\n        [100, 101, 102, 103, 104, 105, 106, 107],\n        [108, 109, 110, 111, 112, 113, 114, 115],\n        [116, 117, 118, 119, 120, 121, 122, 123],\n        [124, 125, 126, 127, 128, 129, 130, 131],\n        [132, 133, 134, 135, 136, 137, 138, 139],\n        [140, 141, 142, 143, 144, 145, 146, 147],\n        [148, 149, 150, 151, 152, 153, 154, 155],\n        [156, 157, 158, 159, 160, 161, 162, 163]\n    ], dtype=np.int16)\n    \n    # Create primary HDU\n    hdu = fits.PrimaryHDU(data)\n    hdu.header['BLANK'] = -32768\n    \n    # Compress using RICE algorithm\n    hdu_compressed = fits.PrimaryHDU(\n        np.array([[100, 101], [108, 109]], dtype=np.int16)\n    )\n    hdu_compressed.header['ZCMPTYPE'] = 'RICE_1'\n    hdu_compressed.header['BLANK'] = -32768\n    hdu_compressed.header['ZBLANK'] = -32768\n    \n    # Write to temporary file\n    with tempfile.NamedTemporaryFile(delete=False, suffix='.fits') as f:\n        temp_file = f.name\n    \n    hdul = fits.HDUList([hdu])\n    hdul.writeto(temp_file, overwrite=True)\n    \n    return temp_file\n\ntry:\n    # Try to create and read a compressed FITS with blanks\n    fits_file = create_test_fits()\n    try:\n        with fits.open(fits_file) as hdul:\n            data = hdul[0].data\n        probe('success', 1.0)\n    except ValueError as e:\n        if 'cannot convert float NaN to integer' in str(e):\n            probe('nan_conversion_error', 1.0)\n        else:\n            probe('other_error', 0.0)\n    finally:\n        try:\n            os.unlink(fits_file)\n        except:\n            pass\nexcept Exception as e:\n    probe('setup_failed', float('nan'))",
+        "integer_blank_nans": "import numpy as np\nimport tempfile\nimport os\nfrom astropy.io import fits\n\n# Create a simple compressed integer FITS file with blank pixels\nwith tempfile.TemporaryDirectory() as tmpdir:\n    # Create integer data with some values\n    data = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=np.int16)\n    \n    # Create primary HDU and compress it\n    hdu = fits.PrimaryHDU(data=data)\n    hdul = fits.HDUList([hdu])\n    \n    fits_file = os.path.join(tmpdir, 'test_int.fits')\n    hdul.writeto(fits_file, overwrite=True)\n    \n    # Now add BLANK keyword and re-compress using tile compression\n    # Read back and add BLANK keyword\n    with fits.open(fits_file, mode='update') as hdul:\n        hdul[0].header['BLANK'] = -32768\n        # Compress it\n        hdul[0] = fits.CompImageHDU(data=hdul[0].data, header=hdul[0].header)\n    \n    # Now try to read the compressed file - this should fail on buggy with NaN conversion error\n    try:\n        with fits.open(fits_file) as hdul:\n            result = hdul[0].data\n            probe('result_obtained', float(np.sum(result)))\n    except (ValueError, TypeError) as e:\n        # Expected error on buggy: \"cannot convert float NaN to integer\"\n        if 'NaN' in str(e) and 'integer' in str(e):\n            probe('nan_error_caught', 1.0)\n        else:\n            probe('unexpected_error', 0.0)\n    except Exception as e:\n        # Some other exception\n        probe('other_exception', 0.0)\n",
+        "reported_examples": "import numpy as np\nimport os\nimport tempfile\nimport warnings\nfrom astropy.io import fits\nfrom astropy.utils.exceptions import AstropyUserWarning\n\n# Create a temporary directory for test files\ntmpdir = tempfile.mkdtemp()\n\n# Example 1: Pan-STARRS image (real URL - cannot test directly, but we'll test the concept)\ntry:\n    # This example cannot be expressed as code since it references a real URL\n    # We'll skip recording it and note it in unusable\n    pass\nexcept Exception as e:\n    probe(\"Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)\", \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 2: Integer compressed image with BLANK=-16384 keyword set\ntry:\n    # Create a simple compressed FITS image with BLANK keyword\n    data = np.random.randint(-100, 100, size=(64, 64), dtype=np.int16)\n    # Set some pixels as blank\n    data[10, 10] = -16384\n    data[20, 20] = -16384\n    data[30, 30] = -16384\n    \n    # Create primary HDU\n    hdu = fits.PrimaryHDU(data=data)\n    hdu.header['BLANK'] = -16384\n    \n    # Compress it\n    compressed_hdu = fits.CompImageHDU(data=data)\n    compressed_hdu.header['BLANK'] = -16384\n    \n    # Write to file\n    cfile2_path = os.path.join(tmpdir, 'cfile2.fits')\n    hdul = fits.HDUList([fits.PrimaryHDU(), compressed_hdu])\n    hdul.writeto(cfile2_path, overwrite=True)\n    \n    # Try to read it back\n    with fits.open(cfile2_path) as hdul_read:\n        result_data = hdul_read[1].data\n        result_dtype = str(result_data.dtype)\n        result_shape = result_data.shape\n        # Check for NaN at blank locations\n        has_nan_at_blanks = np.isnan(result_data[10, 10]) or np.isnan(result_data[20, 20]) or np.isnan(result_data[30, 30])\n        \n    probe(\"Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)\", \n          f\"dtype:{result_dtype}, shape:{result_shape}, has_nan_at_blanks:{has_nan_at_blanks}\")\n    \nexcept Exception as e:\n    probe(\"Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)\", \n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 3: Integer compressed image with ZBLANK keyword instead of BLANK\ntry:\n    data = np.random.randint(-100, 100, size=(64, 64), dtype=np.int16)\n    data[15, 15] = -20000\n    data[25, 25] = -20000\n    data[35, 35] = -20000\n    \n    compressed_hdu = fits.CompImageHDU(data=data)\n    compressed_hdu.header['ZBLANK'] = -20000\n    \n    cfile3_path = os.path.join(tmpdir, 'cfile3.fits')\n    hdul = fits.HDUList([fits.PrimaryHDU(), compressed_hdu])\n    hdul.writeto(cfile3_path, overwrite=True)\n    \n    with fits.open(cfile3_path) as hdul_read:\n        result_data = hdul_read[1].data\n        result_dtype = str(result_data.dtype)\n        result_shape = result_data.shape\n        has_nan_at_blanks = np.isnan(result_data[15, 15]) or np.isnan(result_data[25, 25]) or np.isnan(result_data[35, 35])\n        \n    probe(\"Integer compressed image with ZBLANK keyword instead of BLANK\", \n          f\"dtype:{result_dtype}, shape:{result_shape}, has_nan_at_blanks:{has_nan_at_blanks}\")\n    \nexcept Exception as e:\n    probe(\"Integer compressed image with ZBLANK keyword instead of BLANK\", \n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 4: Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)\ntry:\n    data = np.random.randint(-100, 100, size=(64, 64), dtype=np.int16)\n    data[12, 12] = -32768  # Default for int16\n    data[22, 22] = -32768\n    data[32, 32] = -32768\n    \n    compressed_hdu = fits.CompImageHDU(data=data)\n    # Intentionally do NOT set BLANK or ZBLANK in header\n    # This will test the default behavior\n    \n    cfile4_path = os.path.join(tmpdir, 'cfile4.fits')\n    hdul = fits.HDUList([fits.PrimaryHDU(), compressed_hdu])\n    hdul.writeto(cfile4_path, overwrite=True)\n    \n    # Read with warning capture\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter(\"always\")\n        with fits.open(cfile4_path) as hdul_read:\n            result_data = hdul_read[1].data\n            result_dtype = str(result_data.dtype)\n            result_shape = result_data.shape\n            has_nan_at_blanks = np.isnan(result_data[12, 12]) or np.isnan(result_data[22, 22]) or np.isnan(result_data[32, 32])\n            warning_occurred = any(issubclass(warning.category, AstropyUserWarning) for warning in w)\n        \n    probe(\"Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)\", \n          f\"dtype:{result_dtype}, shape:{result_shape}, has_nan_at_blanks:{has_nan_at_blanks}, warning:{warning_occurred}\")\n    \nexcept Exception as e:\n    probe(\"Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)\", \n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Cleanup\nimport shutil\nshutil.rmtree(tmpdir, ignore_errors=True)",
+        "described_examples": "import numpy as np\nfrom astropy.io import fits\nfrom io import BytesIO\n\ndescription = \"Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)\"\n\ntry:\n    # Create a simple compressed integer FITS image with BLANK keyword\n    # Create integer data\n    data = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=np.int32)\n    \n    # Create primary HDU\n    hdu = fits.PrimaryHDU(data)\n    \n    # Add BLANK keyword to header\n    hdu.header['BLANK'] = -32768\n    \n    # Create HDU list and write to BytesIO with compression\n    hdul = fits.HDUList([hdu])\n    \n    # Write to bytes buffer with compression\n    buffer = BytesIO()\n    hdul.writeto(buffer, overwrite=True)\n    buffer.seek(0)\n    \n    # Now read it back using astropy\n    with fits.open(buffer) as hdul_read:\n        image_data = hdul_read[0].data\n        header = hdul_read[0].header\n        \n        result = {\n            'data_shape': image_data.shape,\n            'data_dtype': str(image_data.dtype),\n            'has_blank': 'BLANK' in header,\n            'blank_value': header.get('BLANK'),\n            'data': image_data.tolist()\n        }\n        \n        probe(description, result)\n\nexcept Exception as e:\n    probe_exception(description, e)"
+      },
+      "fixed": {
+        "integer_blank_nans": "import numpy as np\nimport tempfile\nimport os\nfrom astropy.io import fits\n\n# Create a simple compressed integer FITS file with blank pixels\nwith tempfile.TemporaryDirectory() as tmpdir:\n    # Create integer data with some values\n    data = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=np.int16)\n    \n    # Create primary HDU and compress it\n    hdu = fits.PrimaryHDU(data=data)\n    hdul = fits.HDUList([hdu])\n    \n    fits_file = os.path.join(tmpdir, 'test_int.fits')\n    hdul.writeto(fits_file, overwrite=True)\n    \n    # Now add BLANK keyword and re-compress using tile compression\n    # Read back and add BLANK keyword\n    with fits.open(fits_file, mode='update') as hdul:\n        hdul[0].header['BLANK'] = -32768\n        # Compress it\n        hdul[0] = fits.CompImageHDU(data=hdul[0].data, header=hdul[0].header)\n    \n    # Now try to read the compressed file - this should succeed on fixed\n    try:\n        with fits.open(fits_file) as hdul:\n            result = hdul[0].data\n            probe('result_obtained', float(np.sum(result)))\n    except (ValueError, TypeError) as e:\n        # Should NOT happen on fixed\n        if 'NaN' in str(e) and 'integer' in str(e):\n            probe('nan_error_caught', 1.0)\n        else:\n            probe('unexpected_error', 0.0)\n    except Exception as e:\n        # Some other exception\n        probe('other_exception', 0.0)\n",
+        "reported_examples": "import numpy as np\nimport os\nimport tempfile\nimport warnings\nfrom astropy.io import fits\nfrom astropy.utils.exceptions import AstropyUserWarning\n\n# Create a temporary directory for test files\ntmpdir = tempfile.mkdtemp()\n\n# Example 1: Pan-STARRS image (real URL - cannot test directly, but we'll test the concept)\ntry:\n    # This example cannot be expressed as code since it references a real URL\n    # We'll skip recording it and note it in unusable\n    pass\nexcept Exception as e:\n    probe(\"Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)\", \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 2: Integer compressed image with BLANK=-16384 keyword set\ntry:\n    # Create a simple compressed FITS image with BLANK keyword\n    data = np.random.randint(-100, 100, size=(64, 64), dtype=np.int16)\n    # Set some pixels as blank\n    data[10, 10] = -16384\n    data[20, 20] = -16384\n    data[30, 30] = -16384\n    \n    # Create primary HDU\n    hdu = fits.PrimaryHDU(data=data)\n    hdu.header['BLANK'] = -16384\n    \n    # Compress it\n    compressed_hdu = fits.CompImageHDU(data=data)\n    compressed_hdu.header['BLANK'] = -16384\n    \n    # Write to file\n    cfile2_path = os.path.join(tmpdir, 'cfile2.fits')\n    hdul = fits.HDUList([fits.PrimaryHDU(), compressed_hdu])\n    hdul.writeto(cfile2_path, overwrite=True)\n    \n    # Try to read it back\n    with fits.open(cfile2_path) as hdul_read:\n        result_data = hdul_read[1].data\n        result_dtype = str(result_data.dtype)\n        result_shape = result_data.shape\n        # Check for NaN at blank locations\n        has_nan_at_blanks = np.isnan(result_data[10, 10]) or np.isnan(result_data[20, 20]) or np.isnan(result_data[30, 30])\n        \n    probe(\"Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)\", \n          f\"dtype:{result_dtype}, shape:{result_shape}, has_nan_at_blanks:{has_nan_at_blanks}\")\n    \nexcept Exception as e:\n    probe(\"Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)\", \n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 3: Integer compressed image with ZBLANK keyword instead of BLANK\ntry:\n    data = np.random.randint(-100, 100, size=(64, 64), dtype=np.int16)\n    data[15, 15] = -20000\n    data[25, 25] = -20000\n    data[35, 35] = -20000\n    \n    compressed_hdu = fits.CompImageHDU(data=data)\n    compressed_hdu.header['ZBLANK'] = -20000\n    \n    cfile3_path = os.path.join(tmpdir, 'cfile3.fits')\n    hdul = fits.HDUList([fits.PrimaryHDU(), compressed_hdu])\n    hdul.writeto(cfile3_path, overwrite=True)\n    \n    with fits.open(cfile3_path) as hdul_read:\n        result_data = hdul_read[1].data\n        result_dtype = str(result_data.dtype)\n        result_shape = result_data.shape\n        has_nan_at_blanks = np.isnan(result_data[15, 15]) or np.isnan(result_data[25, 25]) or np.isnan(result_data[35, 35])\n        \n    probe(\"Integer compressed image with ZBLANK keyword instead of BLANK\", \n          f\"dtype:{result_dtype}, shape:{result_shape}, has_nan_at_blanks:{has_nan_at_blanks}\")\n    \nexcept Exception as e:\n    probe(\"Integer compressed image with ZBLANK keyword instead of BLANK\", \n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 4: Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)\ntry:\n    data = np.random.randint(-100, 100, size=(64, 64), dtype=np.int16)\n    data[12, 12] = -32768  # Default for int16\n    data[22, 22] = -32768\n    data[32, 32] = -32768\n    \n    compressed_hdu = fits.CompImageHDU(data=data)\n    # Intentionally do NOT set BLANK or ZBLANK in header\n    # This will test the default behavior\n    \n    cfile4_path = os.path.join(tmpdir, 'cfile4.fits')\n    hdul = fits.HDUList([fits.PrimaryHDU(), compressed_hdu])\n    hdul.writeto(cfile4_path, overwrite=True)\n    \n    # Read with warning capture\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter(\"always\")\n        with fits.open(cfile4_path) as hdul_read:\n            result_data = hdul_read[1].data\n            result_dtype = str(result_data.dtype)\n            result_shape = result_data.shape\n            has_nan_at_blanks = np.isnan(result_data[12, 12]) or np.isnan(result_data[22, 22]) or np.isnan(result_data[32, 32])\n            warning_occurred = any(issubclass(warning.category, AstropyUserWarning) for warning in w)\n        \n    probe(\"Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)\", \n          f\"dtype:{result_dtype}, shape:{result_shape}, has_nan_at_blanks:{has_nan_at_blanks}, warning:{warning_occurred}\")\n    \nexcept Exception as e:\n    probe(\"Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)\", \n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Cleanup\nimport shutil\nshutil.rmtree(tmpdir, ignore_errors=True)",
+        "described_examples": "import numpy as np\nfrom astropy.io import fits\nfrom io import BytesIO\n\ndescription = \"Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)\"\n\ntry:\n    # Create a simple compressed integer FITS image with BLANK keyword\n    # Create integer data\n    data = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=np.int32)\n    \n    # Create primary HDU\n    hdu = fits.PrimaryHDU(data)\n    \n    # Add BLANK keyword to header\n    hdu.header['BLANK'] = -32768\n    \n    # Create HDU list and write to BytesIO with compression\n    hdul = fits.HDUList([hdu])\n    \n    # Write to bytes buffer with compression\n    buffer = BytesIO()\n    hdul.writeto(buffer, overwrite=True)\n    buffer.seek(0)\n    \n    # Now read it back using astropy\n    with fits.open(buffer) as hdul_read:\n        image_data = hdul_read[0].data\n        header = hdul_read[0].header\n        \n        result = {\n            'data_shape': image_data.shape,\n            'data_dtype': str(image_data.dtype),\n            'has_blank': 'BLANK' in header,\n            'blank_value': header.get('BLANK'),\n            'data': image_data.tolist()\n        }\n        \n        probe(description, result)\n\nexcept Exception as e:\n    probe_exception(description, e)"
+      }
+    },
+    "report": {
+      "status": "REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 2/4 reported example(s) show the reported difference between the revisions; the numerical probe still shows the defect on fixed",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "reproduced",
+      "success_criterion": "The test_integer_blank_support test passes without ValueError exceptions. Specifically: (a) cfile1 (BLANK keyword) opens and data equals reference; (b) cfile2 (ZBLANK keyword) opens and data equals reference; (c) cfile4 (ZBLANK column + BLANK keyword) opens and data equals reference; (d) cfile3 (ZBLANK column only) opens with expected AstropyUserWarning and data equals reference with default BLANK=-32768.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 1,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 1,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)": {
+                "data_shape": [
+                  3,
+                  3
+                ],
+                "data_dtype": "float64",
+                "has_blank": true,
+                "blank_value": -32768,
+                "data": [
+                  [
+                    1.0,
+                    2.0,
+                    3.0
+                  ],
+                  [
+                    4.0,
+                    5.0,
+                    6.0
+                  ],
+                  [
+                    7.0,
+                    8.0,
+                    9.0
+                  ]
+                ]
+              }
+            },
+            "fixed_values": {
+              "Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)": {
+                "data_shape": [
+                  3,
+                  3
+                ],
+                "data_dtype": "float64",
+                "has_blank": true,
+                "blank_value": -32768,
+                "data": [
+                  [
+                    1.0,
+                    2.0,
+                    3.0
+                  ],
+                  [
+                    4.0,
+                    5.0,
+                    6.0
+                  ],
+                  [
+                    7.0,
+                    8.0,
+                    9.0
+                  ]
+                ]
+              }
+            }
+          },
+          {
+            "label": "integer_blank_nans",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: Note: astropy.io.fits uses zero-based indexing."
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: Note: astropy.io.fits uses zero-based indexing."
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "integer_blank_reading",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "success": 1.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)": "dtype:int16, shape:(64, 64), has_nan_at_blanks:False",
+              "Integer compressed image with ZBLANK keyword instead of BLANK": "__error__: ValueError: cannot convert float NaN to integer",
+              "Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)": "dtype:int16, shape:(64, 64), has_nan_at_blanks:False, warning:False"
+            },
+            "fixed_values": {
+              "Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)": "dtype:float32, shape:(64, 64), has_nan_at_blanks:True",
+              "Integer compressed image with ZBLANK keyword instead of BLANK": "dtype:float32, shape:(64, 64), has_nan_at_blanks:True",
+              "Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)": "dtype:int16, shape:(64, 64), has_nan_at_blanks:False, warning:False"
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)",
+            "expected_output": "Successfully loads the compressed image data and returns float array with NaN values for blanked pixels",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: cannot convert float NaN to integer",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)",
+              "observed": {
+                "data_shape": [
+                  3,
+                  3
+                ],
+                "data_dtype": "float64",
+                "has_blank": true,
+                "blank_value": -32768,
+                "data": [
+                  [
+                    1.0,
+                    2.0,
+                    3.0
+                  ],
+                  [
+                    4.0,
+                    5.0,
+                    6.0
+                  ],
+                  [
+                    7.0,
+                    8.0,
+                    9.0
+                  ]
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)",
+              "observed": {
+                "data_shape": [
+                  3,
+                  3
+                ],
+                "data_dtype": "float64",
+                "has_blank": true,
+                "blank_value": -32768,
+                "data": [
+                  [
+                    1.0,
+                    2.0,
+                    3.0
+                  ],
+                  [
+                    4.0,
+                    5.0,
+                    6.0
+                  ],
+                  [
+                    7.0,
+                    8.0,
+                    9.0
+                  ]
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)",
+            "expected_output": "Float32 array matching reference data with NaN values at blank pixel locations",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: cannot convert float NaN to integer at tile_data[blank_mask] = np.nan",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)",
+              "observed": "dtype:int16, shape:(64, 64), has_nan_at_blanks:False",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)",
+              "observed": "dtype:float32, shape:(64, 64), has_nan_at_blanks:True",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "Integer compressed image with ZBLANK keyword instead of BLANK",
+            "expected_output": "Float32 array matching reference data with NaN values at blank pixel locations",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: cannot convert float NaN to integer at tile_data[blank_mask] = np.nan",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "Integer compressed image with ZBLANK keyword instead of BLANK",
+              "observed": "__error__: ValueError: cannot convert float NaN to integer",
+              "evaluation_error": "ValueError: cannot convert float NaN to integer",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "Integer compressed image with ZBLANK keyword instead of BLANK",
+              "observed": "dtype:float32, shape:(64, 64), has_nan_at_blanks:True",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)",
+            "expected_output": "Float32 array matching reference data with NaN values at blank pixel locations (with AstropyUserWarning about default BLANK value)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: cannot convert float NaN to integer at tile_data[blank_mask] = np.nan",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)",
+              "observed": "dtype:int16, shape:(64, 64), has_nan_at_blanks:False, warning:False",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)",
+              "observed": "dtype:int16, shape:(64, 64), has_nan_at_blanks:False, warning:False",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 7,
+            "n_failed": 4,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 2,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2024-06-27T12:32:44-04:00",
+        "fixed_commit_date": "2024-06-28T09:24:06+02:00",
+        "reproducing_test_present": true,
+        "build_detected": "setup.py:ext_modules|cython-source:astropy/timeseries/periodograms/bls/_impl.pyx",
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2024-06-28T09:24:06+02:00",
+        "build": {
+          "git": "installed",
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.10/site-packages/astropy/__init__.py",
+            "build_requires": [
+              "setuptools",
+              "setuptools_scm>=6.2",
+              "cython>=3.0.0,<3.1.0",
+              "extension-helpers==1.*"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.0.0",
+              "pandas": "2.2.2",
+              "matplotlib": "3.9.0",
+              "pyparsing": "3.1.2",
+              "llvmlite": "0.43.0",
+              "setuptools": "70.1.1",
+              "setuptools-scm": "8.1.0",
+              "cython": "3.0.10",
+              "extension-helpers": "1.1.1"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=7.0",
+              "pytest-astropy-header>=0.2.1",
+              "pytest-astropy>=0.10",
+              "pytest-xdist==3.6.1",
+              "threadpoolctl",
+              "pytest-doctestplus==1.2.1",
+              "pytest-remotedata==0.4.1",
+              "pytest-cov==5.0.0",
+              "pytest-mpl==0.17.0"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): finished with status 'done'\nCollecting PyYAML>=3.13\n  Downloading pyyaml-6.0.3-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (770 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 770.3/770.3 kB 7.7 MB/s eta 0:00:00\nRequirement already satisfied: packaging>=19.0 in /usr/local/lib/python3.10/site-packages (from astropy==6.1.2.dev14+ge85ba377e9.d20260929) (26.3)\nCollecting astropy-iers-data>=0.2024.5.27.0.30.8\n  Downloading astropy_iers_data-0.2026.9.28.0.59.37-py3-none-any.whl (2.0 MB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 2.0/2.0 MB 60.1 MB/s eta 0:00:00\nCollecting pyerfa>=2.0.1.1\n  Downloading pyerfa-2.0.1.5-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (738 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 738.7/738.7 kB 157.6 MB/s eta 0:00:00\nRequirement already satisfied: numpy>=1.23 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from astropy==6.1.2.dev14+ge85ba377e9.d20260929) (2.0.0)\nBuilding wheels for collected packages: astropy\n  Building wheel for astropy (pyproject.toml): started\n  Building wheel for astropy (pyproject.toml): still running...\n  Building wheel for astropy (pyproject.toml): finished with status 'done'\n  Created wheel for astropy: filename=astropy-6.1.2.dev14+ge85ba377e9.d20260929-cp310-cp310-linux_x86_64.whl size=10123746 sha256=335d4d4ca159637cf336ed09f1df26f5e4005716be835b8b299bc4a25b3407f2\n  Stored in directory: /tmp/pip-ephem-wheel-cache-bdz3ux8k/wheels/ed/f7/86/c0f1039ac56a217e74c3b8eda25eb10695c47995525191ed3e\nSuccessfully built astropy\nInstalling collected packages: PyYAML, pyerfa, astropy-iers-data, astropy\nSuccessfully installed PyYAML-6.0.3 astropy-6.1.2.dev14+ge85ba377e9.d20260929 astropy-iers-data-0.2026.9.28.0.59.37 pyerfa-2.0.1.5\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.10/site-packages/astropy/__init__.py",
+            "build_requires": [
+              "setuptools",
+              "setuptools_scm>=6.2",
+              "cython>=3.0.0,<3.1.0",
+              "extension-helpers==1.*"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.0.0",
+              "pandas": "2.2.2",
+              "matplotlib": "3.9.0",
+              "pyparsing": "3.1.2",
+              "llvmlite": "0.43.0",
+              "setuptools": "70.1.1",
+              "setuptools-scm": "8.1.0",
+              "cython": "3.0.10",
+              "extension-helpers": "1.1.1"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest>=7.0",
+              "pytest-astropy-header>=0.2.1",
+              "pytest-astropy>=0.10",
+              "pytest-xdist==3.6.1",
+              "threadpoolctl",
+              "pytest-doctestplus==1.2.1",
+              "pytest-remotedata==0.4.1",
+              "pytest-cov==5.0.0",
+              "pytest-mpl==0.17.0"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): finished with status 'done'\nCollecting astropy-iers-data>=0.2024.5.27.0.30.8\n  Downloading astropy_iers_data-0.2026.9.28.0.59.37-py3-none-any.whl (2.0 MB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 2.0/2.0 MB 28.8 MB/s eta 0:00:00\nCollecting pyerfa>=2.0.1.1\n  Downloading pyerfa-2.0.1.5-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (738 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 738.7/738.7 kB 54.1 MB/s eta 0:00:00\nRequirement already satisfied: numpy>=1.23 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from astropy==6.1.2.dev19+g9ff62a8a25) (2.0.0)\nRequirement already satisfied: packaging>=19.0 in /usr/local/lib/python3.10/site-packages (from astropy==6.1.2.dev19+g9ff62a8a25) (26.3)\nCollecting PyYAML>=3.13\n  Downloading pyyaml-6.0.3-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (770 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 770.3/770.3 kB 60.5 MB/s eta 0:00:00\nBuilding wheels for collected packages: astropy\n  Building wheel for astropy (pyproject.toml): started\n  Building wheel for astropy (pyproject.toml): still running...\n  Building wheel for astropy (pyproject.toml): finished with status 'done'\n  Created wheel for astropy: filename=astropy-6.1.2.dev19+g9ff62a8a25-cp310-cp310-linux_x86_64.whl size=10123687 sha256=2e9906391b05e9f6aff73d54668046dd42e5eff215285b63bc806b1406c8e600\n  Stored in directory: /tmp/pip-ephem-wheel-cache-2xvurt_1/wheels/e7/d9/e6/2becdd66929be2a2e7d7caf6055a3b033c7fa76967b6c0543a\nSuccessfully built astropy\nInstalling collected packages: PyYAML, pyerfa, astropy-iers-data, astropy\nSuccessfully installed PyYAML-6.0.3 astropy-6.1.2.dev19+g9ff62a8a25 astropy-iers-data-0.2026.9.28.0.59.37 pyerfa-2.0.1.5\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 1,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 1,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 4,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)": {
+                "data_shape": [
+                  3,
+                  3
+                ],
+                "data_dtype": "float64",
+                "has_blank": true,
+                "blank_value": -32768,
+                "data": [
+                  [
+                    1.0,
+                    2.0,
+                    3.0
+                  ],
+                  [
+                    4.0,
+                    5.0,
+                    6.0
+                  ],
+                  [
+                    7.0,
+                    8.0,
+                    9.0
+                  ]
+                ]
+              }
+            },
+            "fixed_values": {
+              "Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)": {
+                "data_shape": [
+                  3,
+                  3
+                ],
+                "data_dtype": "float64",
+                "has_blank": true,
+                "blank_value": -32768,
+                "data": [
+                  [
+                    1.0,
+                    2.0,
+                    3.0
+                  ],
+                  [
+                    4.0,
+                    5.0,
+                    6.0
+                  ],
+                  [
+                    7.0,
+                    8.0,
+                    9.0
+                  ]
+                ]
+              }
+            }
+          },
+          {
+            "label": "integer_blank_nans",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: Note: astropy.io.fits uses zero-based indexing."
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: Note: astropy.io.fits uses zero-based indexing."
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          },
+          {
+            "label": "integer_blank_reading",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "success": 1.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)": "dtype:int16, shape:(64, 64), has_nan_at_blanks:False",
+              "Integer compressed image with ZBLANK keyword instead of BLANK": "__error__: ValueError: cannot convert float NaN to integer",
+              "Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)": "dtype:int16, shape:(64, 64), has_nan_at_blanks:False, warning:False"
+            },
+            "fixed_values": {
+              "Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)": "dtype:float32, shape:(64, 64), has_nan_at_blanks:True",
+              "Integer compressed image with ZBLANK keyword instead of BLANK": "dtype:float32, shape:(64, 64), has_nan_at_blanks:True",
+              "Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)": "dtype:int16, shape:(64, 64), has_nan_at_blanks:False, warning:False"
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 4,
+        "n_judged": 4,
+        "n_reproduced": 2,
+        "evaluable": true,
+        "n_diverged": 1,
+        "n_unobserved": 0,
+        "n_contested": 0,
+        "unobserved": [],
+        "verdict": "reproduced",
+        "examples": [
+          {
+            "input": "Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)",
+            "expected_output": "Successfully loads the compressed image data and returns float array with NaN values for blanked pixels",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: cannot convert float NaN to integer",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)",
+              "observed": {
+                "data_shape": [
+                  3,
+                  3
+                ],
+                "data_dtype": "float64",
+                "has_blank": true,
+                "blank_value": -32768,
+                "data": [
+                  [
+                    1.0,
+                    2.0,
+                    3.0
+                  ],
+                  [
+                    4.0,
+                    5.0,
+                    6.0
+                  ],
+                  [
+                    7.0,
+                    8.0,
+                    9.0
+                  ]
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "Load a compressed integer FITS image with BLANK or ZBLANK keyword set (e.g., Pan-STARRS image: http://ps1images.stsci.edu/rings.v3.skycell/1004/016/rings.v3.skycell.1004.016.stk.g.unconv.fits)",
+              "observed": {
+                "data_shape": [
+                  3,
+                  3
+                ],
+                "data_dtype": "float64",
+                "has_blank": true,
+                "blank_value": -32768,
+                "data": [
+                  [
+                    1.0,
+                    2.0,
+                    3.0
+                  ],
+                  [
+                    4.0,
+                    5.0,
+                    6.0
+                  ],
+                  [
+                    7.0,
+                    8.0,
+                    9.0
+                  ]
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)",
+            "expected_output": "Float32 array matching reference data with NaN values at blank pixel locations",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: cannot convert float NaN to integer at tile_data[blank_mask] = np.nan",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)",
+              "observed": "dtype:int16, shape:(64, 64), has_nan_at_blanks:False",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "Integer compressed image with BLANK=-16384 keyword set in header (64x64 int16 subset with 3 blank pixels)",
+              "observed": "dtype:float32, shape:(64, 64), has_nan_at_blanks:True",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "Integer compressed image with ZBLANK keyword instead of BLANK",
+            "expected_output": "Float32 array matching reference data with NaN values at blank pixel locations",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: cannot convert float NaN to integer at tile_data[blank_mask] = np.nan",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "Integer compressed image with ZBLANK keyword instead of BLANK",
+              "observed": "__error__: ValueError: cannot convert float NaN to integer",
+              "evaluation_error": "ValueError: cannot convert float NaN to integer",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "Integer compressed image with ZBLANK keyword instead of BLANK",
+              "observed": "dtype:float32, shape:(64, 64), has_nan_at_blanks:True",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)",
+            "expected_output": "Float32 array matching reference data with NaN values at blank pixel locations (with AstropyUserWarning about default BLANK value)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: cannot convert float NaN to integer at tile_data[blank_mask] = np.nan",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)",
+              "observed": "dtype:int16, shape:(64, 64), has_nan_at_blanks:False, warning:False",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "Integer compressed image with ZBLANK in binary table column (no BLANK/ZBLANK header keyword)",
+              "observed": "dtype:int16, shape:(64, 64), has_nan_at_blanks:False, warning:False",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 7,
+          "n_failed": 4,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 2,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "The test_integer_blank_support test passes without ValueError exceptions. Specifically: (a) cfile1 (BLANK keyword) opens and data equals reference; (b) cfile2 (ZBLANK keyword) opens and data equals reference; (c) cfile4 (ZBLANK column + BLANK keyword) opens and data equals reference; (d) cfile3 (ZBLANK column only) opens with expected AstropyUserWarning and data equals reference with default BLANK=-32768."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2024-06-27T12:32:44-04:00",
+      "fixed_commit_date": "2024-06-28T09:24:06+02:00",
+      "reproducing_test_present": true,
+      "build_detected": "setup.py:ext_modules|cython-source:astropy/timeseries/periodograms/bls/_impl.pyx",
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2024-06-28T09:24:06+02:00",
+      "build": {
+        "git": "installed",
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.10/site-packages/astropy/__init__.py",
+          "build_requires": [
+            "setuptools",
+            "setuptools_scm>=6.2",
+            "cython>=3.0.0,<3.1.0",
+            "extension-helpers==1.*"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.0.0",
+            "pandas": "2.2.2",
+            "matplotlib": "3.9.0",
+            "pyparsing": "3.1.2",
+            "llvmlite": "0.43.0",
+            "setuptools": "70.1.1",
+            "setuptools-scm": "8.1.0",
+            "cython": "3.0.10",
+            "extension-helpers": "1.1.1"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=7.0",
+            "pytest-astropy-header>=0.2.1",
+            "pytest-astropy>=0.10",
+            "pytest-xdist==3.6.1",
+            "threadpoolctl",
+            "pytest-doctestplus==1.2.1",
+            "pytest-remotedata==0.4.1",
+            "pytest-cov==5.0.0",
+            "pytest-mpl==0.17.0"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): finished with status 'done'\nCollecting PyYAML>=3.13\n  Downloading pyyaml-6.0.3-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (770 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 770.3/770.3 kB 7.7 MB/s eta 0:00:00\nRequirement already satisfied: packaging>=19.0 in /usr/local/lib/python3.10/site-packages (from astropy==6.1.2.dev14+ge85ba377e9.d20260929) (26.3)\nCollecting astropy-iers-data>=0.2024.5.27.0.30.8\n  Downloading astropy_iers_data-0.2026.9.28.0.59.37-py3-none-any.whl (2.0 MB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 2.0/2.0 MB 60.1 MB/s eta 0:00:00\nCollecting pyerfa>=2.0.1.1\n  Downloading pyerfa-2.0.1.5-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (738 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 738.7/738.7 kB 157.6 MB/s eta 0:00:00\nRequirement already satisfied: numpy>=1.23 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from astropy==6.1.2.dev14+ge85ba377e9.d20260929) (2.0.0)\nBuilding wheels for collected packages: astropy\n  Building wheel for astropy (pyproject.toml): started\n  Building wheel for astropy (pyproject.toml): still running...\n  Building wheel for astropy (pyproject.toml): finished with status 'done'\n  Created wheel for astropy: filename=astropy-6.1.2.dev14+ge85ba377e9.d20260929-cp310-cp310-linux_x86_64.whl size=10123746 sha256=335d4d4ca159637cf336ed09f1df26f5e4005716be835b8b299bc4a25b3407f2\n  Stored in directory: /tmp/pip-ephem-wheel-cache-bdz3ux8k/wheels/ed/f7/86/c0f1039ac56a217e74c3b8eda25eb10695c47995525191ed3e\nSuccessfully built astropy\nInstalling collected packages: PyYAML, pyerfa, astropy-iers-data, astropy\nSuccessfully installed PyYAML-6.0.3 astropy-6.1.2.dev14+ge85ba377e9.d20260929 astropy-iers-data-0.2026.9.28.0.59.37 pyerfa-2.0.1.5\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.10/site-packages/astropy/__init__.py",
+          "build_requires": [
+            "setuptools",
+            "setuptools_scm>=6.2",
+            "cython>=3.0.0,<3.1.0",
+            "extension-helpers==1.*"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.0.0",
+            "pandas": "2.2.2",
+            "matplotlib": "3.9.0",
+            "pyparsing": "3.1.2",
+            "llvmlite": "0.43.0",
+            "setuptools": "70.1.1",
+            "setuptools-scm": "8.1.0",
+            "cython": "3.0.10",
+            "extension-helpers": "1.1.1"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest>=7.0",
+            "pytest-astropy-header>=0.2.1",
+            "pytest-astropy>=0.10",
+            "pytest-xdist==3.6.1",
+            "threadpoolctl",
+            "pytest-doctestplus==1.2.1",
+            "pytest-remotedata==0.4.1",
+            "pytest-cov==5.0.0",
+            "pytest-mpl==0.17.0"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): finished with status 'done'\nCollecting astropy-iers-data>=0.2024.5.27.0.30.8\n  Downloading astropy_iers_data-0.2026.9.28.0.59.37-py3-none-any.whl (2.0 MB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 2.0/2.0 MB 28.8 MB/s eta 0:00:00\nCollecting pyerfa>=2.0.1.1\n  Downloading pyerfa-2.0.1.5-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (738 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 738.7/738.7 kB 54.1 MB/s eta 0:00:00\nRequirement already satisfied: numpy>=1.23 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from astropy==6.1.2.dev19+g9ff62a8a25) (2.0.0)\nRequirement already satisfied: packaging>=19.0 in /usr/local/lib/python3.10/site-packages (from astropy==6.1.2.dev19+g9ff62a8a25) (26.3)\nCollecting PyYAML>=3.13\n  Downloading pyyaml-6.0.3-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (770 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 770.3/770.3 kB 60.5 MB/s eta 0:00:00\nBuilding wheels for collected packages: astropy\n  Building wheel for astropy (pyproject.toml): started\n  Building wheel for astropy (pyproject.toml): still running...\n  Building wheel for astropy (pyproject.toml): finished with status 'done'\n  Created wheel for astropy: filename=astropy-6.1.2.dev19+g9ff62a8a25-cp310-cp310-linux_x86_64.whl size=10123687 sha256=2e9906391b05e9f6aff73d54668046dd42e5eff215285b63bc806b1406c8e600\n  Stored in directory: /tmp/pip-ephem-wheel-cache-2xvurt_1/wheels/e7/d9/e6/2becdd66929be2a2e7d7caf6055a3b033c7fa76967b6c0543a\nSuccessfully built astropy\nInstalling collected packages: PyYAML, pyerfa, astropy-iers-data, astropy\nSuccessfully installed PyYAML-6.0.3 astropy-6.1.2.dev19+g9ff62a8a25 astropy-iers-data-0.2026.9.28.0.59.37 pyerfa-2.0.1.5\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 6,
+    "history": [
+      {
+        "planner": {
+          "goal": "Verify that integer compressed FITS images with blank pixels fail on buggy revision due to NaN assignment to integer arrays, and pass on fixed revision by using appropriate blank values from headers.",
+          "milestones": [
+            "buggy_environment_ready [buggy] \u2014 Set up the buggy revision's environment with astropy and dependencies built and ready. (2 steps, verify: steps_succeeded)",
+            "buggy_test_fails [buggy] \u2014 Demonstrate that the test_integer_blank_support test fails on the buggy revision with the expected ValueError. (1 steps, verify: test_ran, test_fails)",
+            "buggy_nan_conversion_defect [buggy] \u2014 Confirm that the specific defect is the NaN conversion error by running a probe that triggers the blank pixel handling code. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "fixed_environment_ready [fixed] \u2014 Set up the fixed revision's environment with astropy and dependencies built and ready. (2 steps, verify: steps_succeeded)",
+            "fixed_test_passes [fixed] \u2014 Demonstrate that the test_integer_blank_support test passes on the fixed revision. (1 steps, verify: test_ran, test_passes)",
+            "behavior_differs_between_revisions [fixed] \u2014 Confirm that the fixed revision successfully handles blank pixels in integer compressed FITS images where the buggy revision fails. (1 steps, verify: probe_ran, probe_clean, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -m pip install -q --upgrade pip setuptools wheel",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 11.44
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -m pip install -q pytest hypothesis scipy",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 13.24
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs astropy.io.fits.hdu.compressed.tests.test_tiled_compression -k test_integer_blank_support -v --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 5.83
+      },
+      {
+        "verification": {
+          "milestone": "buggy_test_fails",
+          "verified": true,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "nan_conversion_error",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(nan_conversion_error) \u2014 Verify that buggy revision raises the NaN conversion error with integer data"
+      },
+      {
+        "verification": {
+          "milestone": "buggy_nan_conversion_defect",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Verify that integer compressed FITS images with blank pixels fail on buggy revision due to NaN assignment to integer arrays, and pass on fixed revision by using appropriate blank values from headers.",
+          "milestones": [
+            "buggy_nan_conversion_defect [buggy] \u2014 Confirm that the specific defect is the NaN conversion error by running a probe that triggers the blank pixel handling code. (2 steps, verify: steps_succeeded, probe_ran)",
+            "fixed_environment_ready [fixed] \u2014 Set up the fixed revision's environment with astropy and dependencies built and ready. (2 steps, verify: steps_succeeded)",
+            "fixed_test_passes [fixed] \u2014 Demonstrate that the test_integer_blank_support test passes on the fixed revision. (1 steps, verify: test_ran, test_passes)",
+            "behavior_differs_between_revisions [fixed] \u2014 Confirm that the fixed revision successfully handles blank pixels in integer compressed FITS images where the buggy revision fails. (1 steps, verify: probe_ran, probe_clean, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c \"import astropy; print('astropy ready')\"",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 0.81
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "integer_blank_reading",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: Note: astropy.io.fits uses zero-based indexing."
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_nan_conversion_defect",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -c \"import astropy; print('astropy ready')\"` exited 1:  or from an editable installation without building the extension modules first. Either run:\n\n  pip install -e .\n\nor\n\n  python setup.py build_ext --inplace\n\nto make sure the extension modules are built"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Verify that integer compressed FITS images with blank pixels fail on buggy revision due to NaN assignment to integer arrays, and pass on fixed revision by using appropriate blank values from headers.",
+          "milestones": [
+            "buggy_environment_ready [buggy] \u2014 Ensure the buggy revision's environment is properly built and astropy can be imported. (1 steps, verify: steps_succeeded)",
+            "buggy_nan_conversion_defect [buggy] \u2014 Trigger and confirm the NaN conversion error when reading integer compressed FITS with blank pixels. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "fixed_environment_ready [fixed] \u2014 Ensure the fixed revision's environment is properly built and astropy can be imported. (1 steps, verify: steps_succeeded)",
+            "fixed_blank_handling [fixed] \u2014 Verify that the fixed revision successfully handles integer compressed FITS with blank pixels using appropriate blank values. (1 steps, verify: probe_ran, probe_clean, revisions_differ)",
+            "test_passes_on_fixed [fixed] \u2014 Confirm that the test_integer_blank_support test now passes on the fixed revision. (1 steps, verify: test_ran, test_passes)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import astropy; print('astropy ready')\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.4
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "integer_blank_reading",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_nan_conversion_defect",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "no probe exhibited the defect on buggy (values [1.0])"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Verify that integer compressed FITS images with blank pixels fail on buggy revision due to NaN assignment to integer arrays, and pass on fixed revision by using appropriate blank values from headers.",
+          "milestones": [
+            "buggy_nan_conversion_defect [buggy] \u2014 Confirm the NaN conversion error when reading integer compressed FITS with blank pixels on buggy revision. (2 steps, verify: test_ran, test_fails, probe_ran)",
+            "fixed_environment_ready [fixed] \u2014 Ensure the fixed revision's environment is properly built and astropy can be imported. (1 steps, verify: steps_succeeded)",
+            "fixed_blank_handling [fixed] \u2014 Verify that the fixed revision successfully handles integer compressed FITS with blank pixels using appropriate blank values from headers. (1 steps, verify: probe_ran, probe_clean)",
+            "test_passes_on_fixed [fixed] \u2014 Confirm that the test_integer_blank_support test now passes on the fixed revision. (1 steps, verify: test_ran, test_passes)",
+            "defect_resolved [fixed] \u2014 Confirm the defect is fixed by comparing test results and probe outcomes between buggy and fixed revisions. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs astropy.io.fits.hdu.compressed.tests.test_tiled_compression -k test_integer_blank_support -v --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 3.41
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "integer_blank_nans",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: Note: astropy.io.fits uses zero-based indexing."
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_nan_conversion_defect",
+          "verified": true,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -c \"import astropy; print('astropy ready')\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 0.4
+      },
+      {
+        "verification": {
+          "milestone": "fixed_environment_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "integer_blank_nans",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: Note: astropy.io.fits uses zero-based indexing."
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "fixed_blank_handling",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "probe 'integer_blank_nans' is not clean on fixed: probe raised: Note: astropy.io.fits uses zero-based indexing."
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs astropy.io.fits.hdu.compressed.tests.test_tiled_compression -k test_integer_blank_support -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 3.14
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs astropy.io.fits.hdu.compressed.tests.test_tiled_compression -k test_integer_blank_support -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 3.35
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_integer_blank_support",
+          "command": "python -I -m pytest --pyargs astropy.io.fits.hdu.compressed.tests.test_tiled_compression -k test_integer_blank_support -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "astropy",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_integer_blank_support",
+              "command": "python -I -m pytest --pyargs astropy.io.fits.hdu.compressed.tests.test_tiled_compression -k test_integer_blank_support -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 4,
+            "recorded": 3,
+            "error": null,
+            "could_not_evaluate": 1
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 4,
+            "recorded": 3,
+            "error": null,
+            "could_not_evaluate": 0
+          },
+          "preamble": "generated probe",
+          "observed": 3
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced NaN"
+        ],
+        "expected": null,
+        "observed": [
+          6254.0,
+          6242.0,
+          32767.0,
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan"
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.0,
+          3.0,
+          -32768.0,
+          1.0,
+          2.0,
+          3.0,
+          4.0,
+          5.0,
+          6.0,
+          7.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.0,
+          3.0,
+          -32768.0,
+          1.0,
+          2.0,
+          3.0,
+          4.0,
+          5.0,
+          6.0,
+          7.0
+        ]
+      },
+      {
+        "described_examples": {
+          "n_described": 1,
+          "buggy": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "repaired": 1,
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "reproduced",
+        "examples": "2/4"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 2/4 reported example(s) show the reported difference between the revisions; the numerical probe still shows the defect on fixed"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "claude-haiku-4-5-20251001",
+      "calls": 8,
+      "input_tokens": 26912,
+      "output_tokens": 15234,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.103082
+    }
+  }
+]

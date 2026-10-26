@@ -1,0 +1,1089 @@
+[
+  {
+    "slug": "statsmodels_10214",
+    "bug_type": "convergence",
+    "image": "python:3.10",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported input/output examples were never observed on both revisions, so the values themselves are unverified",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "not_observed",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import numpy as np\nimport statsmodels.tsa.statespace.dynamic_factor_mq as mod\nfrom statsmodels.tools.sm_exceptions import ConvergenceWarning, EstimationWarning\n\ndef _get_small_em_model():\n    rng = np.random.default_rng(0)\n    nobs = 30\n    k_endog = 2\n    factor = np.cumsum(rng.standard_normal(nobs)) * 0.3\n    endog = factor[:, None] * rng.uniform(0.6, 1.4, k_endog)[None, :]\n    endog = endog + rng.standard_normal((nobs, k_endog)) * 0.5\n    return mod.DynamicFactorMQ(endog, factors=1, factor_orders=1, idiosyncratic_ar1=False)\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)\", \"mod.fit_em(maxiter=1, tolerance=1e-06, disp=False)\", [\"_get_small_em_model()\"], \"res.mle_retvals.converged is False\"], [\"_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)\", \"mod.fit_em(maxiter=500, tolerance=1e-06, disp=False)\", [\"_get_small_em_model()\"], \"res.mle_retvals.converged is True\"], [\"_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)\", \"mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)\", [], \"res.mle_retvals.iter < 10 and res.mle_retvals.converged is False\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "dfmq_em_converged_probe": "import numpy as np\n\nfrom statsmodels.tsa.statespace.dynamic_factor_mq import DynamicFactorMQ\nimport statsmodels.tsa.statespace.dynamic_factor_mq as mod\n\n# Deterministic small dataset\nrng = np.random.default_rng(0)\nnobs = 30\nk_endog = 2\nfactors = np.cumsum(rng.standard_normal(nobs)) * 0.3\nendog = factors[:, None] * rng.uniform(0.6, 1.4, k_endog)[None, :] + 0.5 * rng.standard_normal((nobs, k_endog))\n\nbase_model = DynamicFactorMQ(\n    endog,\n    factors=1,\n    factor_orders=1,\n    idiosyncratic_ar1=False,\n)\n\n\ndef record_result(tag, res, maxiter):\n    mv = res.mle_retvals\n    has_conv = ('converged' in mv)\n    conv_val = mv.get('converged', None) if has_conv else None\n    it = mv.get('iter', None)\n    # Record whether key exists and values we can safely access\n    probe(f\"{tag}.has_converged\", float(has_conv))\n    probe(f\"{tag}.converged_value\", -1.0 if conv_val is None else float(conv_val))\n    probe(f\"{tag}.iter\", -1.0 if it is None else float(it))\n    probe(f\"{tag}.maxiter\", float(maxiter))\n\n\n# Scenario 1: maxiter=1\nres1 = base_model.fit_em(maxiter=1, tolerance=1e-6, disp=False)\nrecord_result('maxiter1', res1, 1)\n\n# Scenario 2: maxiter=500\nres2 = base_model.fit_em(maxiter=500, tolerance=1e-6, disp=False)\nrecord_result('maxiter500', res2, 500)\n\n\n# Scenario 3: forced log-likelihood decrease at iteration 2\norig_em_iteration = mod.DynamicFactorMQ._em_iteration\n\nstate = {'k': 0}\n\ndef wrapped_em_iteration(self, start_params, **kwargs):\n    state['k'] += 1\n    llf, new_params, retvals = orig_em_iteration(self, start_params, **kwargs)\n    # Force a loglikelihood decrease around iteration 2\n    if state['k'] == 2:\n        try:\n            llf = llf - 1.0\n        except Exception:\n            pass\n    return llf, new_params, retvals\n\ntry:\n    mod.DynamicFactorMQ._em_iteration = wrapped_em_iteration\n    # Tight tolerance so we rely on revert behavior rather than tolerance convergence\n    res3 = base_model.fit_em(maxiter=10, tolerance=1e-10, disp=False)\n    record_result('forced_decrease', res3, 10)\nfinally:\n    mod.DynamicFactorMQ._em_iteration = orig_em_iteration\n"
+      },
+      "fixed": {
+        "dfmq_em_converged_probe": "import numpy as np\n\nfrom statsmodels.tsa.statespace.dynamic_factor_mq import DynamicFactorMQ\nimport statsmodels.tsa.statespace.dynamic_factor_mq as mod\n\n# Deterministic small dataset\nrng = np.random.default_rng(0)\nnobs = 30\nk_endog = 2\nfactors = np.cumsum(rng.standard_normal(nobs)) * 0.3\nendog = factors[:, None] * rng.uniform(0.6, 1.4, k_endog)[None, :] + 0.5 * rng.standard_normal((nobs, k_endog))\n\nbase_model = DynamicFactorMQ(\n    endog,\n    factors=1,\n    factor_orders=1,\n    idiosyncratic_ar1=False,\n)\n\n\ndef record_result(tag, res, maxiter):\n    mv = res.mle_retvals\n    has_conv = ('converged' in mv)\n    conv_val = mv.get('converged', None) if has_conv else None\n    it = mv.get('iter', None)\n    probe(f\"{tag}.has_converged\", float(has_conv))\n    probe(f\"{tag}.converged_value\", -1.0 if conv_val is None else float(conv_val))\n    probe(f\"{tag}.iter\", -1.0 if it is None else float(it))\n    probe(f\"{tag}.maxiter\", float(maxiter))\n\n\nres1 = base_model.fit_em(maxiter=1, tolerance=1e-6, disp=False)\nrecord_result('maxiter1', res1, 1)\n\nres2 = base_model.fit_em(maxiter=500, tolerance=1e-6, disp=False)\nrecord_result('maxiter500', res2, 500)\n\norig_em_iteration = mod.DynamicFactorMQ._em_iteration\nstate = {'k': 0}\n\ndef wrapped_em_iteration(self, start_params, **kwargs):\n    state['k'] += 1\n    llf, new_params, retvals = orig_em_iteration(self, start_params, **kwargs)\n    if state['k'] == 2:\n        try:\n            llf = llf - 1.0\n        except Exception:\n            pass\n    return llf, new_params, retvals\n\ntry:\n    mod.DynamicFactorMQ._em_iteration = wrapped_em_iteration\n    res3 = base_model.fit_em(maxiter=10, tolerance=1e-10, disp=False)\n    record_result('forced_decrease', res3, 10)\nfinally:\n    mod.DynamicFactorMQ._em_iteration = orig_em_iteration\n",
+        "reported_examples": "import numpy as np\nimport statsmodels.tsa.statespace.dynamic_factor_mq as dfmq\nfrom statsmodels.tools.sm_exceptions import ConvergenceWarning, EstimationWarning\n\n# helper for the expressions: obtain the small EM model used in the tests\nfrom statsmodels.tsa.statespace.dynamic_factor_mq import _get_small_em_model\n\n# module-level fit_em is expected to exist under a submodule; bind it explicitly\nfrom statsmodels.tsa.statespace.dynamic_factor_mq import fit_em as fit_em\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)\", \"mod.fit_em(maxiter=1, tolerance=1e-06, disp=False)\", [\"_get_small_em_model()\"], \"res.mle_retvals.converged is False\"], [\"_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)\", \"mod.fit_em(maxiter=500, tolerance=1e-06, disp=False)\", [\"_get_small_em_model()\"], \"res.mle_retvals.converged is True\"], [\"_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)\", \"mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)\", [], \"res.mle_retvals.iter < 10 and res.mle_retvals.converged is False\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported input/output examples were never observed on both revisions, so the values themselves are unverified",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "not_observed",
+      "success_criterion": "Running the two selected tests on the buggy commit fails (AttributeError/assertion failure due to the missing res.mle_retvals.converged entry), and the same tests pass once the fix (converged = bool(not terminate and delta <= tolerance)) is applied.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 3,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 3,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "dfmq_em_converged_probe",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: not enough values to unpack (expected 3, got 2)"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: not enough values to unpack (expected 3, got 2)"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": true,
+            "buggy_values": {
+              "maxiter1.has_converged": 0.0,
+              "maxiter1.converged_value": -1.0,
+              "maxiter1.iter": 1.0,
+              "maxiter1.maxiter": 1.0,
+              "maxiter500.has_converged": 0.0,
+              "maxiter500.converged_value": -1.0,
+              "maxiter500.iter": 92.0,
+              "maxiter500.maxiter": 500.0
+            },
+            "fixed_values": {
+              "maxiter1.has_converged": 1.0,
+              "maxiter1.converged_value": 0.0,
+              "maxiter1.iter": 1.0,
+              "maxiter1.maxiter": 1.0,
+              "maxiter500.has_converged": 1.0,
+              "maxiter500.converged_value": 1.0,
+              "maxiter500.iter": 92.0,
+              "maxiter500.maxiter": 500.0
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "unusable",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": null,
+              "reasons": [
+                "the probe itself could not run (ImportError: cannot import name '_get_small_em_model' from 'statsmodels.tsa.statespace.dynamic_factor_mq' (/workspace/fixed/.venv/lib/python3.10/site-packages/s) \u2014 fix the probe, not the revision"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "probe_error",
+            "values_differ": null,
+            "buggy_values": {
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)": "__error__: AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)": "__error__: AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)": "__error__: AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'"
+            },
+            "fixed_values": {}
+          }
+        ],
+        "examples": [
+          {
+            "input": "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)",
+            "expected_output": "res.mle_retvals.converged is False",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "res.mle_retvals has no 'converged' entry; res.mle_retvals.converged raises AttributeError (Bunch key missing). ConvergenceWarning 'maximum number of iterations' is emitted.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)",
+              "observed": "__error__: AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "evaluation_error": "AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)",
+            "expected_output": "res.mle_retvals.converged is True",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "res.mle_retvals has no 'converged' entry, so genuine tolerance convergence is not exposed as a boolean; res.mle_retvals.converged raises AttributeError.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)",
+              "observed": "__error__: AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "evaluation_error": "AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)",
+            "expected_output": "res.mle_retvals.iter < 10 and res.mle_retvals.converged is False",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "EstimationWarning 'Log-likelihood decreased'; revert decrements i so res.mle_retvals.iter < 10; no converged flag, so iter < maxiter suggests convergence.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)",
+              "observed": "__error__: AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "evaluation_error": "AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 2,
+            "n_failed": 2,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 1,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "cython>=3.0.13",
+            "meson-python>=0.18.0",
+            "numpy>=2.0.0",
+            "packaging>=21.3",
+            "pytest>=8.4.1"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-09-04T17:57:10-04:00",
+        "fixed_commit_date": "2026-09-05T07:23:06+01:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-09-05T07:23:06+01:00",
+        "build": {
+          "git": "present",
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.10/site-packages/statsmodels/__init__.py",
+            "build_requires": [
+              "meson-python",
+              "cython>=3.0.13,<4",
+              "scipy>=1.13,<2",
+              "setuptools_scm>=9.2.0,<10"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.2.6",
+              "pandas": "2.3.3",
+              "matplotlib": "3.10.9",
+              "pyparsing": "3.3.2",
+              "meson-python": "0.20.0",
+              "cython": "3.3.0",
+              "scipy": "1.15.3",
+              "setuptools-scm": "9.2.2"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.0",
+              "cython": "cython==3.3.0"
+            },
+            "test_extras": [
+              "pytest>=8.4.1,<10",
+              "pytest-randomly",
+              "pytest-run-parallel",
+              "pytest-xdist",
+              "pytest-cov",
+              "coverage[toml]",
+              "meson",
+              "ninja; sys_platform != \"emscripten\""
+            ],
+            "output": "--- end of build log ---\n10/site-packages (from statsmodels==0.15.1.dev25+g50ef1a666.d20260916) (2.2.6)\nRequirement already satisfied: typing-extensions>=4.2.0 in /usr/local/lib/python3.10/site-packages (from formulaic>=1.1.0->statsmodels==0.15.1.dev25+g50ef1a666.d20260916) (4.16.0)\nCollecting narwhals>=1.17\n  Downloading narwhals-2.26.0-py3-none-any.whl (474 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 474.0/474.0 kB 24.9 MB/s eta 0:00:00\nCollecting wrapt>=1.0\n  Downloading wrapt-2.4.1-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (217 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 217.0/217.0 kB 37.8 MB/s eta 0:00:00\nCollecting interface-meta>=1.2.0\n  Downloading interface_meta-2.0.1-py3-none-any.whl (15 kB)\nRequirement already satisfied: pytz>=2020.1 in ./.venv/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260916) (2026.3.post1)\nRequirement already satisfied: tzdata>=2022.7 in ./.venv/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260916) (2026.4)\nRequirement already satisfied: python-dateutil>=2.8.2 in ./.venv/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260916) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in ./.venv/lib/python3.10/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260916) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.1.dev25+g50ef1a666.d20260916-cp310-cp310-linux_x86_64.whl size=12325098 sha256=4e916da5684179f9a393fb5870fba804a8c4ae56894cce9bdbe14c839cfad268\n  Stored in directory: /tmp/pip-ephem-wheel-cache-bchl_dse/wheels/ed/f7/86/c0f1039ac56a217e74c3b8eda25eb10695c47995525191ed3e\nSuccessfully built statsmodels\nInstalling collected packages: wrapt, patsy, narwhals, interface-meta, formulaic, statsmodels\nSuccessfully installed formulaic-1.2.2 interface-meta-2.0.1 narwhals-2.26.0 patsy-1.0.3 statsmodels-0.15.1.dev25+g50ef1a666.d20260916 wrapt-2.4.1\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.10/site-packages/statsmodels/__init__.py",
+            "build_requires": [
+              "meson-python",
+              "cython>=3.0.13,<4",
+              "scipy>=1.13,<2",
+              "setuptools_scm>=9.2.0,<10"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.2.6",
+              "pandas": "2.3.3",
+              "matplotlib": "3.10.9",
+              "pyparsing": "3.3.2",
+              "meson-python": "0.20.0",
+              "cython": "3.3.0",
+              "scipy": "1.15.3",
+              "setuptools-scm": "9.2.2"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {
+              "meson": "meson==1.12.0",
+              "cython": "cython==3.3.0"
+            },
+            "test_extras": [
+              "pytest>=8.4.1,<10",
+              "pytest-randomly",
+              "pytest-run-parallel",
+              "pytest-xdist",
+              "pytest-cov",
+              "coverage[toml]",
+              "meson",
+              "ninja; sys_platform != \"emscripten\""
+            ],
+            "output": "--- end of build log ---\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 118.9/118.9 kB 31.6 MB/s eta 0:00:00\nRequirement already satisfied: typing-extensions>=4.2.0 in /usr/local/lib/python3.10/site-packages (from formulaic>=1.1.0->statsmodels==0.15.1.dev27+g7216b142d) (4.16.0)\nCollecting narwhals>=1.17\n  Downloading narwhals-2.26.0-py3-none-any.whl (474 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 474.0/474.0 kB 23.6 MB/s eta 0:00:00\nCollecting wrapt>=1.0\n  Downloading wrapt-2.4.1-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (217 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 217.0/217.0 kB 42.0 MB/s eta 0:00:00\nCollecting interface-meta>=1.2.0\n  Downloading interface_meta-2.0.1-py3-none-any.whl (15 kB)\nRequirement already satisfied: pytz>=2020.1 in ./.venv/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (2026.3.post1)\nRequirement already satisfied: python-dateutil>=2.8.2 in ./.venv/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (2.9.0.post0)\nRequirement already satisfied: tzdata>=2022.7 in ./.venv/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (2026.4)\nRequirement already satisfied: six>=1.5 in ./.venv/lib/python3.10/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.1.dev27+g7216b142d-cp310-cp310-linux_x86_64.whl size=12325021 sha256=d3df9edc3a3372e6452dc11927523e0136b99f0500c938d7b706fba54f2da7f0\n  Stored in directory: /tmp/pip-ephem-wheel-cache-hpq0qk35/wheels/e7/d9/e6/2becdd66929be2a2e7d7caf6055a3b033c7fa76967b6c0543a\nSuccessfully built statsmodels\nInstalling collected packages: wrapt, patsy, narwhals, interface-meta, formulaic, statsmodels\nSuccessfully installed formulaic-1.2.2 interface-meta-2.0.1 narwhals-2.26.0 patsy-1.0.3 statsmodels-0.15.1.dev27+g7216b142d wrapt-2.4.1\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 3,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 3,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 2,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "dfmq_em_converged_probe",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: not enough values to unpack (expected 3, got 2)"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: not enough values to unpack (expected 3, got 2)"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": true,
+            "buggy_values": {
+              "maxiter1.has_converged": 0.0,
+              "maxiter1.converged_value": -1.0,
+              "maxiter1.iter": 1.0,
+              "maxiter1.maxiter": 1.0,
+              "maxiter500.has_converged": 0.0,
+              "maxiter500.converged_value": -1.0,
+              "maxiter500.iter": 92.0,
+              "maxiter500.maxiter": 500.0
+            },
+            "fixed_values": {
+              "maxiter1.has_converged": 1.0,
+              "maxiter1.converged_value": 0.0,
+              "maxiter1.iter": 1.0,
+              "maxiter1.maxiter": 1.0,
+              "maxiter500.has_converged": 1.0,
+              "maxiter500.converged_value": 1.0,
+              "maxiter500.iter": 92.0,
+              "maxiter500.maxiter": 500.0
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "unusable",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": null,
+              "reasons": [
+                "the probe itself could not run (ImportError: cannot import name '_get_small_em_model' from 'statsmodels.tsa.statespace.dynamic_factor_mq' (/workspace/fixed/.venv/lib/python3.10/site-packages/s) \u2014 fix the probe, not the revision"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "probe_error",
+            "values_differ": null,
+            "buggy_values": {
+              "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)": "__error__: AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)": "__error__: AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)": "__error__: AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'"
+            },
+            "fixed_values": {}
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 3,
+        "n_judged": 0,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 3,
+        "n_contested": 0,
+        "unobserved": [
+          "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)",
+          "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)",
+          "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)"
+        ],
+        "verdict": "not_observed",
+        "examples": [
+          {
+            "input": "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)",
+            "expected_output": "res.mle_retvals.converged is False",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "res.mle_retvals has no 'converged' entry; res.mle_retvals.converged raises AttributeError (Bunch key missing). ConvergenceWarning 'maximum number of iterations' is emitted.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "_get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False)",
+              "observed": "__error__: AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "evaluation_error": "AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)",
+            "expected_output": "res.mle_retvals.converged is True",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "res.mle_retvals has no 'converged' entry, so genuine tolerance convergence is not exposed as a boolean; res.mle_retvals.converged raises AttributeError.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "_get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False)",
+              "observed": "__error__: AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "evaluation_error": "AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)",
+            "expected_output": "res.mle_retvals.iter < 10 and res.mle_retvals.converged is False",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "EstimationWarning 'Log-likelihood decreased'; revert decrements i so res.mle_retvals.iter < 10; no converged flag, so iter < maxiter suggests convergence.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "_get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)",
+              "observed": "__error__: AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "evaluation_error": "AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute 'fit_em'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 2,
+          "n_failed": 2,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 1,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "Running the two selected tests on the buggy commit fails (AttributeError/assertion failure due to the missing res.mle_retvals.converged entry), and the same tests pass once the fix (converged = bool(not terminate and delta <= tolerance)) is applied."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "cython>=3.0.13",
+          "meson-python>=0.18.0",
+          "numpy>=2.0.0",
+          "packaging>=21.3",
+          "pytest>=8.4.1"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-09-04T17:57:10-04:00",
+      "fixed_commit_date": "2026-09-05T07:23:06+01:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-09-05T07:23:06+01:00",
+      "build": {
+        "git": "present",
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.10/site-packages/statsmodels/__init__.py",
+          "build_requires": [
+            "meson-python",
+            "cython>=3.0.13,<4",
+            "scipy>=1.13,<2",
+            "setuptools_scm>=9.2.0,<10"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.2.6",
+            "pandas": "2.3.3",
+            "matplotlib": "3.10.9",
+            "pyparsing": "3.3.2",
+            "meson-python": "0.20.0",
+            "cython": "3.3.0",
+            "scipy": "1.15.3",
+            "setuptools-scm": "9.2.2"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.0",
+            "cython": "cython==3.3.0"
+          },
+          "test_extras": [
+            "pytest>=8.4.1,<10",
+            "pytest-randomly",
+            "pytest-run-parallel",
+            "pytest-xdist",
+            "pytest-cov",
+            "coverage[toml]",
+            "meson",
+            "ninja; sys_platform != \"emscripten\""
+          ],
+          "output": "--- end of build log ---\n10/site-packages (from statsmodels==0.15.1.dev25+g50ef1a666.d20260916) (2.2.6)\nRequirement already satisfied: typing-extensions>=4.2.0 in /usr/local/lib/python3.10/site-packages (from formulaic>=1.1.0->statsmodels==0.15.1.dev25+g50ef1a666.d20260916) (4.16.0)\nCollecting narwhals>=1.17\n  Downloading narwhals-2.26.0-py3-none-any.whl (474 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 474.0/474.0 kB 24.9 MB/s eta 0:00:00\nCollecting wrapt>=1.0\n  Downloading wrapt-2.4.1-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (217 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 217.0/217.0 kB 37.8 MB/s eta 0:00:00\nCollecting interface-meta>=1.2.0\n  Downloading interface_meta-2.0.1-py3-none-any.whl (15 kB)\nRequirement already satisfied: pytz>=2020.1 in ./.venv/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260916) (2026.3.post1)\nRequirement already satisfied: tzdata>=2022.7 in ./.venv/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260916) (2026.4)\nRequirement already satisfied: python-dateutil>=2.8.2 in ./.venv/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260916) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in ./.venv/lib/python3.10/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev25+g50ef1a666.d20260916) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.1.dev25+g50ef1a666.d20260916-cp310-cp310-linux_x86_64.whl size=12325098 sha256=4e916da5684179f9a393fb5870fba804a8c4ae56894cce9bdbe14c839cfad268\n  Stored in directory: /tmp/pip-ephem-wheel-cache-bchl_dse/wheels/ed/f7/86/c0f1039ac56a217e74c3b8eda25eb10695c47995525191ed3e\nSuccessfully built statsmodels\nInstalling collected packages: wrapt, patsy, narwhals, interface-meta, formulaic, statsmodels\nSuccessfully installed formulaic-1.2.2 interface-meta-2.0.1 narwhals-2.26.0 patsy-1.0.3 statsmodels-0.15.1.dev25+g50ef1a666.d20260916 wrapt-2.4.1\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.10/site-packages/statsmodels/__init__.py",
+          "build_requires": [
+            "meson-python",
+            "cython>=3.0.13,<4",
+            "scipy>=1.13,<2",
+            "setuptools_scm>=9.2.0,<10"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.2.6",
+            "pandas": "2.3.3",
+            "matplotlib": "3.10.9",
+            "pyparsing": "3.3.2",
+            "meson-python": "0.20.0",
+            "cython": "3.3.0",
+            "scipy": "1.15.3",
+            "setuptools-scm": "9.2.2"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {
+            "meson": "meson==1.12.0",
+            "cython": "cython==3.3.0"
+          },
+          "test_extras": [
+            "pytest>=8.4.1,<10",
+            "pytest-randomly",
+            "pytest-run-parallel",
+            "pytest-xdist",
+            "pytest-cov",
+            "coverage[toml]",
+            "meson",
+            "ninja; sys_platform != \"emscripten\""
+          ],
+          "output": "--- end of build log ---\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 118.9/118.9 kB 31.6 MB/s eta 0:00:00\nRequirement already satisfied: typing-extensions>=4.2.0 in /usr/local/lib/python3.10/site-packages (from formulaic>=1.1.0->statsmodels==0.15.1.dev27+g7216b142d) (4.16.0)\nCollecting narwhals>=1.17\n  Downloading narwhals-2.26.0-py3-none-any.whl (474 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 474.0/474.0 kB 23.6 MB/s eta 0:00:00\nCollecting wrapt>=1.0\n  Downloading wrapt-2.4.1-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (217 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 217.0/217.0 kB 42.0 MB/s eta 0:00:00\nCollecting interface-meta>=1.2.0\n  Downloading interface_meta-2.0.1-py3-none-any.whl (15 kB)\nRequirement already satisfied: pytz>=2020.1 in ./.venv/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (2026.3.post1)\nRequirement already satisfied: python-dateutil>=2.8.2 in ./.venv/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (2.9.0.post0)\nRequirement already satisfied: tzdata>=2022.7 in ./.venv/lib/python3.10/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (2026.4)\nRequirement already satisfied: six>=1.5 in ./.venv/lib/python3.10/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.1.dev27+g7216b142d) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.1.dev27+g7216b142d-cp310-cp310-linux_x86_64.whl size=12325021 sha256=d3df9edc3a3372e6452dc11927523e0136b99f0500c938d7b706fba54f2da7f0\n  Stored in directory: /tmp/pip-ephem-wheel-cache-hpq0qk35/wheels/e7/d9/e6/2becdd66929be2a2e7d7caf6055a3b033c7fa76967b6c0543a\nSuccessfully built statsmodels\nInstalling collected packages: wrapt, patsy, narwhals, interface-meta, formulaic, statsmodels\nSuccessfully installed formulaic-1.2.2 interface-meta-2.0.1 narwhals-2.26.0 patsy-1.0.3 statsmodels-0.15.1.dev27+g7216b142d wrapt-2.4.1\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 6,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the DynamicFactorMQ EM convergence-flag bug by running the new convergence tests on the buggy vs fixed revisions and confirming the fixed behavior diverges via example/probe outputs.",
+          "milestones": [
+            "buggy_tests_fail [buggy] \u2014 On the buggy revision, the selected EM convergence tests fail (missing mle_retvals.converged) while warnings are still raised. (1 steps, verify: test_ran, test_fails)",
+            "buggy_convergence_examples_show_missing_flag [buggy] \u2014 The report\u2019s expressions show that res.mle_retvals has no 'converged' entry on buggy (AttributeError) or equivalent mismatch vs expected. (1 steps, verify: steps_succeeded, examples_reproduced, probe_ran, probe_shows_defect)",
+            "fixed_tests_pass [fixed] \u2014 On the fixed revision, the same selected tests pass and indicate correct converged flag behavior. (1 steps, verify: test_ran, test_passes)",
+            "fixed_convergence_examples_match_expected [fixed] \u2014 The report\u2019s expressions match expected outputs on fixed (converged boolean exists and has the expected value; iter behavior consistent after revert). (1 steps, verify: steps_succeeded, examples_reproduced, probe_ran, probe_clean)",
+            "revisions_differ_on_convergence_flag [fixed] \u2014 Confirm that buggy vs fixed revisions differ in the EM convergence-flag observable. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs statsmodels.tsa.statespace.tests.test_dynamic_factor_mq -k \"test_em_convergence_flag or test_em_convergence_flag_after_revert\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 4.18
+      },
+      {
+        "verification": {
+          "milestone": "buggy_tests_fail",
+          "verified": true,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_convergence_examples_show_missing_flag",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/3 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 3 never evaluated \u2014 the preamble does not bind everything they need: _get_small_em_model(); res = mod.fit_em(maxiter=1, tolerance=1e-6, disp=False); _get_small_em_model(); res = mod.fit_em(maxiter=500, tolerance=1e-6, disp=False); _get_small_em_model() with monkeypatched _em_iteration forcing an llf decrease at iteration 2; res = mod.fit_em(maxiter=10, tolerance=1e-10, disp=False)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Verify the DynamicFactorMQ EM convergence-flag defect by directly probing the fitted res.mle_retvals on buggy vs fixed revisions, since the report examples were not evaluated due to missing bindings.",
+          "milestones": [
+            "buggy_convergence_reproducer_values [buggy] \u2014 On the buggy revision, run a direct EM fitting reproducer (maxiter=1 and maxiter=500) and observe that res.mle_retvals lacks the 'converged' flag and iterates as expected; also validate the forced loglikelihood-decrease path yields iter<maxiter but no converged flag. (1 steps, verify: steps_succeeded)",
+            "fixed_convergence_reproducer_values [fixed] \u2014 On the fixed revision, run the same EM fitting reproducer and observe that res.mle_retvals includes converged with expected boolean behavior (False for maxiter=1, True for maxiter=500, and False for the forced decrease case). (1 steps, verify: steps_succeeded)",
+            "revisions_differ_on_convergence_flag [fixed] \u2014 Confirm buggy vs fixed revisions differ in the observable EM convergence flag: buggy lacks converged, fixed includes converged boolean values consistent with expected behavior. (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "dfmq_em_converged_probe",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(dfmq_em_converged_probe) \u2014 Run a numerical probe that builds the same small EM model, fits with two maxiter settings, and then forces an llf decrease during _em_iteration to trigger revert behavior; record whether 'converged' exists plus iter/maxiter."
+      },
+      {
+        "verification": {
+          "milestone": "buggy_convergence_reproducer_values",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(dfmq_em_converged_probe) \u2014 Run a numerical probe that builds the same small EM model, fits with two maxiter settings, and then forces an llf decrease during _em_iteration to trigger revert behavior; record whether 'converged' exists plus iter/maxiter. did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the DynamicFactorMQ EM convergence-flag defect by directly probing mle_retvals.converged/iter on buggy vs fixed revisions using an in-revision EM fitting reproducer (no dependence on the failing test probe).",
+          "milestones": [
+            "buggy_convergence_reproducer_values [buggy] \u2014 On the buggy revision, fit a small DynamicFactorMQ model with two maxiter settings and one forced loglikelihood-decrease revert; record mle_retvals fields including whether 'converged' exists, plus iter/maxiter, and ensure the forced-decrease case has iter<maxiter and no converged flag. (1 steps, verify: steps_succeeded, probe_ran)",
+            "fixed_convergence_reproducer_values [fixed] \u2014 On the fixed revision, run the same EM reproducer and confirm mle_retvals includes a converged boolean with expected behavior: maxiter=1 -> converged False, maxiter=500 -> True, and forced-decrease -> iter<maxiter and converged False. (1 steps, verify: steps_succeeded, probe_ran)",
+            "revisions_differ_on_convergence_flag [fixed] \u2014 Confirm buggy vs fixed revisions differ on the observable EM convergence flag: buggy lacks mle_retvals.converged (has_converged=0) while fixed includes it (has_converged=1) with values matching expected semantics. (1 steps, verify: steps_succeeded, probe_ran, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "dfmq_em_converged_probe",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "nothing that runs ever reaches `probe(...)`: the code defines functions that record, but no top-level statement calls them, so the probe would finish having recorded nothing. Call them at the top level (or record there directly)."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - nothing that runs ever reaches `probe(...)`: the code defines functions that record, but no top-level statement calls them, so the probe would finish having recorded nothing. Call them at the top level (or record there directly).\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(dfmq_em_converged_probe) \u2014 Run a numerical probe that builds a small EM problem, runs fit_em for maxiter=1 and maxiter=500, and performs a controlled llf decrease during the internal _em_iteration to trigger the revert path; record iter/maxiter and whether mle_retvals contains 'converged', plus the value if present."
+      },
+      {
+        "verification": {
+          "milestone": "buggy_convergence_reproducer_values",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(dfmq_em_converged_probe) \u2014 Run a numerical probe that builds a small EM problem, runs fit_em for maxiter=1 and maxiter=500, and performs a controlled llf decrease during the internal _em_iteration to trigger the revert path; record iter/maxiter and whether mle_retvals contains 'converged', plus the value if present. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce and measure the DynamicFactorMQ EM convergence-flag defect by directly probing fit_em\u2019s mle_retvals on buggy vs fixed revisions using a top-level in-revision EM reproducer (not the failing test).",
+          "milestones": [
+            "buggy_em_converged_probe_values [buggy] \u2014 On the buggy revision, run a small EM fit reproducer for maxiter=1 and maxiter=500 plus a forced log-likelihood decrease scenario, and record mle_retvals fields including whether 'converged' exists and the iter/maxiter behavior. (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "fixed_em_converged_probe_values [fixed] \u2014 On the fixed revision, run the same EM fit reproducer and confirm mle_retvals includes converged with expected semantics for maxiter=1 and maxiter=500, and that forced-decrease yields iter<maxiter with converged False. (1 steps, verify: steps_succeeded, probe_ran, probe_clean)",
+            "compare_buggy_vs_fixed_convergence_flag [fixed] \u2014 Demonstrate that observable EM convergence flag behavior differs between buggy and fixed revisions (presence and semantics of mle_retvals.converged). (1 steps, verify: steps_succeeded, probe_ran, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "dfmq_em_converged_probe",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: ValueError: not enough values to unpack (expected 3, got 2)"
+        ],
+        "expected": null,
+        "observed": [
+          0.0,
+          -1.0,
+          1.0,
+          1.0,
+          0.0,
+          -1.0,
+          92.0,
+          500.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_em_converged_probe_values",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'dfmq_em_converged_probe': probe raised: ValueError: not enough values to unpack (expected 3, got 2)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "dfmq_em_converged_probe",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: ValueError: not enough values to unpack (expected 3, got 2)"
+        ],
+        "expected": null,
+        "observed": [
+          1.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          92.0,
+          500.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "fixed_em_converged_probe_values",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "probe 'dfmq_em_converged_probe' is not clean on fixed: probe raised: ValueError: not enough values to unpack (expected 3, got 2)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs statsmodels.tsa.statespace.tests.test_dynamic_factor_mq -k test_em_convergence_flag -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 2.72
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs statsmodels.tsa.statespace.tests.test_dynamic_factor_mq -k test_em_convergence_flag -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 2.47
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_em_convergence_flag",
+          "command": "python -I -m pytest --pyargs statsmodels.tsa.statespace.tests.test_dynamic_factor_mq -k test_em_convergence_flag -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "statsmodels",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_em_convergence_flag",
+              "command": "python -I -m pytest --pyargs statsmodels.tsa.statespace.tests.test_dynamic_factor_mq -k test_em_convergence_flag -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 5)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 5)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "status": "exception",
+        "kept_earlier_run": true
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: AttributeError: module 'statsmodels.tsa.statespace.dynamic_factor_mq' has no attribute '_get_small_em_model'"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "status": "probe_error",
+        "kept_earlier_run": true
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_error",
+        "pathology": null,
+        "reasons": [
+          "the probe itself could not run (ImportError: cannot import name '_get_small_em_model' from 'statsmodels.tsa.statespace.dynamic_factor_mq' (/workspace/fixed/.venv/lib/python3.10/site-packages/s) \u2014 fix the probe, not the revision"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "probe_error",
+            "checked": 3,
+            "recorded": 0,
+            "error": null,
+            "could_not_evaluate": 0,
+            "traceback": "Traceback (most recent call last):\n  File \"/tmp/_numagent_runner.py\", line 156, in <module>\n    exec(compile(_ast.Module(body=_lead, type_ignores=[]), \"/tmp/_numagent_probe.py\", \"exec\"), _g)\n  File \"/tmp/_numagent_probe.py\", line 6, in <module>\n    from statsmodels.tsa.statespace.dynamic_factor_mq import _get_small_em_model\nImportError: cannot import name '_get_small_em_model' from 'statsmodels.tsa.statespace.dynamic_factor_mq' (/workspace/buggy/.venv/lib/python3.10/site-packages/statsmodels/tsa/statespace/dynamic_factor_mq.py)"
+          },
+          "fixed": {
+            "status": "probe_error",
+            "checked": 3,
+            "recorded": 0,
+            "error": null,
+            "could_not_evaluate": 0,
+            "traceback": "Traceback (most recent call last):\n  File \"/tmp/_numagent_runner.py\", line 156, in <module>\n    exec(compile(_ast.Module(body=_lead, type_ignores=[]), \"/tmp/_numagent_probe.py\", \"exec\"), _g)\n  File \"/tmp/_numagent_probe.py\", line 6, in <module>\n    from statsmodels.tsa.statespace.dynamic_factor_mq import _get_small_em_model\nImportError: cannot import name '_get_small_em_model' from 'statsmodels.tsa.statespace.dynamic_factor_mq' (/workspace/fixed/.venv/lib/python3.10/site-packages/statsmodels/tsa/statespace/dynamic_factor_mq.py)"
+          }
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "not_observed",
+        "examples": "0/0"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported input/output examples were never observed on both revisions, so the values themselves are unverified"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 6,
+      "input_tokens": 18397,
+      "output_tokens": 8434,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.014222
+    }
+  }
+]

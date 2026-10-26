@@ -1,0 +1,104 @@
+{
+  "input": "pipeline_no_historic/scikit-learn_33168/mined/scikit-learn__scikit-learn_33168.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 15839,
+    "output_tokens": 5736,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "scikit-learn/scikit-learn",
+      "pr_number": 33168,
+      "reference": "https://github.com/scikit-learn/scikit-learn/pull/33168",
+      "buggy_commit": "41f1f34791bf72d40e70462d92ac50469b38192e",
+      "fixed_commit": "839d1445e8bf5a3a4f8b31e017890bbd421bf76b",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 8436,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the NaN from _predict_proba_lr by running the project's own test test_predict_proba_lr_large_values. The mock decision_function returns -1000 for 4 classes, so every OvR probability underflows to 0, the row sum is 0, and the normalisation yields NaN. The test then fails at assert_allclose on the row sums. On the fixed revision, zero-sum rows become uniform (1/n_classes), the row sums equal 1, and the test passes. Build sklearn in editable mode at the buggy commit, then run only that test node.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.10.0",
+          "pip_packages": [
+            "numpy (choose a release the checkout's pyproject allows; 1.23.5 is era-inferred from issue#17978 and not documented, so it is a preference, not a requirement)",
+            "scipy (unpinned; use the checkout's requirement, no numeric constraint documented)",
+            "joblib>=1.2.0 (documented in README)",
+            "threadpoolctl>=3.1.0 (documented in README)",
+            "pytest (version from the checkout's test requirements)",
+            "meson-python and ninja (build backend, taken from the checkout's pyproject build-system requires)",
+            "cython (take the version from the checkout's pyproject build-system requires; 0.29.34 is reporter-only and not documented)"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain (gcc or clang) and OpenMP runtime, needed for the editable build"
+          ],
+          "build_commands": [
+            "git checkout 41f1f34791bf",
+            "pip install -r build_tools/requirements or the checkout's build requirements, then pip install --no-build-isolation -e . (or pip install -e . if isolation works)"
+          ],
+          "pinned_because": [
+            "joblib 1.2.0 and threadpoolctl 3.1.0 are documented minimums in README.rst, so they are relied on as lower bounds only",
+            "numpy 1.23.5 is era-inferred from the reporter's environment (issue#17978), not documented; the strategy relies on it only as a preference and not as a verified requirement",
+            "scikit-learn 1.2.2 is the reporter's version and is not used; the test must run against the checkout built from source, not a released wheel"
+          ]
+        },
+        "test_command": "python -m pytest sklearn/linear_model/tests/test_base.py::test_predict_proba_lr_large_values -p no:cacheprovider -q",
+        "reproducing_test": "sklearn/linear_model/tests/test_base.py::test_predict_proba_lr_large_values",
+        "success_criterion": "On the buggy revision 41f1f34791bf the test FAILS: _predict_proba_lr returns NaN rows, np.sum(proba, axis=1) is NaN, and assert_allclose(..., 1) raises AssertionError (or a RuntimeWarning is promoted to an error if the suite filters warnings). On the fixed revision the test PASSES: zero-sum rows are set to uniform probabilities, each row sums to 1, and assert_allclose succeeds.",
+        "numerical_probe": "Evaluate expit(-1000.0) in float64 and confirm it is 0.0, then check that dividing a zero row by its zero sum gives NaN, which is what the buggy code produces.",
+        "input_output_examples": [
+          {
+            "input": "decision_function returning [-1000.0, -1000.0, -1000.0, -1000.0] per sample (MockClassifier in the test, input np.ones(5))",
+            "buggy_output": "NaN probabilities for every class of the row; RuntimeWarning: invalid value encountered in divide",
+            "expected_output": "Uniform probabilities 0.25 per class; each row sums to 1"
+          }
+        ],
+        "risks": [
+          "The test uses the MockClassifier path, so the bug is reproduced without SGDClassifier; the reporter's SGDClassifier trigger (large coefficients from minibatch training) is not needed for the transition and is not exercised.",
+          "The behaviour depends on IEEE float64 underflow of exp(-1000) to 0. This holds on any standard platform (x86_64 and aarch64 alike), so it is not architecture-specific, but a platform with flush-to-zero or non-IEEE math would change it.",
+          "Python 3.10 may be too old for the checkout at 41f1f34791bf if its pyproject requires a newer Python; if the build refuses, use the checkout's required Python version and record the deviation.",
+          "numpy 1.23.5 may be incompatible with the checkout's compiled extensions or pyproject numpy floor; the build may need a newer numpy. Choosing a different numpy does not change the transition, since the defect is in Python-level normalisation.",
+          "The reporter's pandas and cython versions are not relevant to this test and are not pinned beyond what the build backend requires.",
+          "The exact dtype and tolerance of the developer's test are inferred from assert_allclose defaults (rtol 1e-7); the diff does not state them explicitly.",
+          "The fix changes the multiclass OvR branch; the binary branch is not changed in the diff excerpt, so the test's 4-class mock is the case that transitions.",
+          "If the suite is run with warnings promoted to errors, the buggy failure may surface as a RuntimeWarning exception rather than an AssertionError; the test still fails, so the transition holds."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "assert_allclose default rtol=1e-07 against the value 1",
+          "reference_source": "PR #33168 test diff, test_predict_proba_lr_large_values",
+          "why": "The property asserted is that each row of predicted probabilities sums to 1; NaN rows make the comparison fail, so the test detects the defect."
+        },
+        "fails_on_buggy": "On the buggy revision, expit(-1000) underflows to 0 for all 4 classes, the row sum is 0, the division produces NaN, and assert_allclose(np.sum(proba, axis=1), 1) fails because NaN does not match 1.",
+        "passes_on_fixed": "On the fixed revision, zero-sum rows are assigned uniform probabilities, each row sums to 1, and assert_allclose(np.sum(proba, axis=1), 1) succeeds."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5646,
+        "output_tokens": 3421,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 10193,
+        "output_tokens": 2315,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

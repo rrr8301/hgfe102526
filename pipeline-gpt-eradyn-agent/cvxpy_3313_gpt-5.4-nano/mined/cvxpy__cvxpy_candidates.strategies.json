@@ -1,0 +1,103 @@
+{
+  "input": "pipeline-gpt-5.4-nano/cvxpy_3313_gpt-5.4-nano/mined/cvxpy__cvxpy_3313.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 17708,
+    "output_tokens": 4021,
+    "cost_usd": 0.008569,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "cvxpy/cvxpy",
+      "pr_number": 3313,
+      "reference": "https://github.com/cvxpy/cvxpy/pull/3313",
+      "buggy_commit": "4a921b5329ecad7840aef010b14152653c3d7e6e",
+      "fixed_commit": "a52742bbbbf9167d7daec811b32810ca61c0d39e",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 9299,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce cvxpy#3313 numerical accuracy bug in sparse_cholesky (QDLDL factorization) where, for rank-deficient PSD/NSD inputs, the code may (a) throw/handle QDLDL refusal without correctly falling back to dense pivoted LDL, or (b) silently drop columns due to an overly-aggressive low-rank masking rule, producing an incorrect Gram product; the fixed revision adds/adjusts fallback and/or masking so the test\u2019s Gram check passes.",
+        "needs_build": false,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cvxpy==<buggy_version_from_commit_4a921b5329ec>",
+            "numpy>=2.0.0",
+            "scipy>=1.13.0"
+          ],
+          "system_packages": [],
+          "build_commands": [],
+          "pinned_because": [
+            "cvxpy must be installed at the specific revisions so that QDLDL/fallback/masking logic matches the buggy vs fixed behavior described in PR#3313.",
+            "NumPy and SciPy must satisfy the documented minimum versions (NumPy >= 2.0.0, SciPy >= 1.13.0) because the dense pivoted LDL fallback uses scipy.linalg.ldl and the test relies on the Gram check implemented in cvxpy tests."
+          ]
+        },
+        "test_command": "python -m pytest -q cvxpy/tests/test_linalg_utils.py -k \"qdldl\"",
+        "reproducing_test": "cvxpy/tests/test_linalg_utils.py::TestLinalgUtils::test_qdldl_throws_falls_back_to_dense_ldl OR ::test_qdldl_silent_drop_falls_back_to_dense_ldl OR ::test_singular_leading_minor_falls_back_to_dense_ldl (run with -k qdldl to select all three).",
+        "success_criterion": "On the buggy revision (commit 4a921b5329ec), at least one of the qdldl-related tests fails because the Gram product computed from (sign, L, p) does not match the original sparse PSD matrix A within the test\u2019s internal check_gram tolerance; on the fixed revision (the PR that includes the masking/fallback fix), all three tests pass because the implementation falls back to dense pivoted LDL via scipy.linalg.ldl when QDLDL cannot safely factorize rank-deficient cases, and avoids masking out pivots that materially affect the Gram product.",
+        "numerical_probe": "Not checked numerically directly; the tests validate factorization correctness via check_gram(L[p,:], A) (Gram matching). The bug manifests either as QDLDL refusal without correct fallback or as silent wrong factorization due to masking columns where |D[j]| is too small relative to tol*scale, resulting in a mismatched Gram product.",
+        "input_output_examples": [
+          {
+            "input": "Rank-deficient PSD low-rank seed 128: generate B=np.random.randn(6,2), A=sp.csc_array(B@B.T), then call sign,L,p=lau.sparse_cholesky(A).",
+            "buggy_output": "Wrong factorization: masked/dropped contribution yields Gram product disagreement with A (test fails in check_gram).",
+            "expected_output": "Correct factorization: residual check detects problem and falls back to dense pivoted LDL via scipy.linalg.ldl (Bunch-Kaufman), so check_gram passes."
+          },
+          {
+            "input": "PSD matrix [[1,1,0],[1,1,0],[0,0,1]]: A=sp.csc_array(np.array([[1.0,1.0,0.0],[1.0,1.0,0.0],[0.0,0.0,1.0]])), then sign,L,p=lau.sparse_cholesky(A).",
+            "buggy_output": "QDLDL fails on singular leading minor and the buggy logic either does not correctly fall back; leads to check_gram failure or incorrect sign/L-pivoting results causing assertion failure.",
+            "expected_output": "Fallback succeeds: sign==1.0 and L has 2 columns; check_gram(L[p,:],A) passes after using dense pivoted LDL."
+          }
+        ],
+        "risks": [
+          "Toolchain variability: QDLDL availability/behavior depends on how cvxpy is built/its optional dependencies (e.g., whether QDLDL is present and used by sparse_cholesky). The reproduction relies on the code path described in the evidence (QDLDL attempt, then fallback/residual check). If QDLDL is not available in the environment, the bug may not manifest.",
+          "Platform variability: this is a numerical accuracy bug; BLAS/LAPACK implementations and platform math libs can change the exact floating-point behavior and potentially whether the wrong factorization crosses the test\u2019s check_gram tolerance. CI on multiple platforms is recommended.",
+          "Seed sensitivity: the described failure regimes are specific to low-rank PSD generation sizes (n=6,k=2) and seeds (3, 16, 128). If upstream random-number generation differs (e.g., NumPy RNG changes, but NumPy >= 2.0.0 generally stabilizes), reproduction could become less reliable\u2014keep NumPy pinned to the tested version if needed.",
+          "Tolerance crossing depends on tol/residual_tol inside sparse_cholesky; if the fixed revision changes default tol or residual_tol formula, the exact threshold for falling back changes. The test uses cvxpy\u2019s current defaults, so it should still transition correctly if the code change is present."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": null,
+          "why": "The unit tests do not compare explicit printed numbers; they validate factorization correctness by calling check_gram(L[p,:], A). The exact numerical tolerance is internal to check_gram, so the oracle is the test\u2019s own pass/fail behavior."
+        },
+        "fails_on_buggy": {
+          "type": "string",
+          "description": "What the assertion sees on the buggy revision, and why that makes it fail",
+          "value": "At least one of the qdldl tests fails when check_gram(L[p,:], A) detects a Gram mismatch caused by (i) missing/incorrect fallback after QDLDL raises \"not quasi-definite\" or (ii) silent wrong factorization due to prior low-rank masking dropping pivots that still contribute non-negligibly to the Gram product."
+        },
+        "passes_on_fixed": {
+          "type": "string",
+          "description": "What the assertion sees on the fixed revision",
+          "value": "All qdldl-related tests pass: sparse_cholesky returns a factorization whose reconstructed Gram product matches A closely enough for check_gram, because the implementation correctly falls back to dense pivoted LDL (scipy.linalg.ldl) when QDLDL cannot safely factorize, and uses a safer pivot-magnitude/masking criterion so masked contributions do not materially affect the Gram product."
+        }
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 4119,
+        "output_tokens": 1416,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002594
+      },
+      "miner_usage": {
+        "input_tokens": 13589,
+        "output_tokens": 2605,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.005975,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

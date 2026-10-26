@@ -1,0 +1,92 @@
+diff --git a/pandas/tests/frame/test_reductions.py b/pandas/tests/frame/test_reductions.py
+index 49c437b1b4699..87c148c6f3d84 100644
+--- a/pandas/tests/frame/test_reductions.py
++++ b/pandas/tests/frame/test_reductions.py
+@@ -2558,6 +2558,40 @@ def test_sum_timedelta64_all_nat_skipna_false(axis):
+     assert result.isna().all()
+ 
+ 
++@pytest.mark.parametrize("axis", [0, 1])
++def test_sum_timedelta64_exact(axis):
++    # GH#66551: the sum used to accumulate in float64, whose 53-bit mantissa
++    #  silently rounded results above 2**53
++    arr = np.array([2**53 + 1, 0], dtype="m8[ns]")
++    df = DataFrame({"a": arr, "b": arr[::-1]})
++
++    result = df.sum(axis=axis)
++    expected = Series(
++        np.array([2**53 + 1] * 2, dtype="m8[ns]"), index=df.axes[1 - axis]
++    )
++    tm.assert_series_equal(result, expected)
++
++
++@pytest.mark.parametrize("axis", [0, 1])
++def test_sum_timedelta64_overflow_only_in_exempt_slice(axis):
++    # GH#66551: the check applies per reduced slice, and a slice that reduces to
++    #  NaT under skipna=False is exempt even though its entries overflow
++    df = DataFrame(
++        {
++            "a": [pd.Timedelta(1, "ns"), pd.Timedelta(2, "ns")],
++            "b": [pd.Timedelta.max, pd.NaT],
++        }
++    )
++    if axis == 1:
++        df = df.T
++
++    result = df.sum(axis=axis, skipna=False)
++    expected = Series(
++        [pd.Timedelta(3, "ns"), pd.NaT], index=df.axes[1 - axis], dtype="m8[ns]"
++    )
++    tm.assert_series_equal(result, expected)
++
++
+ def test_mixed_frame_with_integer_sum():
+     # https://github.com/pandas-dev/pandas/issues/34520
+     df = DataFrame([["a", 1]], columns=list("ab"))
+diff --git a/pandas/tests/series/test_reductions.py b/pandas/tests/series/test_reductions.py
+index 22b36f52930c0..364dda9391f47 100644
+--- a/pandas/tests/series/test_reductions.py
++++ b/pandas/tests/series/test_reductions.py
+@@ -135,6 +135,42 @@ def test_td64_sum_all_nat_skipna_false():
+     assert ser.sum(skipna=False) is pd.NaT
+ 
+ 
++def test_td64_sum_exact():
++    # GH#66551: the sum used to accumulate in float64, whose 53-bit mantissa
++    #  silently rounded results above 2**53
++    ser = Series([pd.Timedelta(2**53 + 1, "ns"), pd.Timedelta(0, "ns")])
++    assert ser.sum()._value == 2**53 + 1
++
++    # a single representable value has to survive the round trip
++    ser = Series([pd.Timedelta.min])
++    assert ser.sum() == pd.Timedelta.min
++
++    # operands that individually round but cancel exactly
++    ser = Series([pd.Timedelta(2**62 + 1, "ns"), pd.Timedelta(-(2**62), "ns")])
++    assert ser.sum() == pd.Timedelta(1, "ns")
++
++
++def test_td64_sum_on_nat_sentinel():
++    # GH#66551: a total of exactly int64.min is representable but
++    #  indistinguishable from NaT once stored
++    ser = Series([pd.Timedelta.min, pd.Timedelta(-1, "ns")])
++    with pytest.raises(pd.errors.OutOfBoundsTimedelta, match="overflow"):
++        ser.sum()
++
++
++def test_td64_sum_nat_positions_exempt():
++    # GH#66551: with skipna=False the result is NaT anyway, so an overflow among
++    #  the entries the NaT masks must not raise
++    ser = Series([pd.Timedelta.max, pd.NaT, pd.Timedelta.max])
++    assert ser.sum(skipna=False) is pd.NaT
++
++
++def test_td64_sum_below_min_count_exempt():
++    # GH#66551: min_count nulls the result out, so it must not raise
++    ser = Series([pd.Timedelta.max] * 2)
++    assert ser.sum(min_count=5) is pd.NaT
++
++
+ def test_prod_numpy16_bug():
+     ser = Series([1.0, 1.0, 1.0], index=range(3))
+     result = ser.prod()

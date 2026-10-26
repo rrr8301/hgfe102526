@@ -1,0 +1,50 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 184b04e63c579..ae34ef32d7831 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -1144,6 +1144,7 @@ Sparse
+ - Bug in :meth:`Series.argmin`, :meth:`Series.argmax`, :meth:`Series.idxmin`, :meth:`Series.idxmax`, :meth:`DataFrame.idxmin`, :meth:`DataFrame.idxmax`, :meth:`SparseArray.argmin`, and :meth:`SparseArray.argmax` raising ``ValueError: attempt to get argmin of an empty sequence`` on :class:`SparseDtype` data with no non-missing stored values, when the non-missing ``fill_value`` occupies at least one position, instead of returning the first such position (:issue:`68462`)
+ - Bug in :meth:`Series.cumsum`, :meth:`Series.cumprod`, :meth:`Series.cummin`, :meth:`Series.cummax` and their :class:`DataFrame` counterparts raising ``NotImplementedError`` on :class:`SparseDtype` data (:issue:`68187`)
+ - Bug in :meth:`Series.mean` with ``skipna=False`` ignoring missing values for :class:`SparseDtype`-backed :class:`Series` (:issue:`65478`)
++- Bug in :meth:`Series.mean`, :meth:`DataFrame.mean`, and :meth:`SparseArray.mean` on :class:`SparseDtype` data with no non-missing values, an empty array included, emitting a numpy ``RuntimeWarning``, or raising ``ZeroDivisionError`` for an object subtype or ``TypeError`` for a non-numeric ``fill_value``; the missing value is now returned quietly (:issue:`68484`)
+ - Bug in :meth:`Series.memory_usage`, :meth:`DataFrame.memory_usage`, and :meth:`Index.memory_usage` with ``deep=True``, :meth:`DataFrame.info` with ``memory_usage="deep"``, and ``sys.getsizeof`` raising ``TypeError`` on an object subtype :class:`SparseDtype`; :meth:`SparseArray.memory_usage` is new (:issue:`68490`)
+ - Bug in :meth:`Series.mode` and :meth:`DataFrame.mode` raising ``AttributeError: 'SparseDtype' object has no attribute 'itemsize'`` on a float :class:`SparseDtype` column (:issue:`68421`)
+ - Bug in :meth:`Series.reindex` and alignment raising when extending a boolean :class:`SparseDtype`-backed :class:`Series`; missing entries now upcast to ``object`` to match the dense behavior (:issue:`32119`)
+diff --git a/pandas/core/arrays/sparse/array.py b/pandas/core/arrays/sparse/array.py
+index f414cf4b63730..12c151d07e580 100644
+--- a/pandas/core/arrays/sparse/array.py
++++ b/pandas/core/arrays/sparse/array.py
+@@ -2045,7 +2045,7 @@ def mean(self, axis: Axis = 0, *args, skipna: bool = True, **kwargs):
+ 
+         Returns
+         -------
+-        mean : float
++        scalar
+         """
+         nv.validate_mean(args, kwargs)
+         skipna = validate_bool_kwarg(skipna, "skipna")
+@@ -2053,14 +2053,20 @@ def mean(self, axis: Axis = 0, *args, skipna: bool = True, **kwargs):
+         sp_sum = valid_vals.sum()
+         ct = len(valid_vals)
+ 
++        nsparse = 0 if self._null_fill_value else self.sp_index.ngaps
++        nobs = ct + nsparse
++
++        if not nobs:
++            # nobs == 0 is exactly "every entry is NA", empty arrays included; the
++            # division and the fill_value adjustment both warn or raise there (GH#68484)
++            return na_value_for_dtype(self.dtype.subtype, compat=False)
++
+         # Compute the reduction before the skipna=False NA short-circuit so
+         # unsupported dtypes still raise during the operation validation.
+-
+         if self._null_fill_value:
+-            mean = sp_sum / ct
++            mean = sp_sum / nobs
+         else:
+-            nsparse = self.sp_index.ngaps
+-            mean = (sp_sum + self.fill_value * nsparse) / (ct + nsparse)
++            mean = (sp_sum + self.fill_value * nsparse) / nobs
+ 
+         if not skipna and self._hasna:
+             return na_value_for_dtype(self.dtype.subtype, compat=False)

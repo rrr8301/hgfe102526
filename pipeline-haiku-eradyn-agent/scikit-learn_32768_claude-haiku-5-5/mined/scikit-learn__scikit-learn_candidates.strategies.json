@@ -1,0 +1,110 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/scikit-learn_32768_claude-haiku-5-5/mined/scikit-learn__scikit-learn_32768.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 19126,
+    "output_tokens": 5046,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "scikit-learn/scikit-learn",
+      "pr_number": 32768,
+      "reference": "https://github.com/scikit-learn/scikit-learn/pull/32768",
+      "buggy_commit": "03c1d566ee268b6029977b816e79d93403568e26",
+      "fixed_commit": "04c9f3eee9dafa76b92bc589e55e700398ca6e10",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 9331,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the positive=True alpha_max bug in ElasticNetCV/LassoCV by running the developer's parametrized test_enet_alpha_max on the buggy commit 03c1d566ee26 (where enet_path does not forward positive to _alpha_grid and alpha_max ignores the nonnegativity constraint) and on the fixed revision; the positive=True cases should fail on buggy and pass on fixed. Build scikit-learn from source in editable/compiled mode at the buggy commit, using current numpy/scipy as observed in the reporter environment, and select only the relevant test via pytest -k.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy==2.3.5",
+            "scipy==1.16.3",
+            "pandas==2.3.0",
+            "matplotlib==3.10.3",
+            "joblib",
+            "threadpoolctl",
+            "pytest"
+          ],
+          "system_packages": [
+            "libgomp (OpenMP runtime for scikit-learn build)",
+            "a C/C++ compiler toolchain (gcc/g++ or clang)"
+          ],
+          "build_commands": [
+            "git checkout 03c1d566ee26",
+            "pip install -r build_tools/... or pip install numpy==2.3.5 scipy==1.16.3 cython joblib threadpoolctl pytest pandas==2.3.0 matplotlib==3.10.3",
+            "pip install --no-build-isolation -e . -v"
+          ],
+          "pinned_because": [
+            "numpy 2.3.5 and scipy 1.16.3 are observed versions from issue#32767, not documented requirements; pinned only to match the reporter environment (era-inferred, not documented)",
+            "scikit-learn itself is built from the buggy commit, not pinned as a release, because the bug lives in the source tree",
+            "joblib and threadpoolctl have only placeholder minimums in README (|JoblibMinVersion|, |ThreadpoolctlMinVersion|); no numeric value stated, so any recent version is used"
+          ]
+        },
+        "test_command": "pytest sklearn/linear_model/tests/test_coordinate_descent.py -k 'test_enet_alpha_max' -v -p no:cacheprovider",
+        "reproducing_test": "sklearn/linear_model/tests/test_coordinate_descent.py::test_enet_alpha_max (parametrized over X_is_sparse, fit_intercept, positive=True/False, sample_weight)",
+        "success_criterion": "On buggy 03c1d566ee26, the positive=True parametrizations of test_enet_alpha_max fail (alpha_max from ElasticNetCV(positive=True) does not make coefficients zero, or the sign-flipped alpha_max equals the non-positive one so the meaningfulness assertion fails). On the fixed revision (positive forwarded to _alpha_grid with nonnegative clipping of Xyw), all parametrizations pass, including positive=False which must remain green.",
+        "numerical_probe": "Compare ElasticNetCV(alphas=1, cv=2, eps=1, fit_intercept=False, positive=True).fit(X, y).alpha_ against the value under positive=False on the sign-flipped X; buggy gives np.float64(66.63636363636364) with X.T @ wy unconstrained [733., -476.].",
+        "input_output_examples": [
+          {
+            "input": "X = np.array([[1, 1], [1, -1]]); beta = np.array([1, -1e3]); y = X @ beta; config = dict(fit_intercept=False, positive=True); ElasticNet(alpha=alpha_min, **config).fit(X, y).coef_.max() where alpha_min = alphas_[-1] from ElasticNetCV(cv=2, **config)",
+            "buggy_output": "coef_.max() == 0 (all zero coefficients)",
+            "expected_output": "coef_.max() > 0"
+          },
+          {
+            "input": "ElasticNetCV(alphas=1, cv=2, eps=1, fit_intercept=False, positive=True).fit(X, y) with X = [[3,-1],[2,-5],[5,-3],[1,-4]], beta=[1,-2], sample_weight=[1,10,1,10]",
+            "buggy_output": "alpha_ = 66.63636363636364",
+            "expected_output": "alpha_max at which coefficients are zero under positive=True (exact value not given in evidence)"
+          }
+        ],
+        "risks": [
+          "The positive=True failure is a value-level property, not a crash; it only transitions if the buggy commit actually lacks the positive forwarding to enet_path/_alpha_grid, which the diff implies but the buggy source should be checked against.",
+          "Exact floating-point equality (coef_.max() == 0) in the issue reproducer may be sensitive to BLAS/OpenMP threading; the PR test uses atol=1e-5 and assert_array_less, which is more tolerant.",
+          "Numerical results depend on OpenBLAS (Haswell arch, pthreads) as loaded by numpy and scipy; a different architecture or BLAS build may change rounding enough to alter pass/fail boundaries, so the transition is not guaranteed on other platforms.",
+          "The MultiTaskElasticNetCV path has no positive attribute; the fix uses getattr(self, 'positive', False), so do not assume the attribute exists there when interpreting failures.",
+          "Sparse X path (X_is_sparse=True) may follow a different code path in _alpha_grid; failures may appear only in some parametrizations.",
+          "Python version is not stated in the evidence; it is left null and must be chosen compatibly with numpy 2.3.5 and the buggy commit's build requirements.",
+          "Sanitizers or non-Linux platforms were not stated; no transition is claimed for them."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "assert_allclose atol=1e-5 for zero coefficients; assert_array_less(1e-3, max|coef|) for nonzero; np.isclose default for alpha comparison",
+          "reference_source": "PR test_enet_alpha_max in sklearn/linear_model/tests/test_coordinate_descent.py",
+          "why": "The developer's test itself uses tolerance-based comparisons, so the transition is decided by its assertions."
+        },
+        "fails_on_buggy": "On the buggy revision, for positive=True, alpha_max from ElasticNetCV ignores the nonnegativity constraint (X.T @ wy has negative entries not clipped), so the returned alpha_ is wrong; either reg.coef_ at alpha_max is not within atol=1e-5 of zero, or the not-positive comparison assertion fails because the alpha values are not distinguished. Either assertion failing makes the test fail.",
+        "passes_on_fixed": "On the fixed revision, enet_path forwards positive to _alpha_grid and Xyw is clipped with np.maximum(0, Xyw) when positive is True, so alpha_max makes coefficients zero, the alpha_max*0.99 solution is nonzero, and the positive vs non-positive alpha_max values differ; all assertions hold."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6802,
+        "output_tokens": 2315,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 12324,
+        "output_tokens": 2731,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

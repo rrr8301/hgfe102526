@@ -1,0 +1,1431 @@
+{
+  "input": "workspace/new-mine/jax-ml__jax_candidates.json",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "n_strategies": 18,
+  "usage_totals": {
+    "input_tokens": 51078,
+    "output_tokens": 63968,
+    "cache_read_tokens": 2304,
+    "cache_write_tokens": 0,
+    "cost_usd": 0.106944,
+    "llm_calls": 18,
+    "peak_calls": 0,
+    "n_costed": 18,
+    "n_strategies": 18,
+    "cost_usd_per_strategy": 0.005941
+  },
+  "strategies": [
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/40415",
+      "repo": "jax-ml/jax",
+      "pr_number": 40415,
+      "buggy_commit": "cc95c6c81dc9e1384375dc0e4c4d5245a72f8313",
+      "fixed_commit": "6af60b85a2e49341bcfa8c219b02bc119bd55256",
+      "is_numerical_bug": true,
+      "bug_type": "accuracy",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the tanh JVP rounding/accuracy bug (PR #40415) at buggy commit cc95c6c8 by adding the PR's regression tests and running them: testTanhGradSymmetry in tests/lax_test.py asserts jvp(tanh, x) and jvp(tanh, -x) (tangent g=1.3) are bit-for-bit equal, and grad(x) == grad(-x); the buggy rule (g + g*ans)*(1-ans) in jax/_src/lax/lax.py breaks that symmetry. The xla_metadata_test tanh case expecting 'multiply' also fails on the buggy 'add' formulation.",
+        "input_output_examples": [
+          {
+            "input": "x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)",
+            "buggy_output": "jvp_pos and jvp_neg differ in at least one element (old rule (g + g*ans)*(1-ans) rounds before forming (1+ans)*(1-ans)); assertArraysEqual raises AssertionError.",
+            "expected_output": "jvp_pos == jvp_neg bit-for-bit (arrays equal under assertArraysEqual).",
+            "source": "test"
+          },
+          {
+            "input": "grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)",
+            "buggy_output": "grad_fn(x) != grad_fn(-x) (same premature rounding in the default tanh JVP rule); assertArraysEqual raises AssertionError.",
+            "expected_output": "grad_fn(x) == grad_fn(-x) bit-for-bit under assertArraysEqual.",
+            "source": "test"
+          },
+          {
+            "input": "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.",
+            "buggy_output": "Recorded HLO op for tanh is 'add' (buggy rule mul(add(g, mul(g, ans)), sub(_one(x), ans))), so matching 'multiply' fails.",
+            "expected_output": "Recorded HLO op is 'multiply', matching the updated expectation (new rule mul(g, mul(add(_one(ans), ans), sub(_one(ans), ans)))).",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Python 3.12 (JAX CI default per .github/workflows/bazel_cpu.yml / ci-build.yaml).",
+          "Create a clean virtualenv and install JAX in editable mode so edits/HEAD of jax/_src/lax/lax.py are picked up: e.g. python -m venv .venv && . .venv/bin/activate && uv pip install --python \"$PYTHON_BIN\" '.[minimum-jaxlib]' -r build/test-requirements.txt (per evidence build_commands).",
+          "Install test/runtime deps at the versions in setup.py: jaxlib 0.11.1, ml_dtypes >=0.5.0, numpy >=2.1, scipy >=1.15, libtpu 0.0.46.* (libtpu not needed for CPU).",
+          "Use a CPU device for the reproduction: set JAX_PLATFORM_NAME=cpu (env var listed in evidence) or pass --jax_platforms=cpu, to avoid GPU-specific rounding surprises.",
+          "Clear the JAX compilation cache (and $HOME/.cache/jax) before rerunning so stale jitted tanh kernels from the buggy rule are not reused.",
+          "cd to the repository root (checked out at cc95c6c81dc9e1384375dc0e4c4d5245a72f8313) before running pytest."
+        ],
+        "build_steps": [
+          "No compiled build is required for this bug: the change is pure Python in jax/_src/lax/lax.py.",
+          "python -m pip install -e . (or uv pip install --python \"$PYTHON_BIN\" '.[minimum-jaxlib]' -r build/test-requirements.txt) to expose the checked-out jax sources and test dependencies.",
+          "python -c \"import jax, jaxlib; print(jax.__version__, jaxlib.__version__)\" and check jax.__file__ points at the checkout, not site-packages.",
+          "Optional sanity check: python -c \"from jax._src.lax import lax; import inspect; print(inspect.getsource(lax.tanh_p))\" \u2014 confirm the buggy formulation is present before testing."
+        ],
+        "reproduction_steps": [
+          "Verify the buggy revision: git rev-parse HEAD must equal cc95c6c81dc9e1384375dc0e4c4d5245a72f8313.",
+          "Confirm the buggy tanh JVP rule is in place: grep the tanh JVP in jax/_src/lax/lax.py; it must be mul(add(g, mul(g, ans)), sub(_one(x), ans)) (i.e. (g + g*ans)*(1-ans)). This is the buggy pre-fix expression.",
+          "Apply only the PR's TEST additions (do not touch jax/_src/lax/lax.py): add testTanhGradSymmetry to tests/lax_test.py (in class LaxTest, right after testTanhSaturatedGrad, before testExpm1Grad) exactly as in the PR diff: x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); jvp_pos/jvp_neg via jax.jvp(lax.tanh, ...); assertArraysEqual(jvp_pos, jvp_neg); grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); assertArraysEqual(grad_fn(x), grad_fn(-x)).",
+          "Also apply the tests/xla_metadata_test.py expectation change: ('tanh(x)', jnp.tanh, 'add') -> ('tanh(x)', jnp.tanh, 'multiply') in the @parameterized.parameters list, so the metadata test encodes the correct post-fix HLO op.",
+          "Run the symmetry test alone: python -m pytest tests/lax_test.py -k testTanhGradSymmetry (see test_command). Observe AssertionError from assertArraysEqual, showing jvp_pos != jvp_neg and/or grad_fn(x) != grad_fn(-x).",
+          "Run the xla metadata test: python -m pytest tests/xla_metadata_test.py (or -k with the tanh parameter case) and observe the tanh(x) case failing because the recorded op is 'add' while 'multiply' is expected.",
+          "Optional direct probe (no test file needed) to capture concrete mismatching values: python - <<'PY' with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, p = jax.jvp(lax.tanh, (x,), (g,)); _, n = jax.jvp(lax.tanh, (-x,), (g,)); print(jnp.where(p != n)[0], p, n) \u2014 print the index/values where jvp_pos differs from jvp_neg to record the exact wrong numbers.",
+          "Do NOT modify jax/_src/lax/lax.py: the failing behaviour must be observed on the unmodified buggy source."
+        ],
+        "test_command": "python -m pytest tests/lax_test.py -k testTanhGradSymmetry",
+        "test_selector": "tests/lax_test.py::LaxTest::testTanhGradSymmetry (and tests/xla_metadata_test.py tanh(x) parameter case expecting 'multiply')",
+        "expected_buggy_behavior": "testTanhGradSymmetry fails at the buggy commit: assertArraysEqual(jvp_pos, jvp_neg) raises because jax.jvp(lax.tanh, (x,), (g,)) != jax.jvp(lax.tanh, (-x,), (g,)) for g = 1.3, and/or assertArraysEqual(grad_fn(x), grad_fn(-x)) raises. The xla_metadata_test tanh(x) case also fails: recorded HLO op is 'add' but 'multiply' is expected.",
+        "expected_fixed_behavior": "With mul(g, mul(add(_one(ans), ans), sub(_one(ans), ans))) (i.e. g*((1+ans)*(1-ans))) both assertions pass: jvp_pos == jvp_neg and grad_fn(x) == grad_fn(-x) bit-for-bit, and the xla metadata tanh case records 'multiply'.",
+        "success_criterion": "At buggy commit cc95c6c8 with the PR's tests added (and jax/_src/lax/lax.py untouched), python -m pytest tests/lax_test.py -k testTanhGradSymmetry FAILS with an assertArraysEqual AssertionError on the jvp and/or grad comparison; the same test is expected to PASS once PR #40415's lax.py change is applied. Secondary signal: the updated tanh(x)=='multiply' xla_metadata_test case fails at the buggy commit.",
+        "risks_or_ambiguities": [
+          "The evidence lists empty test_selector and test_command; the pytest invocation above is derived from the repo's pytest-based test files, not quoted verbatim from the PR.",
+          "The reproducing test does not exist at the buggy commit \u2014 it must be copied from the PR test diff; the agent must add the test without touching the buggy source, otherwise the reproduction is invalid.",
+          "tests/lax_test.py uses absl parameterized/TestCase; the exact node id (LaxTest.testTanhGradSymmetry) and whether pytest collects it directly (vs needing absltest) is not confirmed by the evidence.",
+          "The old-formula asymmetry may depend on device/backend/compiler rounding; on some hardware the two sides might coincidentally be equal, making the test flaky. Run on CPU (JAX_PLATFORM_NAME=cpu) and clear caches; if it passes, probe more elements/g values.",
+          "xla_metadata_test may require a specific jaxlib version (evidence: jaxlib 0.11.1 per setup.py) and matching HLO op naming; a mismatched jaxlib could fail the metadata test for unrelated reasons.",
+          "Q4 build evidence is low confidence and mentions CUDA/FFI example builds that are irrelevant to this pure-Python fix; dependency/env versions might drift.",
+          "Test-runtime caches: because the bug is in the default JVP rule, a stale jit cache could mask the difference; always clear caches between runs.",
+          "The evidence gives no exact numeric array elements that differ (only that the arrays differ), so no concrete wrong float values can be quoted verbatim."
+        ],
+        "confidence": 0.62
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3348,
+        "output_tokens": 3451,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.00603
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/40054",
+      "repo": "jax-ml/jax",
+      "pr_number": 40054,
+      "buggy_commit": "e3639c5e289d7e261600986747f8a78246733bc7",
+      "fixed_commit": "b1ef0099758ce4acbf9ba90e018022ad3620139e",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce a special-value (NaN / interval-bounds) bug in JAX shape-polynomial bounds arithmetic. The PR modifies the pure-Python module jax/_src/export/shape_poly_decision.py so that (a) an even-powered factor whose interval crosses zero adds a 0 candidate, and (b) a zero factor combined with an open infinite bound yields 0 rather than NaN. Reproduction: install JAX at buggy commit e3639c5e, apply ONLY the tests/shape_poly_test.py hunks from PR #40054 (the two tests do not exist at the buggy commit), then run pytest on test_bounds_arithmetic and test_bounds_product; both must FAIL.",
+        "input_output_examples": [
+          {
+            "input": "a, b = shape_poly.symbolic_shape(\"a, b\"); sign_crossing_factor = core.min_dim(a - 5, 5); _bounds(sign_crossing_factor**2)",
+            "buggy_output": "Assertion fails: 0 is not included in the returned bounds (evidence says the fix 'appends 0 when f1_exp is even and a1_l <= 0 <= a1_u'); exact pre-fix tuple is not stated verbatim in the evidence",
+            "expected_output": "(0, 25)",
+            "source": "test"
+          },
+          {
+            "input": "a, b = shape_poly.symbolic_shape(\"a, b\"); sign_crossing_factor = core.min_dim(a - 5, 5); _bounds(sign_crossing_factor**2 * b)",
+            "buggy_output": "NaN (zero factor combined with an open infinite bound) instead of the expected bounds",
+            "expected_output": "(0, np.inf)",
+            "source": "test"
+          },
+          {
+            "input": "a, _ = shape_poly.symbolic_shape(\"a, b\"); x = core.max_dim(-2, core.min_dim(1, a - 5)); _bounds(x * x)",
+            "buggy_output": "Assertion fails: interval [-2, 1] squared (even power) does not include 0, so the lower bound is < 0 rather than 0 (exact pre-fix value not stated in evidence)",
+            "expected_output": "(0, 4)",
+            "source": "test"
+          },
+          {
+            "input": "a, _ = shape_poly.symbolic_shape(\"a, b\"); x = core.max_dim(-2, core.min_dim(1, a - 5)); _bounds(x * x * x)",
+            "buggy_output": "Assertion fails: pre-fix product bounds for [-2, 1] cubed differ from the expected interval (exact pre-fix tuple not stated in evidence)",
+            "expected_output": "(-8, 1)",
+            "source": "test"
+          },
+          {
+            "input": "a, _ = shape_poly.symbolic_shape(\"a, b\"); u = (a // -2) * core.max_dim(0, a - 5); _bounds(u)",
+            "buggy_output": "NaN (product of a zero-carrying factor with an open infinite bound) instead of the expected interval",
+            "expected_output": "(-np.inf, 0)",
+            "source": "test"
+          },
+          {
+            "input": "a, _ = shape_poly.symbolic_shape(\"a, b\"); z = core.max_dim(-1, core.min_dim(1, a - 5)); _bounds(z * a)",
+            "buggy_output": "Assertion fails: pre-fix bounds differ from the fully unbounded interval (exact pre-fix value not stated in evidence)",
+            "expected_output": "(-np.inf, np.inf)",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Python 3.12 (default in .github/workflows/bazel_cpu.yml); the change is pure Python, so no C++/CUDA toolchain is required.",
+          "Create a virtualenv and expose its interpreter, e.g. export PYTHON_BIN=$(which python) after activating the venv.",
+          "Set env vars used by the test jobs: JAX_PLATFORM_NAME=cpu, JAX_ENABLE_X64=1, PY_COLORS=1 (JAX_ENABLE_CHECKS=true optionally).",
+          "System dependency: g++ (GCC on ubuntu-latest) is listed in the CI evidence; not needed for this pure-Python test but harmless.",
+          "pip/uv must reach PyPI to resolve jaxlib 0.11.1, ml_dtypes>=0.5.0, numpy>=2.1, scipy>=1.15 (libtpu 0.0.46.* only for TPU jobs)."
+        ],
+        "build_steps": [
+          "Confirm you are on the buggy revision: git rev-parse HEAD should print e3639c5e289d7e261600986747f8a78246733bc7.",
+          "Install JAX from the checkout with the minimum supported jaxlib: uv pip install --python \"$PYTHON_BIN\" '.[minimum-jaxlib]' -r 'build/test-requirements.txt' (pip install -e is an acceptable substitute if uv is unavailable).",
+          "No compilation of jax itself is needed: the modified file jax/_src/export/shape_poly_decision.py is pure Python and is picked up directly from the checkout.",
+          "Sanity check the install: \"$PYTHON_BIN\" -c \"import jax, jaxlib; print(jax.__version__, jaxlib.__version__)\" (expect jaxlib 0.11.1)."
+        ],
+        "reproduction_steps": [
+          "Ensure the working tree is clean at the buggy commit except for the test patch applied next.",
+          "Obtain the PR diff: curl -L https://github.com/jax-ml/jax/pull/40054.diff -o /tmp/pr40054.diff (or git fetch the fixed commit b1ef0099758ce4acbf9ba90e018022ad3620139e and use git diff).",
+          "Apply ONLY the test hunk, never the source fix: git apply --include=tests/shape_poly_test.py /tmp/pr40054.diff (verify with git status that jax/_src/export/shape_poly_decision.py is unmodified).",
+          "Confirm the new tests are present at the buggy commit: git diff --stat tests/shape_poly_test.py should show the added sign_crossing_factor assertions and the whole test_bounds_product method.",
+          "Run the two selected tests (see test_command). Optionally run interactively first: a, b = shape_poly.symbolic_shape(\"a, b\"); x = core.max_dim(-2, core.min_dim(1, a - 5)); print(_bounds(x * x)) inside the test module to see the pre-fix bounds directly.",
+          "Record the failures: test_bounds_product is newly added and fails, and test_bounds_arithmetic fails on the three new sign_crossing_factor assertions. Do NOT apply the shape_poly_decision.py fix.",
+          "Cross-check the fixed revision in a separate worktree/checkout at b1ef0099758ce4acbf9ba90e018022ad3620139e to confirm the same two tests pass once the fix is present."
+        ],
+        "test_command": "python -m pytest tests/shape_poly_test.py::test_bounds_arithmetic tests/shape_poly_test.py::test_bounds_product",
+        "test_selector": "tests/shape_poly_test.py::test_bounds_arithmetic tests/shape_poly_test.py::test_bounds_product",
+        "expected_buggy_behavior": "Both tests FAIL at e3639c5e. test_bounds_product is selected but fails: x*x and x*x*x bounds omit the zero candidate for even-power intervals crossing zero, and u = (a // -2) * core.max_dim(0, a - 5) yields NaN where (-inf, 0) is expected. test_bounds_arithmetic fails on sign_crossing_factor**2 -> 0 not included (expected (0, 25)) and sign_crossing_factor**2 * b -> NaN (expected (0, inf)).",
+        "expected_fixed_behavior": "At b1ef0099 both selected tests PASS: _bounds(x*x) == (0, 4), _bounds(x*x*x) == (-8, 1), _bounds(u) == (-inf, 0), _bounds(z*a) == (-inf, inf), _bounds(sign_crossing_factor**2) == (0, 25), _bounds(sign_crossing_factor**2 * b) == (0, inf), and sign_crossing_factor**2 >= 1 raises core.InconclusiveDimensionOperation.",
+        "success_criterion": "On the unmodified buggy commit e3639c5e with only tests/shape_poly_test.py patched from PR #40054, the command 'python -m pytest tests/shape_poly_test.py::test_bounds_arithmetic tests/shape_poly_test.py::test_bounds_product' reports failures (AssertionError for the missing 0 bound / wrong bounds, NaN where 0 or a finite bound is expected). The same command passes at the fixed commit b1ef0099.",
+        "risks_or_ambiguities": [
+          "The reproducing tests do NOT exist at the buggy commit: test_bounds_product is brand-new and the sign_crossing_factor assertions are added; the tests/shape_poly_test.py hunk MUST be applied, otherwise pytest errors with 'no tests ran'/collection error rather than a genuine bug failure.",
+          "The evidence never states the exact pre-fix numeric tuples for the non-NaN assertions; only the post-fix expected values are verbatim. buggy_output fields for those rows are therefore described qualitatively.",
+          "Q4 build/test commands were mined from CI workflows aimed at examples/ffi and multibackend jobs, not at shape_poly; the exact install line for this test is inferred (.[minimum-jaxlib] + build/test-requirements.txt).",
+          "jaxlib version pinning: JAX source at this commit expects jaxlib 0.11.1; a mismatched installed jaxlib may cause import errors/warnings unrelated to the bug.",
+          "Exact pytest entry point: JAX's conftest/absl parametrization may require running the module path exactly as given; running with -k instead of node IDs is equivalent but not evidence-backed.",
+          "If the environment resolves a jaxlib wheel built from the fixed commit, results could be confused; verify jax._src.export.shape_poly_decision.py content matches the buggy revision before concluding.",
+          "test_bounds_arithmetic contains many other assertions that pass pre-fix; only the three new sign_crossing_factor lines are expected to fail."
+        ],
+        "confidence": 0.7
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2316,
+        "output_tokens": 4845,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.007416
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/39475",
+      "repo": "jax-ml/jax",
+      "pr_number": 39475,
+      "buggy_commit": "dfb2a19cb48ca5acdc484c6b8e0bd66222315cfd",
+      "fixed_commit": "664e84948c9cc06fb93336a962fe15a013614b30",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "At buggy commit dfb2a19cb48ca5acdc484c6b8e0bd66222315cfd, jnp.nanquantile/nanpercentile (and jnp.quantile/percentile) crash with an indexing/gather error when the reduction axis has size zero instead of returning all-NaN output like NumPy. Reproduce by installing the checked-out JAX plus jaxlib, applying only the PR test hunk to tests/lax_numpy_reducers_test.py, and running the new testNanQuantileEmptyReduction test, which must fail (error) on the buggy revision.",
+        "input_output_examples": [
+          {
+            "input": "jnp.nanquantile(jnp.empty((0, 4), dtype=jnp.float32), 0.5, axis=0)",
+            "buggy_output": "Raises an indexing / gather error (also inside jax.jit)",
+            "expected_output": "array([nan, nan, nan, nan], dtype=float32)  (matches np.nanquantile(np.empty((0, 4), dtype=np.float32), 0.5, axis=0))",
+            "source": "issue"
+          },
+          {
+            "input": "x = jnp.empty((0, 4), dtype=jnp.float32); jnp.nanquantile(x, 0.5, axis=0)",
+            "buggy_output": "Indexing / gather error",
+            "expected_output": "array([nan, nan, nan, nan], dtype=float32)",
+            "source": "pr"
+          },
+          {
+            "input": "jnp_fun = partial(jnp.nanquantile, q=np.array([0.25, 0.5, 0.75], dtype=np.float32), axis=0, keepdims=False) applied to np.empty((0, 4), dtype=np.float32)",
+            "buggy_output": "Indexing / gather error inside _quantile; _CheckAgainstNumpy and _CompileAndCheck fail for every shape/axis/opname/keepdims parametrisation",
+            "expected_output": "Matches np.nanquantile(empty((0,4)), q=[0.25,0.5,0.75], axis=0, keepdims=False): all-NaN array of shape (3, 4) (check_dtypes=False)",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Create and activate a Python 3.12 virtual environment (CI default); expose the interpreter as PYTHON_BIN and install via uv as in CI.",
+          "Dependencies from setup.py: numpy>=2.1, scipy>=1.15, ml_dtypes>=0.5.0, jaxlib 0.11.0 (use the 'minimum-jaxlib' extra to pin it).",
+          "Verify checkout is the buggy revision: git rev-parse HEAD must equal dfb2a19cb48ca5acdc484c6b8e0bd66222315cfd.",
+          "Optional env: JAX_PLATFORM_NAME=cpu and JAX_ENABLE_X64=True for the x64 variant of the test run."
+        ],
+        "build_steps": [
+          "uv pip install --python \"$PYTHON_BIN\" '.[minimum-jaxlib]' -r build/test-requirements.txt (installs JAX from the checkout plus pytest and test deps).",
+          "JAX itself is pure Python; no C++/bazel build is needed for CPU reproduction as long as the matching jaxlib wheel is installed.",
+          "Smoke-check the install: python -c \"import jax, jaxlib; print(jax.__version__, jaxlib.__version__); print(jax.devices())\"."
+        ],
+        "reproduction_steps": [
+          "Confirm the buggy commit is checked out and that tests/lax_numpy_reducers_test.py does NOT yet contain testNanQuantileEmptyReduction (it is introduced by the PR).",
+          "Apply only the test-file hunk of the PR diff (tests/lax_numpy_reducers_test.py) onto the buggy tree; do not modify jax/_src/numpy/reductions.py.",
+          "Manual probe: python -c \"import jax.numpy as jnp; x=jnp.empty((0,4), dtype=jnp.float32); print(jnp.nanquantile(x, 0.5, axis=0))\" -> expect an indexing/gather error rather than a NaN vector.",
+          "Extend the probe to axis=None, tuple axes such as (0,1)/(1,2), vector q, keepdims=True/False, jnp.nanpercentile, and jax.jit(...) to confirm the same empty-reduction failure.",
+          "Run the regression test: pytest -q tests/lax_numpy_reducers_test.py -k NanQuantileEmptyReduction (observe errors/failures); optionally rerun with JAX_ENABLE_X64=True.",
+          "Capture the traceback showing the crash occurs in the quantile-index/gather step of _quantile on a zero-size axis, matching issue#39468."
+        ],
+        "test_command": "pytest -q tests/lax_numpy_reducers_test.py -k NanQuantileEmptyReduction   (also JAX_ENABLE_X64=True pytest -q tests/lax_numpy_reducers_test.py -k NanQuantileEmptyReduction)",
+        "test_selector": "NanQuantileEmptyReduction",
+        "expected_buggy_behavior": "For each parametrisation (empty shapes ((0,), (0,4), (3,0), (2,0,3)) with axis None/int/tuple, opname nanquantile/nanpercentile, keepdims False/True), jnp.nanquantile/jnp.nanpercentile raise an indexing/gather error inside _quantile on the zero-size reduction axis instead of returning NaNs; the test errors in both _CheckAgainstNumpy and _CompileAndCheck.",
+        "expected_fixed_behavior": "Empty reduction axes are delegated to nanmean so jnp.nanquantile/np.nanpercentile return all-NaN arrays whose shapes match NumPy; testNanQuantileEmptyReduction passes for eager and jitted execution across all shape/axis/q/keepdims combinations.",
+        "success_criterion": "On buggy commit dfb2a19cb48ca5acdc484c6b8e0bd66222315cfd the new test testNanQuantileEmptyReduction FAILS (indexing/gather error) and the manual nanquantile probe raises instead of returning NaNs; the same test passes on fixed commit 664e84948c9cc06fb93336a962fe15a013614b30.",
+        "risks_or_ambiguities": [
+          "The exact exception type/message is not stated in the evidence; accept any indexing/gather error originating from _quantile on a zero-size axis as the bug.",
+          "testNanQuantileEmptyReduction does not exist at the buggy commit; the PR test hunk must be applied (test-only patch) before running the selector.",
+          "jaxlib 0.11.0 may not have a wheel for the chosen Python version; a mismatch could cause unrelated import/build failures.",
+          "It is ambiguous whether JAX_ENABLE_X64=True is required; the test uses float32 inputs and check_dtypes=False, so the default run is probably sufficient.",
+          "The evidence does not show build/test commands for a source-built jaxlib (CI uses uv/pytest); a full bazel build may be needed if the minimum-jaxlib wheel is incompatible.",
+          "The test class enclosing testNanQuantileEmptyReduction was not shown; -k NanQuantileEmptyReduction should still select it safely."
+        ],
+        "confidence": 0.7
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3018,
+        "output_tokens": 4288,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.00699
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/38820",
+      "repo": "jax-ml/jax",
+      "pr_number": 38820,
+      "buggy_commit": "2ed31913ce07da6d4abbc1c2397b24481d971553",
+      "fixed_commit": "da23cf20a2880667a6f04e818ee58b901fbb5da7",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Special-value bug in jax/_src/lax/special.py: lax.special.gammainc/gammaincc return NaN when the shape parameter a (== k) is +infinity, whereas SciPy returns the limiting values 0.0 (gammainc) and 1.0 (gammaincc). Reproduction is a pure-Python/pytest check on CPU: install the repo at the buggy commit, then (a) call jax.scipy.special.gammainc/gammaincc(inf, x) directly and compare to scipy, and (b) add the PR's new inf sample rows to testGammaIncBoundaryValues/testGammaIncCBoundaryValues and run them so _CheckAgainstNumpy fails against scipy.",
+        "input_output_examples": [
+          {
+            "input": "jax.scipy.special.gammainc(a=inf, x=finite positive) (a first arg, e.g. 1.0)",
+            "buggy_output": "NaN (jax returns nan)",
+            "expected_output": "0.0 (matches scipy.special.gammainc)",
+            "source": "pr"
+          },
+          {
+            "input": "jax.scipy.special.gammaincc(a=inf, x=finite positive) (a first arg, e.g. 1.0)",
+            "buggy_output": "NaN (jax returns nan)",
+            "expected_output": "1.0 (matches scipy.special.gammaincc)",
+            "source": "pr"
+          },
+          {
+            "input": "gammaincc(k=inf, mu=2.0) as reported in issue #38622",
+            "buggy_output": "jax=nan",
+            "expected_output": "scipy=1.0",
+            "source": "issue"
+          },
+          {
+            "input": "gammaincc(a=inf, x=1.0) as reported in issue #38272",
+            "buggy_output": "nan",
+            "expected_output": "1.0",
+            "source": "issue"
+          },
+          {
+            "input": "gammaincc(a=inf, x=2.0) as reported in issue #39108",
+            "buggy_output": "nan",
+            "expected_output": "1.0",
+            "source": "issue"
+          },
+          {
+            "input": "testGammaIncBoundaryValues added sample a_samples=inf, x_samples=1 (dtype=float)",
+            "buggy_output": "jax gammainc = nan (mismatch vs scipy inside _CheckAgainstNumpy)",
+            "expected_output": "scipy gammainc = 0.0",
+            "source": "test"
+          },
+          {
+            "input": "testGammaIncCBoundaryValues added sample a_samples=inf, x_samples=1 (dtype=float)",
+            "buggy_output": "jax gammaincc = nan (mismatch vs scipy inside _CheckAgainstNumpy)",
+            "expected_output": "scipy gammaincc = 1.0",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Linux/CPU machine with Python 3.12 (CI default) and a C/C++ toolchain (GCC/g++).",
+          "Create a venv and use uv/pip: `uv pip install --python \"$PYTHON_BIN\" -e '.[minimum-jaxlib]' -r 'build/test-requirements.txt'` so jaxlib==0.10.2 is picked up.",
+          "Ensure runtime deps: numpy>=2.1, scipy>=1.15, ml_dtypes>=0.5.0 (the >=1.15 scipy branch of the boundary-value test is the one that gains the a=inf samples for the fixed version).",
+          "Export `JAX_PLATFORM_NAME=cpu` so tests run on CPU (no GPU/TPU needed); optionally `JAX_ENABLE_X64=1` to also exercise float64 dtype rows.",
+          "Confirm the checkout is the buggy revision: `git rev-parse HEAD` == 2ed31913ce07da6d4abbc1c2397b24481d971553 and `git diff` shows tests/lax_scipy_special_functions_test.py unmodified (pre-PR)."
+        ],
+        "build_steps": [
+          "From the repo root, install jax in editable mode against the pinned minimum jaxlib: `uv pip install --python \"$PYTHON_BIN\" '.[minimum-jaxlib]' -r 'build/test-requirements.txt'` (jaxlib 0.10.2 wheel; no source build of jaxlib is required for a pure-Python fix).",
+          "If pip/uv is unavailable in CI style: `python -m pip install -e '.[minimum-jaxlib]' -r build/test-requirements.txt`.",
+          "Sanity-check the install: `python -c \"import jax, scipy, numpy; print(jax.__version__, scipy.__version__, numpy.__version__)\"` (jax must import from the checked-out tree).",
+          "No compilation of JAX itself is needed; tests/lax_scipy_special_functions_test.py is run via pytest (JAX uses a custom lazily-compiled test runner, so no separate `pytest` plugin install is required beyond test-requirements)."
+        ],
+        "reproduction_steps": [
+          "Step 0 (direct CLI reproduction, no test edits): run `python -c \"import jax, jax.numpy as jnp, scipy.special as osp; print(jax.scipy.special.gammainc(jnp.inf, 1.0)); print(jax.scipy.special.gammaincc(jnp.inf, 1.0)); print(osp.gammainc(jnp.inf, 1.0) if hasattr(osp,'gammainc') else osp.gamma(1.0)); print(osp.gammaincc(jnp.inf, 1.0), osp.gammaincc(float('inf'), 2.0))\"`. At the buggy commit jax prints nan/nan while scipy prints 0.0/1.0/1.0.",
+          "Step 1 (test-based reproduction): the PR's test additions live ONLY in the fixed version, so at the buggy commit the existing testGammaIncBoundaryValues/testGammaIncCBoundaryValues do not include a=inf rows and pass. Apply the test-side (only) hunks from the PR diff to tests/lax_scipy_special_functions_test.py: append inf to a_samples and 0, 1, inf, nan, -1 to x_samples in the scipy>=1.16 branch (and inf, 0, 1, inf, -1 in the else branch). Do NOT touch jax/_src/lax/special.py.",
+          "Step 2: keep the PR's argument-order swap in _CheckAgainstNumpy (osp_special first, lsp_special second) if using the exact diff; alternatively the original order still surfaces the mismatch as a NaN-vs-finite assertion failure.",
+          "Step 3: run the two boundary-value tests (see test_command). Observe AssertionError from _CheckAgainstNumpy reporting mismatched entries where a=inf: jax yields nan for x=0,1,inf,-1 while scipy yields 0.0/1.0-style finite values.",
+          "Step 4: additionally run with JAX_ENABLE_X64=1 to confirm the same nan-vs-finite mismatch for float64 rows.",
+          "Step 5: record the failing assertion output (dtype, a=inf, x value, jax value nan, scipy value) as the reproduction artifact; confirm the same test passes on the fixed commit da23cf20a2880667a6f04e818ee58b901fbb5da7 (reference only)."
+        ],
+        "test_command": "JAX_PLATFORM_NAME=cpu python -m pytest tests/lax_scipy_special_functions_test.py -k \"testGammaIncBoundaryValues or testGammaIncCBoundaryValues\" -v",
+        "test_selector": "tests/lax_scipy_special_functions_test.py -k \"testGammaIncBoundaryValues or testGammaIncCBoundaryValues\" (the two methods patched in PR #38820, testGammaIncBoundaryValues and testGammaIncCBoundaryValues)",
+        "expected_buggy_behavior": "jax.scipy.special.gammainc(inf, x) and gammaincc(inf, x) return nan for finite positive x (and for the boundary x values 0/1/inf/-1), so _CheckAgainstNumpy raises AssertionError comparing against scipy.special.gammainc/gammaincc, which returns 0.0 and 1.0 respectively (scipy returns nan only for the genuinely undefined inf/inf case).",
+        "expected_fixed_behavior": "After the fix in jax/_src/lax/special.py, gammainc(a=inf, x) returns 0.0 and gammaincc(a=inf, x) returns 1.0 for the added samples, matching scipy.special, so both boundary-value tests (and _CompileAndCheck) pass on the fixed commit.",
+        "success_criterion": "On the buggy commit 2ed31913ce07da6d4abbc1c2397b24481d971553, the two patched boundary-value tests FAIL with an AssertionError whose mismatch values are jax=nan vs scipy=0.0 (gammainc) and jax=nan vs scipy=1.0 (gammaincc) at a=inf, and the direct jax.scipy.special.gammaincc(jnp.inf, 1.0) call prints nan instead of 1.0; the same tests pass once the fix is applied.",
+        "risks_or_ambiguities": [
+          "The test file in the PR diff is PART OF THE FIX: at the buggy commit tests/lax_scipy_special_functions_test.py has no a=inf samples, so running the unmodified test would PASS. The reproduction must add only the test-side samples from the diff (data, not the jax/_src fix).",
+          "Exact pytest invocation in JAX CI is truncated in the mined evidence; the documented commands are `./ci/run_pytest_cpu.sh` / `$PYTHON_BIN -m pytest`. `python -m pytest tests/lax_scipy_special_functions_test.py -k ...` is the standard, evidence-consistent form.",
+          "Test class name is not confirmed by the evidence, so the selector is given with -k on the method names to avoid vendor-specific node IDs.",
+          "Which dtype values the boundary tests are parameterized over is not shown; JAX_ENABLE_X64 is needed to include float64 rows (marked as optional).",
+          "scipy version matters: the augmented samples are in the `scipy.__version__ >= (1,16)` branch; with scipy <1.16 a shorter inf sample list is used and some rows (e.g. a=inf,x=inf/nan) are intentionally excluded per scipy/scipy#22441.",
+          "The argument-order swap of _CheckAgainstNumpy in the diff is cosmetic (it changes which tensor is reported first); it is not the numerical fix, but reading the failure message depends on it.",
+          "The `inf/inf` and `inf/nan` rows in scipy>=1.16 are genuinely undefined and both sides yield nan; only the finite-x rows (and x=0) exhibit the 0.0/1.0 expected values, so the failure signature must be read per-row."
+        ],
+        "confidence": 0.8
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3371,
+        "output_tokens": 4154,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.006968
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/38106",
+      "repo": "jax-ml/jax",
+      "pr_number": 38106,
+      "buggy_commit": "8a0456ae6a32d8def8166e91a07208ed4b218d57",
+      "fixed_commit": "665882239d8c0d7c84c80e9c52046f8cfe163997",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "jnp.heaviside mishandles NaN in its first argument: at the buggy commit 8a0456ae, the implementation has no NaN guard, so a NaN x1 falls through the `x1 == 0` branch and returns x2 (e.g. -1.0) instead of propagating NaN as numpy.heaviside does. Reproduction is a Python-level check: install/build jax+jaxlib at the buggy revision, then run the PR's regression test tests/lax_numpy_operators_test.py::test_heaviside_nan (which compares jnp.heaviside against np.heaviside on a grid containing np.nan, -inf, -1, 0, 1, inf and also compiles it). On the buggy commit the assertion fails because NaN entries compute to the x2 column value.",
+        "input_output_examples": [
+          {
+            "input": "x1_f32 = np.float32(np.nan); x2_f32 = np.float32(-1.0); jnp.heaviside(x1_f32, x2_f32)",
+            "buggy_output": "-1.0",
+            "expected_output": "nan",
+            "source": "issue"
+          },
+          {
+            "input": "x1_f64 = np.float64(np.nan); x2_f64 = np.float64(-1.0); jnp.heaviside(x1_f64, x2_f64)",
+            "buggy_output": "-1.0",
+            "expected_output": "nan",
+            "source": "issue"
+          },
+          {
+            "input": "jax.jit(jnp.heaviside)(jnp.array(np.float32(np.nan)), jnp.array(np.float32(-1.0)))",
+            "buggy_output": "-1.0",
+            "expected_output": "nan",
+            "source": "issue"
+          },
+          {
+            "input": "x = np.array([np.nan, -np.inf, -1, 0, 1, np.inf], dtype=dtype); args_maker = lambda: [x[:, None], x[None, :]]; jnp.heaviside(*args_maker())",
+            "buggy_output": "Entries where the first column is NaN return the corresponding x2 value (fall-through of the x1 == 0 branch) instead of NaN; differs from np.heaviside",
+            "expected_output": "Matches np.heaviside elementwise: NaN propagates wherever x1 is NaN (also holds after jit compilation)",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Use CPython 3.12 (CI default in bazel_cpu.yml / ci-build.yaml); set JAXCI_PYTHON and PYTHON_BIN to the interpreter.",
+          "Install build toolchain: apt-get install build-essential (gcc/g++) \u2014 required to build native extensions/jaxlib.",
+          "Install pinned deps: numpy>=2.0, scipy>=1.14, ml_dtypes>=0.5.0, plus build/test requirements (build/test-requirements.txt) including absltest/absl-py and pytest.",
+          "Optional: fetch scientific-python nightly wheels via $JAXCI_PYTHON -m uv pip install --system -i https://pypi.anaconda.org/scientific-python-nightly-wheels/simple --no-deps --pre --upgrade numpy scipy.",
+          "git submodule init && git submodule update (jax has submodules needed before building)."
+        ],
+        "build_steps": [
+          "Confirm the checked-out revision is the buggy commit: git rev-parse HEAD should be 8a0456ae6a32d8def8166e91a07208ed4b218d57.",
+          "$JAXCI_PYTHON -m uv pip install scikit-build-core cmake",
+          "git submodule init; git submodule update",
+          "$JAXCI_PYTHON -m uv pip install . --no-build-isolation  # installs jax from the working tree (and jaxlib per CI scripts)",
+          "Alternatively build artifacts via ./ci/build_artifacts.sh jax and ./ci/build_artifacts.sh jaxlib, then install the produced wheels.",
+          "$JAXCI_PYTHON -m uv pip install -r build/test-requirements.txt",
+          "Sanity check: python -c \"import jax, jax.numpy as jnp, numpy as np; print(jax.__version__, jnp.heaviside(np.float32(np.nan), np.float32(-1.0)))\" and confirm it prints -1.0 (or a value equal to x2) rather than nan."
+        ],
+        "reproduction_steps": [
+          "Build/install jax + jaxlib at 8a0456ae as above (do NOT apply the fix; jax/_src/numpy/ufuncs.py still lacks the lax._isnan(x1) guard).",
+          "Quick inline repro (no test file needed): python -c \"import numpy as np, jax, jax.numpy as jnp; print(repr(jnp.heaviside(np.float32(np.nan), np.float32(-1.0)))); print(repr(np.heaviside(np.float32(np.nan), np.float32(-1.0))))\" \u2014 expect jnp to print -1.0 and numpy to print nan.",
+          "Repeat for float64 and for the compiled path: jax.jit(jnp.heaviside)(jnp.float32(np.nan), jnp.float32(-1.0)) \u2014 expect -1.0 on the buggy commit.",
+          "Add the PR's regression test to tests/lax_numpy_operators_test.py (the test is introduced by the PR and is absent at the buggy commit): decorate with @jtu.sample_product(dtype=float_dtypes), build x = np.array([np.nan, -np.inf, -1, 0, 1, np.inf], dtype=dtype), args_maker = lambda: [x[:, None], x[None, :]], then call self._CheckAgainstNumpy(np.heaviside, jnp.heaviside, args_maker) and self._CompileAndCheck(jnp.heaviside, args_maker).",
+          "Run the regression test with the PR's selector: python tests/lax_numpy_operators_test.py --test_filter=test_heaviside_nan (or pytest tests/lax_numpy_operators_test.py -k test_heaviside_nan).",
+          "Observe the failure: the _CheckAgainstNumpy / _CompileAndCheck mismatch reports entries where x1 is NaN differing from numpy.heaviside (jax returns the x2 value, numpy returns nan)."
+        ],
+        "test_command": "python tests/lax_numpy_operators_test.py --test_filter=test_heaviside_nan",
+        "test_selector": "tests/lax_numpy_operators_test.py::test_heaviside_nan",
+        "expected_buggy_behavior": "On the buggy commit, jnp.heaviside(NaN, x2) returns x2 (e.g. -1.0) instead of NaN, both eagerly and under jax.jit, because NaN falls through the x1 == 0 branch. The added test test_heaviside_nan therefore FAILS: the [nan, -inf, -1, 0, 1, inf] x grid mismatches np.heaviside wherever x1 is NaN (and the compiled check fails too).",
+        "expected_fixed_behavior": "After the fix (x1 > 0 -> 1; else where lax._isnan(x1) -> x1 (NaN); else x2), jnp.heaviside propagates NaN for NaN x1 regardless of x2, matching np.heaviside elementwise in test_heaviside_nan, and _CompileAndCheck also matches, so the test PASSES.",
+        "success_criterion": "The inline repro prints -1.0 (buggy) vs nan (numpy), and tests/lax_numpy_operators_test.py::test_heaviside_nan FAILS at commit 8a0456ae6a32d8def8166e91a07208ed4b218d57 while passing on the fixed commit 665882239d8c0d7c84c80e9c52046f8cfe163997.",
+        "risks_or_ambiguities": [
+          "The regression test test_heaviside_nan is INTRODUCED by the PR and does not exist at the buggy commit; the harness must add it (verbatim from the PR diff) or rely on the inline -c repro, otherwise the selector will error with 'no tests found'.",
+          "Exact jaxlib install path is ambiguous: evidence lists both `uv pip install . --no-build-isolation` and `./ci/build_artifacts.sh jax/jaxlib`; a building-from-source environment (bazel, cmake, build-essential, GPU/CPU-specific) may be needed, and a prebuilt jaxlib must match the jax source revision.",
+          "Compiler and exact numpy/scipy/ml_dtypes versions are not pinned in the evidence (only >= ranges), yet float behavior/float8 dtype coverage in float_dtypes can vary with ml_dtypes version.",
+          "float_dtypes may include 8-bit float types where np.heaviside / NaN comparison semantics differ, potentially causing unrelated skips or errors.",
+          "Test file uses absltest/JaxTestLoader with --test_filter; the evidence's `./ci/run_pytest_cpu.sh` and bazel commands are whole-suite alternatives that do not accept the single-test selector.",
+          "Network access to the scientific-python nightly wheel index / GCS download URI may be unavailable, so a locally cached or release jaxlib wheel is preferable."
+        ],
+        "confidence": 0.72
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2684,
+        "output_tokens": 2539,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.004534
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/37457",
+      "repo": "jax-ml/jax",
+      "pr_number": 37457,
+      "buggy_commit": "837f78e592d58325cc095211da7f91dece4c1523",
+      "fixed_commit": "efbd24c780549d3863cce9530f5fd203808d2470",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the float64 masked-attention overflow in jax.nn.dot_product_attention: with float64 inputs, _get_large_negative(float64) returns ~-1.26e308, which overflows to -inf when cast to float32 in _dot_product_attention_core. Under jax.debug_infs(True), the -inf intermediate in convert_element_type raises FloatingPointError. The regression test testDotProductAttentionFloat64MaskDebugInfs in tests/nn_test.py must fail on the buggy commit and pass once fixed.",
+        "input_output_examples": [
+          {
+            "input": "with jax.enable_x64(): T,S,K,N,H = 5,7,3,6,11; mask = jnp.arange(S) <= S//2; with jax.debug_infs(True): out = nn.dot_product_attention(jnp.zeros((T,N,H), dtype=jnp.float64), jnp.zeros((S,K,H), dtype=jnp.float64), jnp.zeros((S,K,H), dtype=jnp.float64), mask=mask); out.block_until_ready()",
+            "buggy_output": "FloatingPointError: invalid value (inf) in convert_element_type, because the float64 masked-logit constant ~-1.26e308 overflows to -inf when padded_logits is cast to float32 for softmax.",
+            "expected_output": "No FloatingPointError and no warnings; out computes successfully and is finite. The large negative constant is capped at float32 range (~-2.38e38) so casting to float32 does not produce -inf.",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Python 3.12 (JAXCI_PYTHON points at the interpreter used for the CI environment).",
+          "Install CPU build deps: numpy>=2.0, scipy>=1.14, ml_dtypes>=0.5.0 (build/test-requirements.txt).",
+          "Ensure jaxlib matching the source revision is installed (CI targets jaxlib 0.10.0).",
+          "No external services required for a single-test CPU reproduction; GPU/TPU extras (libtpu 0.0.40.*) are optional.",
+          "Set env vars as CI does if needed: JAX_ENABLE_X64 / JAX_ENABLE_CHECKS / JAX_SKIP_SLOW_TESTS / PY_COLORS; the test itself enables x64 via jax.enable_x64()."
+        ],
+        "build_steps": [
+          "git submodule init && git submodule update",
+          "$JAXCI_PYTHON -m uv pip install scikit-build-core cmake",
+          "$JAXCI_PYTHON -m uv pip install . --no-build-isolation  (installs the checked-out jax from source)",
+          "Alternatively ./ci/build_artifacts.sh jax and ./ci/build_artifacts.sh jaxlib if prebuilt artifacts are required.",
+          "Verify the working tree is at buggy commit 837f78e592d58325cc095211da7f91dece4c1523 (e.g. git rev-parse HEAD)."
+        ],
+        "reproduction_steps": [
+          "Check out / confirm HEAD == 837f78e592d58325cc095211da7f91dece4c1523; the fix in jax/_src/nn/functions.py must NOT be present.",
+          "Install the repo from source into the environment as in build_steps.",
+          "Run the selector: pytest tests/nn_test.py -k testDotProductAttentionFloat64MaskDebugInfs (or the CI wrapper ./ci/run_pytest_cpu.sh).",
+          "Observe the test error: assertNoWarnings catches the FloatingPointError: invalid value (inf) in convert_element_type raised inside jax.debug_infs(True).",
+          "Optionally reproduce standalone by executing the same snippet with jax.enable_x64() and jax.debug_infs(True) to confirm -inf appears in convert_element_type for padded_logits.astype(float32).",
+          "Record the failure output as evidence; do NOT modify any source file.",
+          "Optional sanity check of the fixed behavior on efbd24c780549d3863cce9530f5fd203808d2470: same selector passes (reference only)."
+        ],
+        "test_command": "pytest tests/nn_test.py -k testDotProductAttentionFloat64MaskDebugInfs",
+        "test_selector": "tests/nn_test.py -k testDotProductAttentionFloat64MaskDebugInfs",
+        "expected_buggy_behavior": "FloatingPointError is raised: 'invalid value (inf)' in convert_element_type, because the float64 large-negative constant ~-1.26e308 overflows to -inf when padded_logits is cast to float32 for softmax, and jax.debug_infs(True) detects the -inf intermediate. The regression test fails (assertNoWarnings surfaces the FloatingPointError).",
+        "expected_fixed_behavior": "No FloatingPointError and no warnings (assertNoWarnings passes); out is computed successfully and finiten. The large negative constant is capped at ~-2.38e38 (float32 range ~3.4e38), so masked positions still yield exp(x)~0 after softmax and the convert_element_type cast stays finite.",
+        "success_criterion": "On buggy commit 837f78e592d58325cc095211da7f91dece4c1523, `pytest tests/nn_test.py -k testDotProductAttentionFloat64MaskDebugInfs` FAILS with a FloatingPointError (invalid inf in convert_element_type). The same test would PASS after the fix (efbd24c...).",
+        "risks_or_ambiguities": [
+          "Q3 confidence is only 0.7 and the test is newly introduced, so its exact name/selector must be confirmed against the PR diff in tests/nn_test.py.",
+          "FloatingPointError depends on jax_debug_infs / JAX_DEBUG_INFS not being globally disabled; if the JAX config is overridden by the environment the error may not surface.",
+          "Enabling x64 relies on jax.enable_x64() inside the test; a globally-set JAX_ENABLE_X64=True is fine but a conflicting config could alter behavior.",
+          "The failure mode is platform/backend dependent: only the CPU backend with assertNoWarnings and debug_infs reliably raises; GPU/TPU may warn rather than error.",
+          "Exact dependency pinning (jaxlib 0.10.0, libtpu 0.0.40.*) is inferred from CI; a locally built jaxlib from the same commit may be required for version consistency.",
+          "No concrete numeric output values are asserted by the test; the observable is the absence of FloatingPointError/warnings, so no exact output tensor values are available to cite."
+        ],
+        "confidence": 0.85
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2588,
+        "output_tokens": 1473,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.003085
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/30346",
+      "repo": "jax-ml/jax",
+      "pr_number": 30346,
+      "buggy_commit": "1b556f2e7444e80952fb923e6f4ad16c55ba1a23",
+      "fixed_commit": "893b483e3f130bad7db8a0858dc229033e9ff9e1",
+      "is_numerical_bug": true,
+      "bug_type": "accuracy",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce PR #30346's numerical gradient bugs at buggy commit 1b556f2e: float32 gradients of lax.logistic, lax.tanh and lax.expm1 under lax.AccuracyMode.HIGHEST use inaccurate formulas (sigmoid*(1-sigmoid), (1+tanh)*(1-tanh), expm1+1) that vanish/cancel at large |x|. Add the new tests tests/lax_test.py::testEvenFunctionGrads and ::testExpm1Grad and run them; they must fail before the fix and pass after.",
+        "input_output_examples": [
+          {
+            "input": "jax.grad(lambda x: lax.logistic(x, accuracy=lax.AccuracyMode.HIGHEST)) at float32 x = 80.0",
+            "buggy_output": "0, because logistic(80) rounds to 1.0 in float32 so the old derivative sigmoid(80)*(1-sigmoid(80)) = 1*(1-1) = 0; PR states gradients vanished for x > ~17.",
+            "expected_output": "Nonzero value from sigmoid(x)*sigmoid(-x) (~exp(-80)); gradient should only truly vanish near x ~ 88, and the test asserts grads at x and -x match.",
+            "source": "pr"
+          },
+          {
+            "input": "jax.grad(lambda x: lax.tanh(x, accuracy=lax.AccuracyMode.HIGHEST)) at large float32 |x| (e.g. x=20 or x=80)",
+            "buggy_output": "0, because the old derivative (1+tanh(x))*(1-tanh(x)) loses all precision once tanh(x) rounds to +-1.0 in float32.",
+            "expected_output": "4*sigmoid(2x)*sigmoid(-2x), which stays accurate for large |x| without cancellation.",
+            "source": "pr"
+          },
+          {
+            "input": "jax.grad(lambda x: lax.expm1(x, accuracy=lax.AccuracyMode.HIGHEST)) at float32 x = -80.0",
+            "buggy_output": "0, because expm1(-80) rounds to -1.0 in float32, so the old derivative expm1(-80)+1 = 0.",
+            "expected_output": "exp(-80) ~ 1.8e-35 (small but nonzero); testExpm1Grad compares the expm1 gradient against the exp gradient over x in [-80, 80] with atol = default float32 tolerance, rtol=0.",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Work from the checked-out buggy revision 1b556f2e7444e80952fb923e6f4ad16c55ba1a23 (JAX repo root).",
+          "Python 3.10+ with pip; CPU-only backend is sufficient (bug is pure Python/float32 arithmetic).",
+          "Install a jaxlib matching this jax version, e.g. `python -m pip install jaxlib`, then `python -m pip install -e .` from the repo root.",
+          "Install test dependencies (absl-py/parameterized, numpy, pytest, hypothesis): `python -m pip install -r build/test-requirements.txt`.",
+          "Leave JAX_ENABLE_X64 unset (default 32-bit); the new tests use explicit dtype=jnp.float32."
+        ],
+        "build_steps": [
+          "No compilation is required: the PR only touches Python sources (jax/_src/lax/lax.py, jax/lax/__init__.py).",
+          "Install the in-tree buggy jax in editable mode: `python -m pip install -e .` so tests import this checkout.",
+          "Sanity-check import points at the repo: `python -c \"import jax; print(jax.__file__)\"`.",
+          "Check the buggy API surface: `python -c \"from jax import lax; print(lax.AccuracyMode)\"`; if this raises AttributeError the tests fail with an error (missing api) rather than an assertion."
+        ],
+        "reproduction_steps": [
+          "cd to the repository root of the buggy checkout (1b556f2e).",
+          "Run the introduced tests: `python -m pytest tests/lax_test.py -k 'testEvenFunctionGrads or testExpm1Grad' -q`.",
+          "Confirm the run does NOT pass: expect AssertionError from self.assertAllClose in testEvenFunctionGrads[logistic]/[tanh] and/or testExpm1Grad (or a TypeError/AttributeError if accuracy/AccuracyMode is not yet wired up).",
+          "Inspect the failing values: logistic/tanh gradient at large |x| (e.g. x=80) is 0 while the gradient at -x is not; expm1 gradient at x=-80 is 0 while grad(exp) is ~1.8e-35.",
+          "Optionally narrow down: `python -m pytest tests/lax_test.py -k testExpm1Grad -q` and then `-k testEvenFunctionGrads -q` to see which of the two fails first."
+        ],
+        "test_command": "python -m pytest tests/lax_test.py -k 'testEvenFunctionGrads or testExpm1Grad'",
+        "test_selector": "tests/lax_test.py -k 'testEvenFunctionGrads or testExpm1Grad'",
+        "expected_buggy_behavior": "On 1b556f2e the old derivative formulas are used for float32 autodiff of lax.logistic/lax.tanh/lax.expm1 (e.g. logistic grad at x=80 returns 0, tanh grad at |x|~20 returns 0, expm1 grad at x=-80 returns 0), so the new tests fail: testEvenFunctionGrads and testExpm1Grad raise AssertionError (or error out if the accuracy kwarg/AccuracyMode is not yet present at this revision).",
+        "expected_fixed_behavior": "On the fixed commit (893b483e) the HIGHEST-accuracy derivatives sigmoid(x)*sigmoid(-x), 4*sigmoid(2x)*sigmoid(-2x) and exp(x) are used, gradients stay accurate for large |x|, and both testEvenFunctionGrads[logistic], [tanh] and testExpm1Grad pass with atol = jtu.default_tolerance()[np.dtype(np.float32)] and rtol=0.",
+        "success_criterion": "Running `python -m pytest tests/lax_test.py -k 'testEvenFunctionGrads or testExpm1Grad'` on the buggy commit 1b556f2e exits non-zero with a failure in testEvenFunctionGrads and/or testExpm1Grad, while the identical command on the fixed commit 893b483e exits 0.",
+        "risks_or_ambiguities": [
+          "The tests compare with atol = jtu.default_tolerance()[np.dtype(np.float32)] (~1e-6) and rtol=0; the absolute buggy-vs-correct gaps at large |x| (e.g. 0 vs ~1.8e-35 for expm1 at -80) may be smaller than atol, so these tests could PASS on the buggy commit. Verify the actual pytest result before trusting the selector.",
+          "If the assertion tolerances are too loose, the stronger evidence of the bug is a direct value print: grad(logistic) at x=80 -> 0, grad(tanh) at x=20 -> 0, grad(expm1) at x=-80 -> 0, versus high-precision references.",
+          "Build/reproduction evidence (Q4) was empty, so the exact jaxlib version and test-dependency install command are inferred rather than quoted; adjust to the repo's requirements files.",
+          "AccuracyMode / the `accuracy=` kwarg may itself be introduced/exported by this PR, in which case the buggy revision fails with TypeError/AttributeError instead of AssertionError; that is still a valid pre-fix failure.",
+          "The exact numeric value of jtu.default_tolerance() for float32 in this revision is unverified; if it is tighter than ~1e-7 the even-function gradients would show a clear mismatch.",
+          "Q3 confidence in the pre-fix failing behavior is only ~0.65, so re-run and confirm rather than assume."
+        ],
+        "confidence": 0.55
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2730,
+        "output_tokens": 14675,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.020574
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/26604",
+      "repo": "jax-ml/jax",
+      "pr_number": 26604,
+      "buggy_commit": "47459c16159d12da6b6be3a725a3b7dcf32e9104",
+      "fixed_commit": "55117a99d9f0c65596f9d16b279e80680902fb27",
+      "is_numerical_bug": true,
+      "bug_type": "correctness",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "PR#26604 fixes Pallas/Triton atomic min/max lowering so that unsigned ints use UMIN/UMAX and float dtypes go through a dedicated _expand_atomic_fp_min_max path instead of always emitting signed/integer RMWOp.MIN/MAX. On the buggy commit, atomic_max/atomic_min over float32 (esp. with negative/zero values, on ROCm) produce incorrect results, so tests were previously skipped on ROCm. Reproduce by applying the PR's test-file changes (float32 values [-2,-1,0,1], skips removed) and running -k test_scalar_atomic on a ROCm GPU; the test should fail on the buggy revision.",
+        "input_output_examples": [
+          {
+            "input": "plgpu.atomic_max applied to np.array([-2, -1, 0, 1], np.float32); expected compared against np.max (test id \"max_f32\", test_scalar_atomic)",
+            "buggy_output": "Incorrect/unsupported: ROCm atomic fmin/fmax not handled correctly (test was skipped with 'Atomic fmin/fmax not currently supported on ROCm.'); no reliable numeric value",
+            "expected_output": "1.0 (np.max(np.array([-2, -1, 0, 1], np.float32)))",
+            "source": "test"
+          },
+          {
+            "input": "plgpu.atomic_min applied to np.array([-2, -1, 0, 1], np.float32); expected compared against np.min (test id \"min_f32\", test_scalar_atomic)",
+            "buggy_output": "Incorrect/unsupported: ROCm atomic fmin/fmax not handled correctly (test was skipped with 'Atomic fmin/fmax not currently supported on ROCm.'); no reliable numeric value",
+            "expected_output": "-2.0 (np.min(np.array([-2, -1, 0, 1], np.float32)))",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Python 3.12 (JAXCI_PYTHON) with numpy>=2.0, scipy>=1.13, ml_dtypes>=0.5.0",
+          "ROCm GPU host with a ROCm-enabled jaxlib (the bug is observed on device type 'rocm'); Triton must be available for pallas triton lowering",
+          "Export JAX_ENABLE_X64='true' (as CI does) before running tests",
+          "Install test requirements from build/test-requirements.txt and array-api-tests/requirements.txt where needed"
+        ],
+        "build_steps": [
+          "From repo root at buggy commit 47459c16159d12da6b6be3a725a3b7dcf32e9104, build/install jaxlib for ROCm and jax: ./ci/build_artifacts.sh jaxlib && ./ci/build_artifacts.sh jax",
+          "Install Python deps: '$JAXCI_PYTHON -m uv pip install -r build/test-requirements.txt'",
+          "Install jax in editable/CI mode: '$PYTHON -m uv pip install --system .[ci] \"numpy<2.4.0\" pytest-xdist'",
+          "Apply ONLY the tests/pallas/triton_pallas_test.py change from PR#26604 (float32 arrays -> np.array([-2,-1,0,1]) and removal of the two ROCm skipTest blocks); do not apply the lowering.py/primitives.py fix"
+        ],
+        "reproduction_steps": [
+          "Check out buggy commit 47459c16159d12da6b6be3a725a3b7dcf32e9104 and confirm jax/_src/pallas/triton/lowering.py still always uses tt_dialect.RMWOp.MIN (no UMIN/UMAX or float expansion).",
+          "Patch tests/pallas/triton_pallas_test.py with the PR test diff: change max_f32/min_f32 arrays to np.array([-2, -1, 0, 1], np.float32) and delete the ROCm skipTest calls for atomic_min/atomic_max.",
+          "Run on a ROCm GPU (jtu.test_device_matches(['rocm']) must be true) since the defect is ROCm-specific and the test is skipped elsewhere.",
+          "Execute: pytest tests/pallas/triton_pallas_test.py -k test_scalar_atomic",
+          "Observe that test_scalar_atomic[max_f32] and test_scalar_atomic[min_f32] fail on the buggy commit because atomic_max/atomic_min do not return np.max/np.min over the signed float32 values.",
+          "Optionally confirm these same selectors pass at fixed commit 55117a99d9f0c65596f9d16b279e80680902fb27 to validate the reproducer."
+        ],
+        "test_command": "pytest tests/pallas/triton_pallas_test.py -k test_scalar_atomic",
+        "test_selector": "test_scalar_atomic (specifically test_scalar_atomic[max_f32] and test_scalar_atomic[min_f32])",
+        "expected_buggy_behavior": "With the updated float32 inputs [-2,-1,0,1] and ROCm skips removed, test_scalar_atomic[max_f32]/[min_f32] fail on the buggy commit: atomic_max/atomic_min do not correctly lower float atomics (negatives/zero mishandled), so results differ from np.max = 1.0 and np.min = -2.0 (previously hidden by unconditional ROCm skip).",
+        "expected_fixed_behavior": "After the fix, float atomics route to _expand_atomic_fp_min_max (and unsigned ints to UMIN/UMAX), so atomic_max over [-2,-1,0,1] float32 returns 1.0 and atomic_min returns -2.0; both test_scalar_atomic cases pass on ROCm.",
+        "success_criterion": "test_scalar_atomic[max_f32] and test_scalar_atomic[min_f32] FAIL on buggy commit 47459c16159d12da6b6be3a725a3b7dcf32e9104 (ROCm GPU, float32 inputs [-2,-1,0,1], skips removed) and PASS once the fix is applied.",
+        "risks_or_ambiguities": [
+          "Bug is ROCm-specific; on CPU/TPU/non-ROCm GPUs the test is skipped or not applicable, so no ROCm GPU means the failure may not reproduce.",
+          "The buggy commit does not contain the PR's test edits; the float32 [-2,-1,0,1] inputs and skip removal must be applied manually as a test-only patch, else the test either skips (ROCm) or uses easier non-negative values and may pass.",
+          "Evidence gives no concrete wrong numeric value for the buggy output (previously skipped), so buggy_output is described qualitatively rather than as a specific number.",
+          "Exact dependency pins and CI commands come from generic CI workflows (confidence 0.45); the precise ROCm jaxlib build/install path is not fully specified in the evidence.",
+          "Requires Triton + Pallas TRITON targeting a ROCm device; environment/driver versions and triton ROCm support may affect reproducibility."
+        ],
+        "confidence": 0.55
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2927,
+        "output_tokens": 2312,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.004342
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/25791",
+      "repo": "jax-ml/jax",
+      "pr_number": 25791,
+      "buggy_commit": "8f2f4b45fb07b2e1ad74909573142b8119471fa6",
+      "fixed_commit": "aed79707e29451156058025c0a5d349493fd8669",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce PR#25791: at buggy commit 8f2f4b45fb07b2e1ad74909573142b8119471fa6, jax.grad of jax.scipy.special.logsumexp(x, where=mask) returns NaN at masked-out (where=False) positions instead of 0. Reproduce by adding the PR's testLogSumExpWhereGrad assertion to tests/lax_scipy_test.py and running it; it must FAIL on the buggy commit (grad last element = nan, expected 0.).",
+        "input_output_examples": [
+          {
+            "input": "x = jnp.array([0., 0., 100.]); where = jnp.array([True, True, False]); jax.grad(lambda x: lsp_special.logsumexp(x, where=where))(x)",
+            "buggy_output": "[0.5, 0.5, nan]",
+            "expected_output": "[0.5, 0.5, 0.] (masked-out last element gets zero gradient)",
+            "source": "pr"
+          },
+          {
+            "input": "x = jnp.array([0., 0., 0., 0., 100.]); where = jnp.arange(5) < 4; jax.grad(lambda x: lsp_special.logsumexp(x, where=where))(x)",
+            "buggy_output": "[0.25, 0.25, 0.25, 0.25, nan] (NaN at the masked-out last element before the fix)",
+            "expected_output": "jnp.array([0.25, 0.25, 0.25, 0.25, 0.])",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Use a Linux/macOS CPU machine with a Python matching the repo's supported version (e.g. python3.11) and a virtualenv.",
+          "Clone/checkout jax-ml/jax at the buggy commit 8f2f4b45fb07b2e1ad74909573142b8119471fa6 (fix NOT applied).",
+          "Install the matching jaxlib for this revision: pip install --upgrade 'jaxlib' (CPU wheel) or follow the repo's build-from-source docs for jaxlib if the pinned version is unavailable.",
+          "Install dev/test deps: pip install -e '.[cpu]' (falls back to .[test] plus absl-py, numpy, scipy, pytest, pytest-xdist) in the jax repo root.",
+          "Note: the evidence does NOT pin exact numpy/jaxlib/scipy versions; use the versions resolved by the repo's setup.py/pyproject at this commit."
+        ],
+        "build_steps": [
+          "From the repo root, run: pip install -e . (editable install of the checked-out jax sources).",
+          "Verify the install imports the local tree: python -c \"import jax, jax.scipy.special as s; print(jax.__file__)\" and confirm the path points at the checked-out repo.",
+          "Confirm jaxlib is importable and CPU devices are present: python -c \"import jax; print(jax.devices())\"."
+        ],
+        "reproduction_steps": [
+          "Apply ONLY the test from the PR diff to tests/lax_scipy_test.py (do not touch jax/_src/ops/special.py): inside the LogSumExpTest class after testLogSumExpWhere, add:\n  def testLogSumExpWhereGrad(self):\n    x = jnp.array([0., 0., 0., 0., 100.])\n    g = jax.grad(lambda x: lsp_special.logsumexp(x, where=jnp.arange(5) < 4))(x)\n    self.assertAllClose(g, jnp.array([0.25, 0.25, 0.25, 0.25, 0.]))",
+          "Optional quick sanity check without pytest, before/independent of adding the test: python -c \"import jax, jax.numpy as jnp, jax.scipy.special as lsp; x=jnp.array([0.,0.,0.,0.,100.]); print(jax.grad(lambda x: lsp.logsumexp(x, where=jnp.arange(5)<4))(x))\" and observe nan at the last element.",
+          "Also optionally reproduce the PR body example: x=jnp.array([0.,0.,100.]); where=jnp.array([True,True,False]); print(jax.grad(lambda x: lsp.logsumexp(x, where=where))(x)) -> should show nan at index 2.",
+          "Run the reproducing test (see test_command) and inspect the assertion failure showing g's last element is nan while expected is 0.",
+          "Do NOT apply the source fix (the 'if where is not None: a = jnp.where(where, a, 0)' change in jax/_src/ops/special.py) \u2014 the goal is to observe the failure on the buggy commit."
+        ],
+        "test_command": "python -m pytest -n auto --tb=short tests/lax_scipy_test.py -k testLogSumExpWhereGrad",
+        "test_selector": "tests/lax_scipy_test.py -k testLogSumExpWhereGrad",
+        "expected_buggy_behavior": "The added testLogSumExpWhereGrad fails: jax.grad(logsumexp(x, where=jnp.arange(5) < 4)) on x=[0.,0.,0.,0.,100.] returns [0.25, 0.25, 0.25, 0.25, nan] instead of [0.25, 0.25, 0.25, 0.25, 0.]; NaN appears at the where=False (masked-out) last element. Absl assertion reports mismatch for the last element (nan vs 0.).",
+        "expected_fixed_behavior": "After the fix (a = jnp.where(where, a, 0) applied before the reduction), grad returns [0.25, 0.25, 0.25, 0.25, 0.] and testLogSumExpWhereGrad passes; the masked-out element receives exactly 0 gradient (PR body: [0.5,0.5,0.] for [0.,0.,100.] with where=[True,True,False]).",
+        "success_criterion": "On the buggy commit, testLogSumExpWhereGrad FAILS because the gradient's masked element is NaN (expected 0.); the failure is resolved only by the PR's source change, so the test is a valid fail->pass reproduction.",
+        "risks_or_ambiguities": [
+          "The reproducing test does NOT exist at the buggy commit (introduced by the PR diff); it must be added manually or via applying the tests/lax_scipy_test.py hunk before running, otherwise -k selects nothing.",
+          "The evidence pins no exact numpy/jaxlib/scipy versions; version mismatch (especially jaxlib vs jax source) can prevent the test from importing/running.",
+          "JAX test files are absl-based TestCases run through pytest; if pytest collection of this file is unsupported in the environment, run it via the absl runner as an equivalent fallback.",
+          "Only the second (5-element) example has an explicitly asserted buggy output (NaN at last element); the [0.5, 0.5, nan] example comes from the PR body text, not from a test assertion.",
+          "The forward logsumexp behavior is not asserted as numerically identical in the diff beyond the existing testLogSumExpWhere; only the gradient path is newly covered.",
+          "No reproduction/build commands were mined (Q4 empty), so build steps rely on standard JAX-from-source practice and may need adjustment."
+        ],
+        "confidence": 0.7
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2090,
+        "output_tokens": 2011,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.003576
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/25642",
+      "repo": "jax-ml/jax",
+      "pr_number": 25642,
+      "buggy_commit": "232662aaa12cf298d687deebb36227f985ae039a",
+      "fixed_commit": "4d20052f7abcbf246035cbd58c49a30bce3cac2c",
+      "is_numerical_bug": true,
+      "bug_type": "accuracy",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the accuracy regression in Pallas MHA attention backward for larger head dims (PR #25642). At buggy commit 232662aaa, the reference MHA path casts softmax weights with .astype(q.dtype) and uses einsum without preferred_element_type=jnp.float32, so backward grads (dq/dk/dv) are imprecise for head_dim in {64,128}. Apply only the PR's test-file changes (head_dim=(32,64,128), num_heads=(1,2), atol tightened to 5e-2/5e-2/1e-3) and run the GPU backward attention test on a CUDA GPU to observe AssertionError while attention.py is unfixed.",
+        "input_output_examples": [],
+        "environment_setup": [
+          "Check out buggy commit 232662aaa12cf298d687deebb36227f985ae039a (fix 4d20052f7abcbf246035cbd58c49a30bce3cac2c must NOT be applied).",
+          "Use a Linux machine with an NVIDIA GPU (test targets gpu_a100_x32 / gpu_h100_x32); a CUDA GPU is required or the Pallas GPU test is skipped.",
+          "Install Python and project deps with the CI command: python -m pip install .[ci]",
+          "Install test runner extras: python -m pip install pytest-xdist -r array-api-tests/requirements.txt",
+          "Ensure runtime deps ml_dtypes>=0.4.0, numpy>=1.25, scipy>=1.11.1 are present.",
+          "Set env var JAX_ENABLE_X64=true and preload libstdc++: export LD_PRELOAD=/lib/x86_64-linux-gnu/libstdc++.so.6"
+        ],
+        "build_steps": [
+          "Build/install JAX from the checked-out buggy source: python -m pip install .[ci] (or an editable/`pip install -e .` install so jax resolves to the buggy tree).",
+          "Confirm the buggy code is in place: grep -n 'astype(q.dtype)' jax/experimental/pallas/ops/gpu/attention.py and confirm no 'preferred_element_type=jnp.float32' on the weights/logits einsum.",
+          "Sanity-check import: python -c \"import jax; print(jax.__version__, jax.devices())\" to confirm a GPU device is visible."
+        ],
+        "reproduction_steps": [
+          "Verify HEAD is the buggy commit: git rev-parse HEAD == 232662aaa12cf298d687deebb36227f985ae039a and git status is clean.",
+          "Apply ONLY the test-side changes from PR #25642 (do NOT touch jax/experimental/pallas/ops/gpu/attention.py): in tests/pallas/gpu_ops_test.py set head_dim=(32, 64, 128,), num_heads=(1, 2), and change the backward assertions to self.assertAllClose(dq, dq_ref, atol=5e-2), self.assertAllClose(dk, dk_ref, atol=5e-2), self.assertAllClose(dv, dv_ref, atol=1e-3).",
+          "Optionally also apply the BUILD shard_count bump (6 -> 15) in tests/pallas/BUILD (does not affect correctness).",
+          "In the FusedAttentionTest backward test (assertions near tests/pallas/gpu_ops_test.py:266), inputs are sampled over batch_size=(1,2), seq_len=(128,384), num_heads=(1,2), head_dim=(32,64,128), causal=(True,False), use_segment_ids=(True,False); grads dq/dk/dv from jax.grad(f, argnums=(0,1,2)) are compared to jax.grad(f_ref, ...).",
+          "Run the failing test with the CI-style pytest invocation on the GPU test file (see test_command).",
+          "Observe AssertionError from self.assertAllClose for the head_dim=64 and head_dim=128 cases, where dq/dk deviate beyond atol=5e-2 and dv beyond atol=1e-3 versus the mha_reference gradients; head_dim=32 cases remain within tolerance.",
+          "Record the pytest failure output/traceback as evidence of the buggy behavior at this revision."
+        ],
+        "test_command": "LD_PRELOAD=/lib/x86_64-linux-gnu/libstdc++.so.6 python -m pytest -n auto --tb=short tests/pallas/gpu_ops_test.py",
+        "test_selector": "tests/pallas/gpu_ops_test.py::FusedAttentionTest",
+        "expected_buggy_behavior": "With the PR's test changes applied but attention.py left at the buggy revision, the backward attention assertions fail for head_dim=64/128: self.assertAllClose raises AssertionError because dq/dk exceed atol=5e-2 and dv exceeds atol=1e-3 relative to mha_reference gradients (imprecision from weights.astype(q.dtype) and the non-fp32-accumulating einsum). head_dim=32 cases pass.",
+        "expected_fixed_behavior": "After applying the fix (remove .astype(q.dtype) from the softmax weights and use jnp.einsum(..., preferred_element_type=jnp.float32)), all sampled configurations including head_dim=64/128 satisfy self.assertAllClose(dq, dq_ref, atol=5e-2), self.assertAllClose(dk, dk_ref, atol=5e-2) and self.assertAllClose(dv, dv_ref, atol=1e-3), so the test passes.",
+        "success_criterion": "At buggy commit 232662aaa with the PR test-file changes applied (head_dim=(32,64,128) and atol 5e-2/5e-2/1e-3) and attention.py left unfixed, the backward attention test FAILS (AssertionError on dq/dk/dv for head_dim=64/128); it would PASS once the attention.py fix is applied.",
+        "risks_or_ambiguities": [
+          "No concrete numeric gradient values are recorded in the issue/PR/evidence, so input_output_examples is empty; only tolerance thresholds (5e-2/5e-2/1e-3) are given.",
+          "The exact backward test method name is not shown in the evidence (only 'near tests/pallas/gpu_ops_test.py:266'); test_selector class path is a best-effort guess.",
+          "Evidence is inconsistent about which implementation is buggy: Q1 describes the fix as changing the 'reference MHA' (mha_reference) while MODIFIED FILES list jax/experimental/pallas/ops/gpu/attention.py; the local f_ref in the test file is not modified.",
+          "Reproduction requires an NVIDIA GPU (A100/H100); on a CPU-only machine the Pallas GPU test is skipped, so no failure is observed.",
+          "Exact Python version and ML framework wheel versions are not pinned in the evidence (CI uses ${{ matrix.python-version }}).",
+          "Whether the failure reproduces with only the test diff applied (without touching attention.py) depends on which code path the test actually calls; the buggy behavior must be confirmed empirically."
+        ],
+        "confidence": 0.32
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2730,
+        "output_tokens": 3801,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.00622
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/25038",
+      "repo": "jax-ml/jax",
+      "pr_number": 25038,
+      "buggy_commit": "e707edeafaf1c9d71b2b172596c95299474d04a0",
+      "fixed_commit": "96c012990de86ccb0eb815a11ae4e2c337802794",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the gamma.logpdf/pdf special-value bug (jax-ml/jax issue #24939) by running the new regression test testGammaDebugNans in tests/scipy_stats_test.py at buggy commit e707ede. Under jax.debug_nans(True), jax.scipy.stats.gamma.pdf(0.0, 1.0, 1.0) internally computes NaNs (y=(x-loc)/scale and xlogy before masking x<loc) and JAX's NaN checker raises FloatingPointError, even though the returned value is correctly 0.0/-inf. The fix guards with 'ok = lax.ge(x, loc)'.",
+        "input_output_examples": [
+          {
+            "input": "with jax.debug_nans(True): jax.scipy.stats.gamma.pdf(0.0, 1.0, 1.0)  # x=0.0 < loc=1.0, so k input x=0.0, a=1.0, loc=1.0, scale=1.0",
+            "buggy_output": "FloatingPointError: invalid value (nan) encountered in jit(pdf) / 'invalid value (nan) encountered in jit(log)' (internal NaNs from y=(x-loc)/scale and xlogy)",
+            "expected_output": "0.0 (same as scipy.stats.gamma.pdf(0.0, 1.0, 1.0), which the test compares against via assertAllClose)",
+            "source": "test"
+          },
+          {
+            "input": "with jax.debug_nans(True): jax.scipy.stats.gamma.logpdf(0.0, 1.0, 1.0)",
+            "buggy_output": "FloatingPointError: invalid value (nan) encountered in jit(log) (internal NaN triggered by debug NaNs mode); return value would still be -inf",
+            "expected_output": "-inf with no FloatingPointError raised",
+            "source": "issue"
+          }
+        ],
+        "environment_setup": [
+          "Use a Python 3 environment (CI matrix python-version not shown in extracted workflow); install CPU JAX deps.",
+          "pip install 'ml_dtypes>=0.4.0' 'numpy>=1.24' 'scipy>=1.10' (scipy is required by the test's osp_stats reference).",
+          "Ensure jaxlib is available at the version matching the buggy commit (evidence lists jaxlib 0.4.35); a mismatched or prebuilt jaxlib may lack working debug_nans NaN checking.",
+          "export ARRAY_API_TESTS_MODULE=jax.numpy and JAX_ENABLE_X64=true as used by the CI workflow.",
+          "Install pytest and absl-py (the test file uses jax._src test utilities / absltest)."
+        ],
+        "build_steps": [
+          "cd to the repository root checked out at buggy commit e707edeafaf1c9d71b2b172596c95299474d04a0.",
+          "python -m pip install .[ci]  (installs JAX in editable/source form from the buggy revision).",
+          "Optionally: python -m pip install -r array-api-tests/requirements.txt (only needed for the array-API workflow, not for this regression test).",
+          "Sanity check: python -c \"import jax; print(jax.__version__, jax.__file__)\" to confirm the local buggy source is imported."
+        ],
+        "reproduction_steps": [
+          "Confirm the working tree is at the buggy commit (git rev-parse HEAD == e707edeafaf1c9d71b2b172596c95299474d04a0) and that jax/_src/scipy/stats/gamma.py still computes y=(x-loc)/scale and xlogy without an 'ok = lax.ge(x, loc)' guard.",
+          "Confirm the regression test exists at tests/scipy_stats_test.py around line 543 (testGammaDebugNans). If it is absent, add it locally exactly as in the PR diff (do not modify library code, only add the test) so the failing behavior can be observed.",
+          "Quick standalone probe: run python -c \"import jax, jax.numpy as jnp, jax.scipy.stats as lsp; with jax.debug_nans(True): print(lsp.gamma.pdf(0.0, 1.0, 1.0))\" and observe the FloatingPointError.",
+          "Run the targeted test with pytest: $PYTHON -m pytest tests/scipy_stats_test.py -k testGammaDebugNans -x (expect failure/error).",
+          "Capture the full traceback showing 'FloatingPointError: invalid value (nan) encountered in jit(...)' originating from gamma.pdf/logpdf internals at gamma.py lines ~51-63."
+        ],
+        "test_command": "$PYTHON -m pytest tests/scipy_stats_test.py -k testGammaDebugNans",
+        "test_selector": "tests/scipy_stats_test.py -k testGammaDebugNans",
+        "expected_buggy_behavior": "jax.scipy.stats.gamma.pdf(0.0, 1.0, 1.0) evaluated under jax.debug_nans(True) raises FloatingPointError ('invalid value (nan) encountered in jit(...)'), because the buggy implementation computes y=(x-loc)/scale and xlogy before masking invalid locations x<loc, producing internal NaNs. The test testGammaDebugNans therefore FAILS at the buggy commit.",
+        "expected_fixed_behavior": "With the guard 'ok = lax.ge(x, loc)' and 'y = jnp.where(ok, (x-loc)/scale, one)', no internal NaNs are produced. gamma.pdf(0.0, 1.0, 1.0) returns 0.0 (matching scipy.stats.gamma.pdf(0.0, 1.0, 1.0)) under jax.debug_nans(True) with no FloatingPointError, and testGammaDebugNans PASSES.",
+        "success_criterion": "The command '$PYTHON -m pytest tests/scipy_stats_test.py -k testGammaDebugNans' FAILS at buggy commit e707ede with a FloatingPointError/invalid-nan diagnostic from jax.scipy.stats.gamma.pdf(0.0, 1.0, 1.0) under jax.debug_nans(True); the test passes once the gamma.py guard is applied.",
+        "risks_or_ambiguities": [
+          "The extracted workflow (array-api) is not the CI job that runs scipy_stats_test; Python version and exact jaxlib pin for this test are not explicitly given (jaxlib 0.4.35 is listed but may be generic).",
+          "The test uses $PYTHON placeholder; the concrete interpreter path/version is unspecified in the evidence.",
+          "debug_nans NaN checking depends on a jaxlib build with NaN-check support; a wrong/older jaxlib may not raise the FloatingPointError, producing a false pass.",
+          "The regression test testGammaDebugNans is introduced by the PR, so it is absent at the buggy commit; it must be added locally (or cherry-picked) to reproduce, without touching library source.",
+          "Evidence does not state the exact returned value checked by assertAllClose for pdf(0.0,1.0,1.0); it is inferred as 0.0 from scipy reference, and logpdf gives -inf.",
+          "Only one triggering input is given (x=0.0, a=1.0, loc=1.0, scale=1.0); other invalid-input combos are not enumerated."
+        ],
+        "confidence": 0.7
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2049,
+        "output_tokens": 2034,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.003588
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/24846",
+      "repo": "jax-ml/jax",
+      "pr_number": 24846,
+      "buggy_commit": "9bb6366741c86c2b8444aca2bafcdb1364e8d12d",
+      "fixed_commit": "21e98b5ce43dd1fda5d10fb7441bfdd011811095",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce issue #24843: on a CUDA GPU, GPU batched LU/det kernels in jaxlib at buggy commit 9bb6366 mishandle batch pointers once the total element count exceeds 2**29, corrupting results for later batches. The PR's new test testBatchedLuOverflow (tests/linalg_test.py, added in the fix) builds a (1500000, 20, 20) float32 tensor, runs lax.linalg.lu, and asserts jnp.all(lu.std(axis=[1,2]) > 0.9). At the buggy commit this assertion is False; after the fix it is True. jaxlib must be built from source with CUDA since the fix is in jaxlib/gpu/make_batch_pointers.{cu.cc,h}.",
+        "input_output_examples": [
+          {
+            "input": "a = jr.normal(jr.key(0), (1500000, 20, 20)); d = jnp.linalg.det(a)",
+            "buggy_output": "determinant values are incorrect for batch index > 2**29/(20*20); the plot shows an obviously wrong tail at the end",
+            "expected_output": "all determinant values are correct; no wrong tail for large batch indices",
+            "source": "issue"
+          },
+          {
+            "input": "x = self.rng().standard_normal((1500000, 20, 20)).astype(np.float32); lu, _, _ = lax.linalg.lu(x); jnp.all(lu.std(axis=[1, 2]) > 0.9)",
+            "buggy_output": "False: assertion fails because the pointer/index overflow corrupts later batches, so lu.std(axis=[1,2]) > 0.9 does not hold for every batch",
+            "expected_output": "True: lu.std(axis=[1,2]) > 0.9 holds for all 1,500,000 batches",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Machine with an NVIDIA CUDA GPU (data alone is 1500000*20*20*4 bytes ~= 9.6 GB; several GB of scratch, so a large-memory GPU such as A100/H100 is advised)",
+          "CUDA toolkit + drivers installed, clang-18/gcc toolchain per CI; Python 3.10",
+          "Python deps per evidence: ml_dtypes>=0.4.0, numpy>=1.24, scipy>=1.10, jaxlib 0.4.35 (built from source at the buggy commit, not from PyPI, because the fix is in jaxlib CUDA code)",
+          "Env vars from CI: JAX_ENABLE_X64=true, ASAN_OPTIONS=detect_leaks=0, DEBIAN_FRONTEND=noninteractive (ASAN only if using the clang-18 ASAN workflow)",
+          "Leave jax_skip_slow_tests unset/False so the slow test is not skipped"
+        ],
+        "build_steps": [
+          "cd jax (checkout at buggy commit 9bb6366741c86c2b8444aca2bafcdb1364e8d12d)",
+          "python -m pip install -r build/test-requirements.txt",
+          "python -m pip install .[ci]",
+          "Build and install jaxlib from the same buggy source with CUDA enabled (e.g. python build/build.py --enable_cuda ... then pip install the produced wheel) so jaxlib/gpu/make_batch_pointers.cu.cc at the buggy revision is compiled",
+          "Verify: python -c \"import jax; print(jax.devices())\" shows a gpu backend (not cpu)"
+        ],
+        "reproduction_steps": [
+          "Checkout the buggy commit and rebuild/install jaxlib from it with CUDA (do NOT apply the fix hunks in jaxlib/gpu/make_batch_pointers.cu.cc/.h).",
+          "Apply ONLY the test hunk from PR #24846 to tests/linalg_test.py: add testBatchedLuOverflow to the LU test class (decorated @jtu.skip_on_devices(\"cpu\", \"tpu\") and @jtu.skip_on_flag(\"jax_skip_slow_tests\", True)), placed after testLuBatching around line 1450.",
+          "Ensure the test actually runs on GPU: the skip_on_devices decorator means a CPU-only host would silently skip, so confirm jax.devices()[0].platform == 'gpu' before running.",
+          "Run the test selector below; expect the assertion to fail (or a CUDA overflow/illegal-access error from the batched LU kernel).",
+          "For a stronger reproduction of the issue as reported, also run a = jr.normal(jr.key(0), (1500000, 20, 20)); d = jnp.linalg.det(a) on GPU and inspect the tail of the determinant values for batch index > 2**29/(20*20) ~= 1342 (note 1500000 independent 20x20 matrices far exceeds that index).",
+          "Do not modify kernel sources; a failure (not a pass/skip) confirms the bug at this revision."
+        ],
+        "test_command": "python3 -m pytest --tb=short tests/linalg_test.py -k testBatchedLuOverflow",
+        "test_selector": "tests/linalg_test.py -k testBatchedLuOverflow",
+        "expected_buggy_behavior": "On GPU at the buggy commit, testBatchedLuOverflow fails: lax.linalg.lu on the (1500000, 20, 20) float32 input releases overflow errors / corrupts later batches, so self.assertTrue(jnp.all(lu.std(axis=[1, 2]) > 0.9)) is False (possibly as a CUDA error rather than a clean assertion failure).",
+        "expected_fixed_behavior": "After the pointer-overflow fix in jaxlib/gpu/make_batch_pointers.cu.cc/.h, the same GPU test passes: jnp.all(lu.std(axis=[1, 2]) > 0.9) is True for all 1,500,000 batches, and jnp.linalg.det on the large batch shows no wrong tail.",
+        "success_criterion": "On a CUDA GPU at buggy commit 9bb6366 with the PR's test hunk applied and jaxlib built from that same revision, `python3 -m pytest --tb=short tests/linalg_test.py -k testBatchedLuOverflow` FAILS (assertion jnp.all(lu.std(axis=[1,2]) > 0.9) is False or an overflow/CUDA error is raised); with the fix applied the same command PASSES.",
+        "risks_or_ambiguities": [
+          "The test is INTRODUCED by the PR, so at the buggy commit it does not exist; the agent must hand-apply only the test hunk (not the jaxlib fix) before running.",
+          "The fix lives in jaxlib CUDA code, so a stock pip jaxlib (even version 0.4.35) would not exhibit the bug; jaxlib must be built from source at the buggy commit with CUDA.",
+          "GPU-only: @jtu.skip_on_devices(\"cpu\", \"tpu\") means a CPU/TPU host makes the test skip, which is not a valid failure; a CUDA GPU is required.",
+          "Memory: input is 9.6 GB plus LU output/intermediates; small GPUs will OOM instead of showing the assertion failure.",
+          "The evidence gives only qualitative wrong values (\"obviously wrong tail\"), no exact numeric determinant output; no concrete wrong number can be quoted.",
+          "Overflow may manifest as an illegal memory access / CUDA error or abort rather than a clean assertion failure, and the issue mentions \"overflow errors\" being released; exact failure mode is uncertain (confidence 0.78 from evidence).",
+          "jax_skip_slow_tests must be False or the test is skipped; CI build/test commands mined (pip install .[ci], build/test-requirements.txt) do not explicitly show the CUDA jaxlib build invocation."
+        ],
+        "confidence": 0.62
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2850,
+        "output_tokens": 2857,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.005027
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/24074",
+      "repo": "jax-ml/jax",
+      "pr_number": 24074,
+      "buggy_commit": "437d7d88b992c9f511a3019823104d176e84064f",
+      "fixed_commit": "5b839ff3c63cd5d1372671220c3befd0e1c49d21",
+      "is_numerical_bug": true,
+      "bug_type": "correctness",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Buggy jnp.polyfit(x, y, deg, cov=True) with 2-D y (multiple right-hand sides) collapses the residual scaling factor via `fac = fac[0]`, returning covariance shape (deg+1, deg+1, 1) instead of one covariance per rhs, unlike np.polyfit. Reproduce by running testPolyfit with num_rhs=5 added to the sample_product and by a direct shape/value comparison against NumPy.",
+        "input_output_examples": [
+          {
+            "input": "np.random.seed(1); x = np.arange(10).astype('float32'); num_rhs = 3; y = np.random.randn(10, 3); jnp.polyfit(x, y, 1, cov=True)[1]",
+            "buggy_output": "array shape (2, 2, 1): [[[ 0.01583048], [-0.07123714]], [[-0.07123714], [ 0.45116854]]] (only the first rhs gets a covariance matrix)",
+            "expected_output": "array shape (2, 2, 3): [[[ 0.01583048, 0.00850339, 0.0145006 ], [-0.07123718, -0.03826527, -0.0652527]], [[-0.07123718, -0.03826527, -0.0652527], [ 0.45116882, 0.24234668, 0.41326709]]] (one covariance matrix per rhs)",
+            "source": "issue"
+          },
+          {
+            "input": "testPolyfit with num_rhs=5 (rhs_shape = shape + (5,)), deg in {1,2,3}, rcond in {None,-1,10e-3,10e-5,10e-10}, full in {False,True}, w in {False,True}, cov in {False,True,'unscaled'}; compare jnp.polyfit(x, y, ...) to np.polyfit(x, y, ...)",
+            "buggy_output": "jnp.polyfit returns a covariance array of shape (deg+1, deg+1, 1) for multi-rhs y, so it does not match np.polyfit and the assertion fails",
+            "expected_output": "jnp.polyfit returns one covariance matrix per rhs, shape (deg+1, deg+1, num_rhs), matching np.polyfit within tol (float32 1e-3, float64 1e-13, complex64 1e-5)",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "python3 (JAX CI matrix python-version; a CI branch references Python 3.14) with pip available",
+          "install uv: pip install uv~=0.5.30",
+          "system packages (Linux): libjpeg-dev libopenblas-dev liblapack-dev",
+          "install jaxlib 0.6.0 and deps numpy>=1.25, scipy>=1.11.1, ml_dtypes>=0.5.0",
+          "export JAX_ENABLE_X64=true",
+          "export JAX_PLATFORM_NAME=cpu",
+          "export ARRAY_API_TESTS_MODULE=jax.numpy",
+          "optionally set JAX_NUM_GENERATED_CASES and JAX_SKIP_SLOW_TESTS used by JAX CI",
+          "no external services required"
+        ],
+        "build_steps": [
+          "git checkout 437d7d88b992c9f511a3019823104d176e84064f",
+          "pip install uv~=0.5.30",
+          "uv pip install --system jaxlib==0.6.0",
+          "uv pip install --system -e .[ci] pytest-xdist (editable install of the repo under test)",
+          "python -c \"import jax; print(jax.__version__)\" to confirm the local jax package (not a wheel) is imported"
+        ],
+        "reproduction_steps": [
+          "Confirm the modified source line is present: in jax/_src/numpy/polynomial.py, for cov == 'unscaled' fac = array([1.0]) and an unconditional `fac = fac[0]` before the ndim branch.",
+          "Direct repro: run `python -c \"import numpy as np, jax.numpy as jnp; np.random.seed(1); x=np.arange(10).astype('float32'); y=np.random.randn(10,3); print(jnp.polyfit(x,y,1,cov=True)[1].shape)\"` and observe (2,2,1).",
+          "Compare with NumPy: `np.polyfit(x, y, 1, cov=True)[1].shape` prints (2,2,3); jnp and np values/shapes differ.",
+          "Run the parameterized unit test restricted to testPolyfit with the added num_rhs=[1,5] sampling: python -m pytest tests/lax_numpy_test.py -k testPolyfit -x -q.",
+          "Observe the multi-rhs (num_rhs=5) cases failing on shape/value mismatch while num_rhs=1 cases pass.",
+          "Optionally reproduce via the CI harness: bazel test //tests:cpu_tests --test_output=errors --local_test_jobs=32."
+        ],
+        "test_command": "JAX_ENABLE_X64=true JAX_PLATFORM_NAME=cpu python -m pytest tests/lax_numpy_test.py -k testPolyfit -x -q",
+        "test_selector": "tests/lax_numpy_test.py::testPolyfit (pytest -k testPolyfit); bazel //tests:cpu_tests",
+        "expected_buggy_behavior": "With y having more than one right-hand side and cov=True, jnp.polyfit returns a covariance array of shape (deg+1, deg+1, 1) (only the first rhs, scaled by fac[0]), so testPolyfit's num_rhs=5 assertions fail against np.polyfit (shape/value mismatch) while num_rhs=1 passes.",
+        "expected_fixed_behavior": "jnp.polyfit broadcasts the full residual vector (atleast_1d(fac)[np.newaxis, np.newaxis, :] for 2-D y) and returns one covariance matrix per rhs, shape (deg+1, deg+1, num_rhs), matching np.polyfit within tolerance so testPolyfit passes for all num_rhs in {1, 5}.",
+        "success_criterion": "The reproduction fails on the buggy commit 437d7d88b992c9f511a3019823104d176e84064f: jnp.polyfit covariance shape is (2,2,1) for a 3-rhs input and testPolyfit raises an assertion failure for num_rhs=5, and it would pass once the fix in jax/_src/numpy/polynomial.py is applied.",
+        "risks_or_ambiguities": [
+          "Test-selector confidence is low (0.42): the mined evidence gives the bazel target //tests:cpu_tests and the test name testPolyfit, but not the exact pytest node id / enclosing test class in tests/lax_numpy_test.py.",
+          "Python runtime version is unspecified in the evidence (matrix.python-version; one branch references 3.14) \u2014 version mismatches may block installing jaxlib 0.6.0 or the editable install.",
+          "CI's canonical path is Bazel with @rules_python; a plain pytest/uv install path may not exactly match CI, though the bug is pure Python-visible through jnp.polyfit.",
+          "Only the num_rhs>1 subset of testPolyfit fails; running the test without the added num_rhs=[1,5] parameterization or without multi-rhs xfail filtering would not reproduce the failure.",
+          "JAX_ENABLE_X64 changes dtype/tolerance behavior (tol_spec 1e-13 for float64); leaving it unset may alter which parameter combinations exercise the bug.",
+          "Some testPolyfit parameter combinations may be slow or flaky (rcond, weight, full), so use -x and inspect the first multi-rhs failure rather than the whole suite."
+        ],
+        "confidence": 0.8
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3337,
+        "output_tokens": 3125,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.005595
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/23524",
+      "repo": "jax-ml/jax",
+      "pr_number": 23524,
+      "buggy_commit": "2efa713f13b9230aa682ac260a5fd5312b4e0712",
+      "fixed_commit": "10057eb7395187e9e3accec1f42533672fd774c7",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the Pallas semaphore overflow: in interpret mode the semaphore inc/dec value is not capped to the int16 SEMAPHORE_MAX_VALUE, so a large copy size overflows the semaphore and produces incorrect counts; the PR also adds gc.collect() to the TPU test_large_array_indexing to avoid OOM on smaller chips. Run tests/pallas/tpu_pallas_test.py::test_large_array_indexing on the buggy commit and observe failure (OOM and/or overflowed semaphore counts).",
+        "input_output_examples": [
+          {
+            "input": "Pallas interpret-mode kernel with a large copy size such that the semaphore inc/dec value exceeds SEMAPHORE_MAX_VALUE = jnp.iinfo(SEMAPHORE_INTERPRET_DTYPE).max = jnp.iinfo(jnp.int16).max = 32767",
+            "buggy_output": "Semaphore inc/dec is not capped; the jnp.int16 semaphore overflows (wrap-around), producing incorrect semaphore counts / behavior in interpret mode",
+            "expected_output": "inc/dec capped at SEMAPHORE_MAX_VALUE = 32767, so no overflow and correct semaphore counts",
+            "source": "pr"
+          },
+          {
+            "input": "tests/pallas/tpu_pallas_test.py::test_large_array_indexing with n = 6, dtype = jnp.bfloat16, x = jax.lax.broadcasted_iota(dtype, (6, 1024 * 1024, 512), 0)",
+            "buggy_output": "Test OOMs on smaller chips because ~6GB memory may not be free before the test",
+            "expected_output": "gc.collect() runs before allocating x, freeing memory so ~6GB is available and the test avoids OOM",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Python environment with jax checked out at buggy commit 2efa713f13b9230aa682ac260a5fd5312b4e0712",
+          "Install matching jaxlib==0.4.31",
+          "Ensure numpy>=1.24, scipy>=1.10, ml_dtypes>=0.2.0",
+          "Set ARRAY_API_TESTS_MODULE=jax.numpy and JAX_ENABLE_X64=true where relevant",
+          "Reproducing test_large_array_indexing requires TPU runtime (Pallas TPU); the semaphore overflow portion is exercised in Pallas interpret mode"
+        ],
+        "build_steps": [
+          "python -m pip install .[ci]",
+          "(optional, CI parity) python -m pip install -r array-api-tests/requirements.txt",
+          "Verify install with python -c \"import jax; print(jax.__version__)\""
+        ],
+        "reproduction_steps": [
+          "Check out the buggy commit 2efa713f13b9230aa682ac260a5fd5312b4e0712.",
+          "Build/install JAX and jaxlib 0.4.31 as above.",
+          "Run the reproducing test: pytest -n auto --tb=short tests/pallas/tpu_pallas_test.py -k test_large_array_indexing on TPU; observe OOM on smaller chips (no forced GC).",
+          "For the numerical overflow, construct/run a Pallas interpret-mode kernel with a large copy size whose semaphore inc/dec value exceeds 32767 and observe the uncapped jnp.int16 semaphore overflow (incorrect counts).",
+          "Confirm the buggy revision lacks SEMAPHORE_MAX_VALUE in jax/_src/pallas/core.py and the jnp.minimum(..., pl_core.SEMAPHORE_MAX_VALUE) cap in jax/_src/pallas/mosaic/primitives.py."
+        ],
+        "test_command": "pytest -n auto --tb=short tests/pallas/tpu_pallas_test.py -k test_large_array_indexing",
+        "test_selector": "tests/pallas/tpu_pallas_test.py -k test_large_array_indexing",
+        "expected_buggy_behavior": "Without the fix, test_large_array_indexing can OOM on smaller TPU chips (no gc.collect() before allocating ~6GB), and in Pallas interpret mode the semaphore inc/dec value is not capped at SEMAPHORE_MAX_VALUE = 32767, so a large copy size overflows the jnp.int16 semaphore and yields incorrect counts.",
+        "expected_fixed_behavior": "After the fix, SEMAPHORE_MAX_VALUE is defined in core.py, the inc/dec value is capped via jnp.minimum(updates.size, pl_core.SEMAPHORE_MAX_VALUE), preventing interpret-mode overflow, and gc.collect() runs before the test so ~6GB memory is available and no OOM occurs.",
+        "success_criterion": "On the buggy commit the reproducing test (tests/pallas/tpu_pallas_test.py::test_large_array_indexing) fails (OOM on smaller chips) and/or the interpret-mode semaphore overflows past 32767 producing wrong counts; the same test passes on the fixed commit.",
+        "risks_or_ambiguities": [
+          "test_large_array_indexing requires TPU hardware; the semaphore overflow is in Pallas interpret mode, so a TPU-independent interpret-mode kernel may be needed to observe the numerical overflow directly.",
+          "The PR test diff only adds gc.collect(); it contains no assertion on semaphore values, so the exact overflow input/output is only described in the PR body, not asserted in the test.",
+          "No concrete large copy-size value is given in the evidence; only the bound SEMAPHORE_MAX_VALUE = jnp.iinfo(jnp.int16).max = 32767 is concrete.",
+          "Q4 supplies array-api-tests commands from .github/workflows/jax-array-api.yml, which are unrelated to this bug and may not build/run the reproducing Pallas test.",
+          "The dependency versions (jaxlib 0.4.31, numpy, scipy, ml_dtypes) come from CI config and may not exactly match the buggy commit's requirements."
+        ],
+        "confidence": 0.5
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2393,
+        "output_tokens": 2488,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.004339
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/23523",
+      "repo": "jax-ml/jax",
+      "pr_number": 23523,
+      "buggy_commit": "72c095261fb2d678005bdaa963d4146d11634af0",
+      "fixed_commit": "7d2f0a75c1c10aeae63ed1a0ced17b7aeb979989",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the Pallas GPU sign NaN special-value bug from PR #23523 / issue #23504: on the buggy commit, a pallas_call kernel computing o_ref[...] = jnp.sign(x_ref[...]) returns 0.0 for NaN float inputs instead of NaN, so np.testing.assert_array_equal(out, jnp.sign(x)) fails for the float32_nan/float64_nan cases in tests/pallas/ops_test.py::test_sign. Run the added parameterized test on a GPU-enabled Pallas environment and observe the mismatch (ACTUAL 0.0 vs DESIRED nan).",
+        "input_output_examples": [
+          {
+            "input": "x = jnp.full((8, 128), jnp.nan, dtype=jnp.float32); kernel(x) where @pallas_call(out_shape=ShapeDtypeStruct((8,128), jnp.float32)) def kernel(x_ref, o_ref): o_ref[...] = jnp.sign(x_ref[...])",
+            "buggy_output": "array of all 0.0 (ACTUAL in issue traceback)",
+            "expected_output": "array of all nan, equal to jnp.sign(x) (DESIRED)",
+            "source": "issue"
+          },
+          {
+            "input": "test_sign(dtype=jnp.float32, value=jnp.nan): x = jnp.full((8,128), jnp.nan, dtype=jnp.float32); out = kernel(x); np.testing.assert_array_equal(out, jnp.sign(x))",
+            "buggy_output": "0.0 at the NaN positions (Pallas GPU, before fix)",
+            "expected_output": "jnp.nan (concrete values: jnp.sign(nan)=nan; np.testing.assert_array_equal(out, expected) passes only when out is all NaN)",
+            "source": "test"
+          },
+          {
+            "input": "test_sign cases with jnp.float32 values -3.2, -0., 0., 5.1, jnp.inf, -jnp.inf (non-NaN float specials)",
+            "buggy_output": "matches JAX for non-NaN specials (only NaN is wrong: returns 0.0)",
+            "expected_output": "jnp.sign(-3.2)=-1.0, jnp.sign(-0.)=-0.0/0.0, jnp.sign(0.0)=0.0, jnp.sign(5.1)=1.0, jnp.sign(inf)=1.0, jnp.sign(-inf)=-1.0",
+            "source": "pr"
+          }
+        ],
+        "environment_setup": [
+          "Linux host with a Pallas-supported GPU (CUDA) backend; the failing code path is the Pallas GPU lowering, so a CPU-only machine generally will not reproduce the NaN mismatch.",
+          "Create a Python virtualenv (Python version per .github/workflows matrix) and activate it.",
+          "Install jaxlib 0.4.31 compatible with the installed CUDA/PJRT plugin, plus runtime deps numpy>=1.24, scipy>=1.10, ml_dtypes>=0.2.0.",
+          "Export JAX_ENABLE_X64=true so the float64 test_sign cases exercise 64-bit lowering (the test also enters config.enable_x64(True) for 8-byte dtypes).",
+          "Ensure jtu.test_device_matches(['gpu']) is true so OpsTest.test_sign (non-interpret, GPU pallas_call) is not skipped."
+        ],
+        "build_steps": [
+          "cd <repo-root> (commit 72c095261fb2d678005bdaa963d4146d11634af0)",
+          "python -m pip install .[ci]  # installs JAX (pure Python overrides in jax/) from the checked-out buggy source",
+          "Verify the buggy lowering is present: jax/_src/pallas/triton/lowering.py still contains the local sign helper that returns 0 for NaN (no sign_lowering_helper from jax/_src/pallas/utils.py)."
+        ],
+        "reproduction_steps": [
+          "Confirm the checked-out revision is 72c095261fb2d678005bdaa963d4146d11634af0 and the working tree is clean (fix NOT applied).",
+          "Verify the added test exists: tests/pallas/ops_test.py contains SIGN_PARAMS and test_sign with float32/float64 NaN values (and that TpuOpsTest was removed/relocated).",
+          "Run the reproducing selection: cd jax && pytest -n auto --tb=short tests/pallas/ops_test.py -k 'test_sign'.",
+          "Observe that OpsTest::test_sign_float32_nan (and float64_nan) fail inside np.testing.assert_array_equal(out, expected) with ACTUAL 0.0 vs DESIRED nan, while int and non-NaN float cases pass.",
+          "For a minimal repro, run a single-case selector such as pytest tests/pallas/ops_test.py -k 'test_sign_float32_nan' and capture the assertion traceback showing the NaN-vs-0.0 mismatch."
+        ],
+        "test_command": "cd jax && pytest -n auto --tb=short tests/pallas/ops_test.py -k 'test_sign'",
+        "test_selector": "tests/pallas/ops_test.py -k 'test_sign'",
+        "expected_buggy_behavior": "On the buggy commit, Pallas GPU execution of jnp.sign on NaN returns 0.0 (not NaN). test_sign_float32_nan (and _float64_nan) fail: np.testing.assert_array_equal(out, jnp.sign(x)) reports a mismatch with ACTUAL 0.0 vs DESIRED nan across the (8,128) array. Non-NaN cases (int/uint and float -3.2, -0., 0., 5.1, inf, -inf) pass.",
+        "expected_fixed_behavior": "After the fix (pallas_utils.sign_lowering_helper using jnp.where(jnp.isnan(x), jnp.nan, out) wired into the Mosaic and Triton lowerings), jnp.sign(NaN) propagates NaN so all test_sign parameterizations match JAX semantics and the test passes.",
+        "success_criterion": "Running tests/pallas/ops_test.py -k 'test_sign' on the buggy commit (72c095261fb2d678005bdaa963d4146d11634af0) FAILS on the NaN cases (ACTUAL 0.0 vs DESIRED nan) on a Pallas GPU backend, and the same selector PASSES once the fix at 7d2f0a75c1c10aeae63ed1a0ced17b7aeb979989 is applied.",
+        "risks_or_ambiguities": [
+          "Reproduction requires a GPU (Pallas/CUDA) backend; on CPU-only hosts OpsTest.test_sign is skipped or the interpret path may not exercise the buggy Triton lowering, so the failure may not be observable.",
+          "The diff removes TpuOpsTest and adds test_sign to OpsTest and OpsInterpretTest; the TPU variant is deleted, so the new test_sign may behave differently across backends (TPU vs GPU).",
+          "The evidence gives two different test commands (per-PR 'cd jax && pytest -n auto --tb=short tests/pallas/ops_test.py -k test_sign' vs CI array-api-tests command); the latter is unrelated to this bug and is not the reproducer.",
+          "Exact CI Python version and CUDA/jaxlib build are not fully specified in the mined evidence; jaxlib 0.4.31 is inferred and must match the installed accelerator runtime.",
+          "The float64 cases require JAX_ENABLE_X64/ config.enable_x64(True); without it those parameters may be skipped rather than failing."
+        ],
+        "confidence": 0.72
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3059,
+        "output_tokens": 1885,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.003836
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/20885",
+      "repo": "jax-ml/jax",
+      "pr_number": 20885,
+      "buggy_commit": "8ead2df7bb3b1dc8103b77404bb6d55a7a519982",
+      "fixed_commit": "8b1418244b8599c56b4a530f09b34529c82c1750",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce the JAX beta.logpdf special-value bug at buggy commit 8ead2df: when a<=0, b<=0, or scale<=0, jax.scipy.stats.beta.logpdf/pdf return finite values (e.g. logpdf(0.5, -1.1, -1.1) = -0.845366) while scipy.stats returns nan. Add the PR's new testBetaLogPdfNegativeConstants/testBetaLogPdfNegativeScale tests (absent at the buggy commit) and run pytest -k 'testBetaLogPdf'; they must fail before the fix.",
+        "input_output_examples": [
+          {
+            "input": "lsp.beta.logpdf(x=0.5, a=-1.1, b=-1.1)",
+            "buggy_output": "Array(-0.845366, dtype=float32, weak_type=True)",
+            "expected_output": "Array(nan, dtype=float32, weak_type=True) (scipy.stats.beta.logpdf returns nan)",
+            "source": "pr"
+          },
+          {
+            "input": "lsp.beta.logpdf(x=0.5, a=-1.1, b=-1.1) [issue #5650]",
+            "buggy_output": "Buffer(-0.8453665, dtype=float32)",
+            "expected_output": "nan (osp.beta.logpdf(x=0.5, a=-1.1, b=-1.1) -> nan)",
+            "source": "issue"
+          },
+          {
+            "input": "testBetaLogPdfNegativeConstants: a=b=-1.1, x=jnp.array([0., 0.5, 1.]); lsp_stats.beta.pdf(x, a, b) vs osp_stats.beta.pdf(x, a, b)",
+            "buggy_output": "finite JAX values that do not match scipy (scipy returns nan for a=b=-1.1), so assertAllClose(atol=1e-5, rtol=2e-5) fails; logpdf(0.5,-1.1,-1.1) ~ -0.845366",
+            "expected_output": "nan for every x in [0., 0.5, 1.], matching scipy.stats.beta.pdf",
+            "source": "test"
+          },
+          {
+            "input": "testBetaLogPdfNegativeScale: a=b=1., x=jnp.array([0., 0.5, 1.]), loc=0, scale=-1; lsp_stats.beta.pdf(x, a, b, loc, scale) vs osp_stats.beta.pdf(x, a, b, loc, scale)",
+            "buggy_output": "finite JAX values computed with negative scale (scale check missing) that disagree with scipy",
+            "expected_output": "nan for all x (scipy returns nan for scale<=0)",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Use Python >= 3.9 (setup.py python_requires); create and activate a fresh virtualenv.",
+          "Install a jaxlib build compatible with this source checkout (CPU-only is sufficient; the beta stats tests run on CPU).",
+          "Install runtime deps: numpy>=1.22, scipy>=1.9, ml_dtypes>=0.2.0, opt_einsum, importlib_metadata>=4.6, protobuf>=3.13.",
+          "Install test deps: pytest and pytest-xdist (the reproduction command uses '-n auto').",
+          "Install the repo in editable/CI mode: python -m pip install -e '.[ci]' (or python -m pip install .[ci]).",
+          "No GPU or external services required; nvidia-cu12 wheels are optional and can be skipped.",
+          "Optionally set JAX_ENABLE_X64=true only if you also want to inspect x64 values; the reported examples are float32."
+        ],
+        "build_steps": [
+          "Confirm the checkout is at the buggy revision: git rev-parse HEAD (expect 8ead2df7bb3b1dc8103b77404bb6d55a7a519982).",
+          "If protoc is available/PROTOC is set, _pb2 files are generated by setup.py; otherwise the pure-Python install path is fine.",
+          "python -m pip install .[ci]  (installs jax from source plus test extras).",
+          "Verify import: python -c \"import jax, jax.numpy as jnp, scipy; from jax.scipy import stats as lsp; print(jax.__version__, scipy.__version__)\".",
+          "Verify the bug is present with the one-line repro: python -c \"from jax.scipy import stats as lsp; print(lsp.beta.logpdf(0.5, -1.1, -1.1))\" -> prints a finite value (~-0.845366) instead of nan."
+        ],
+        "reproduction_steps": [
+          "Check out / confirm the buggy commit 8ead2df7bb3b1dc8103b77404bb6d55a7a519982 (fix NOT applied).",
+          "Install jax from source plus pytest/pytest-xdist as described in environment_setup.",
+          "Confirm baseline bug outside the test file: python -c \"from jax.scipy import stats as lsp; import scipy.stats as osp; print(lsp.beta.logpdf(0.5,-1.1,-1.1), osp.beta.logpdf(0.5,-1.1,-1.1))\" -> JAX finite (~-0.845366), scipy nan.",
+          "Apply the test-side portion of the PR diff to tests/scipy_stats_test.py: add 'import jax.numpy as jnp', change testBetaLogPdf's rng from jtu.rand_positive to jtu.rand_default, and add testBetaLogPdfNegativeConstants (a=b=-1.1, x=jnp.array([0.,0.5,1.])) and testBetaLogPdfNegativeScale (a=b=1., loc=0, scale=-1, x=jnp.array([0.,0.5,1.])), both comparing osp_stats.beta.pdf to lsp_stats.beta.pdf with atol=1e-5, rtol=2e-5.",
+          "Do NOT touch jax/_src/scipy/stats/beta.py: the reproduction must run against the unfixed implementation.",
+          "Run the selector: pytest -n auto --tb=short tests/scipy_stats_test.py -k 'testBetaLogPdf' (matches testBetaLogPdf, testBetaLogPdfZero, testBetaLogPdfNegativeConstants, testBetaLogPdfNegativeScale).",
+          "Observe the failure: the negative-constant and negative-scale tests raise AssertionError because JAX returns finite values while scipy returns nan; the rand_default-driven testBetaLogPdf also reports mismatches for non-positive a/b."
+        ],
+        "test_command": "pytest -n auto --tb=short tests/scipy_stats_test.py -k 'testBetaLogPdf'",
+        "test_selector": "tests/scipy_stats_test.py -k 'testBetaLogPdf'",
+        "expected_buggy_behavior": "testBetaLogPdfNegativeConstants and testBetaLogPdfNegativeScale FAIL: jax.scipy.stats.beta.pdf/logpdf return finite numbers for invalid parameters (a=b=-1.1 or scale=-1) instead of nan, e.g. logpdf(0.5,-1.1,-1.1) = -0.845366 vs scipy nan, so assertAllClose mismatches. The rand_default-changed testBetaLogPdf also shows differences for non-positive a/b.",
+        "expected_fixed_behavior": "After the fix (jnp.where on a<=0, b<=0, scale<=0 -> jnp.nan), logpdf/pdf return nan for a=b=-1.1 or scale=-1, matching scipy.stats, so testBetaLogPdfNegativeConstants, testBetaLogPdfNegativeScale, and the rand_default testBetaLogPdf all pass.",
+        "success_criterion": "On the buggy commit, 'pytest -n auto --tb=short tests/scipy_stats_test.py -k testBetaLogPdf' fails on testBetaLogPdfNegativeConstants (and testBetaLogPdfNegativeScale / modified testBetaLogPdf), with JAX returning ~-0.845366 where scipy returns nan; the same tests pass once the beta.logpdf nan-guard fix is applied.",
+        "risks_or_ambiguities": [
+          "At the buggy commit tests/scipy_stats_test.py does NOT contain the new tests (the PR adds them), so the reproduction requires manually applying the test-side diff; a plain checkout will not fail on its own.",
+          "jaxlib version compatible with this JAX source is not specified in the evidence; a mismatched jaxlib can break import or alter results.",
+          "Exact CI Python matrix and the pinned jaxlib/`.[ci]` extra contents are unknown; only setup.py lower bounds (numpy>=1.22, scipy>=1.9, ml_dtypes>=0.2.0, etc.) are given.",
+          "'-n auto' requires pytest-xdist; without it the command errors rather than reproducing the bug (fallback: pytest tests/scipy_stats_test.py -k testBetaLogPdf).",
+          "Concrete numeric outputs for the pdf cases (negative constants / negative scale) are not stated in the evidence; only the logpdf -0.845366 value is verbatim.",
+          "Floating-point tolerances in the assertions (atol=1e-5, rtol=2e-5) are not the failure mechanism here (nan vs finite), but equality/NaN handling in assertAllClose should be verified.",
+          "Whether the fix also touches beta.pdf directly or only logpdf (with pdf derived from it) is an implementation detail not fully specified in the evidence."
+        ],
+        "confidence": 0.85
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3085,
+        "output_tokens": 3621,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.006139
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/20754",
+      "repo": "jax-ml/jax",
+      "pr_number": 20754,
+      "buggy_commit": "eabd1bc7fcf4c1dfb450b4406887135e394f3bb3",
+      "fixed_commit": "5f22b12576199067e86f2cade2f126183e9ce773",
+      "is_numerical_bug": true,
+      "bug_type": "special_value",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "PR #20754 fixes jnp.hypot so that inf/NaN pairings return inf (matching numpy.hypot) and begins deprecating complex-valued inputs with a DeprecationWarning. On the buggy commit eabd1bc, jnp.hypot(np.inf, np.nan) returns nan (because maximum(np.nan, np.inf)=nan), and complex inputs are silently accepted without a DeprecationWarning. The added testHypotComplexInputDeprecation assertion in tests/lax_numpy_test.py fails at this revision because no DeprecationWarning is emitted.",
+        "input_output_examples": [
+          {
+            "input": "jnp.hypot(np.inf, np.nan)",
+            "buggy_output": "np.nan",
+            "expected_output": "np.inf",
+            "source": "pr"
+          },
+          {
+            "input": "jnp.hypot(np.nan, np.inf)",
+            "buggy_output": "np.nan",
+            "expected_output": "np.inf",
+            "source": "pr"
+          },
+          {
+            "input": "jnp.hypot(x, x) where x = jtu.rand_default(shape, dtype=jnp.complex64), run under jax.disable_jit()",
+            "buggy_output": "No DeprecationWarning emitted; complex input is silently accepted and result computed.",
+            "expected_output": "DeprecationWarning with message \"Passing complex-valued inputs to hypot\" (then the computation still runs during the deprecation period).",
+            "source": "test"
+          },
+          {
+            "input": "jnp.hypot(x, y) where x is complex64 and y = jnp.ones_like(x), under jax.disable_jit()",
+            "buggy_output": "No DeprecationWarning emitted.",
+            "expected_output": "DeprecationWarning with message \"Passing complex-valued inputs to hypot\".",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Use Python >= 3.9 (per setup.py); CI matrix python-version not visible in the workflow excerpt.",
+          "Install a compatible jaxlib; setup.py references jaxlib 0.4.26 on PyPI.",
+          "Core deps: numpy (>=1.22; >=1.23.2 for py>=3.11; >=1.26.0 for py>=3.12), scipy (>=1.9), ml_dtypes (>=0.2.0), opt_einsum, protobuf (>=3.13).",
+          "Install test tooling for the JAX test suite: pytest and pytest-xdist (the -n auto flag requires xdist).",
+          "For the Array API conformance suite, set environment vars ARRAY_API_TESTS_MODULE=jax.experimental.array_api and JAX_ENABLE_X64=true.",
+          "Optional: install array-api-tests requirements via `python -m pip install -r array-api-tests/requirements.txt`."
+        ],
+        "build_steps": [
+          "cd <repo root> (checked out at eabd1bc7fcf4c1dfb450b4406887135e394f3bb3).",
+          "python -m pip install --upgrade pip",
+          "python -m pip install .[ci]",
+          "(Optional, only for Array API suite) python -m pip install -r array-api-tests/requirements.txt"
+        ],
+        "reproduction_steps": [
+          "Confirm the buggy revision: `git rev-parse HEAD` should return eabd1bc7fcf4c1dfb450b4406887135e394f3bb3.",
+          "Ensure the new deprecation test exists in tests/lax_numpy_test.py (it is added by the PR; if absent, add nothing \u2014 instead verify against the current file). At this revision testHypotComplexInputDeprecation is part of the PR diff and is the assertion that exposes the missing warning.",
+          "Quick manual check of the inf/NaN defect: run python -c \"import numpy as np, jax.numpy as jnp; print(jnp.hypot(np.inf, np.nan))\" and observe nan instead of numpy.hypot's inf.",
+          "Quick manual check of the deprecation defect: run python -c \"import jax, jax.numpy as jnp; x=jnp.ones(3,dtype=jnp.complex64); jnp.hypot(x,x)\" with warnings enabled and observe no DeprecationWarning.",
+          "Run the reproducing tests: pytest -n auto --tb=short tests/lax_numpy_test.py -k hypot (primary).",
+          "Also run the PR-touched operator/array-api selectors: pytest -n auto --tb=short tests/lax_numpy_operators_test.py tests/array_api_test.py -k hypot.",
+          "Observe the failure: testHypotComplexInputDeprecation fails because assertWarns(DeprecationWarning, msg='Passing complex-valued inputs to hypot') is not triggered at the buggy revision."
+        ],
+        "test_command": "pytest -n auto --tb=short tests/lax_numpy_test.py tests/lax_numpy_operators_test.py tests/array_api_test.py -k hypot",
+        "test_selector": "-k hypot (primary failing test: testHypotComplexInputDeprecation)",
+        "expected_buggy_behavior": "jnp.hypot(np.inf, np.nan) -> nan (and hypot(np.nan, np.inf) -> nan) instead of inf, because the implementation uses maximum(abs(x1), abs(x2)) and maximum(np.nan, np.inf) = np.nan. Additionally, jnp.hypot with complex64 inputs emits no DeprecationWarning; testHypotComplexInputDeprecation fails with assertWarns not triggered.",
+        "expected_fixed_behavior": "jnp.hypot(np.inf, np.nan) and jnp.hypot(np.nan, np.inf) return inf, matching numpy.hypot, via an added isposinf(x1)|isposinf(x2) guard; and jnp.hypot emits a DeprecationWarning 'Passing complex-valued inputs to hypot' for complex inputs (deprecation began 2024-4-2).",
+        "success_criterion": "On the buggy commit, testHypotComplexInputDeprecation (selector -k hypot) FAILS because the DeprecationWarning is not raised, and the manual hypot(np.inf, np.nan) check prints nan; both pass/return inf once the PR fix is applied.",
+        "risks_or_ambiguities": [
+          "The inf/NaN defect is described in the PR but no modified JAX test directly asserts hypot(np.inf, np.nan): op_record uses jtu.rand_default which does not generate inf/NaN, so only the deprecation test is guaranteed to fail on the buggy commit.",
+          "test_case Q3 confidence is low (0.5) and mixes array_api_test/lax_numpy_operators_test selectors with the deprecation test that lives in tests/lax_numpy_test.py; the exact failing test class is not given.",
+          "Exact CI python-version and jaxlib wheel version are not visible in the provided workflow excerpt, so version alignment may need adjustment.",
+          "The deprecation test exists only in the PR diff; verify it is present at the checked-out revision before asserting failure.",
+          "Array API suite (array-api-tests) uses ARRAY_API_TESTS_MODULE and skips.txt and is not required to reproduce this bug; using it adds dependency risk."
+        ],
+        "confidence": 0.7
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3263,
+        "output_tokens": 2486,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.004719
+      }
+    },
+    {
+      "reference": "https://github.com/jax-ml/jax/pull/19936",
+      "repo": "jax-ml/jax",
+      "pr_number": 19936,
+      "buggy_commit": "e1e9de0e7b5f29840b4e63ea91e1077bb13f9ed9",
+      "fixed_commit": "ae9d677b63a24e5fe340537a4256a43aef27b1f4",
+      "is_numerical_bug": true,
+      "bug_type": "correctness",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "Reproduce jax.numpy.isclose divergence from numpy.isclose at buggy commit e1e9de0e7b5f (PR #19936, issue #19935). At this revision jnp.isclose on integer (exact) operands falls back to strict equality instead of tolerance-based closeness, so jnp.isclose(6, 10, rtol=0.5) returns False while np.isclose returns True. The added assertions in tests/lax_numpy_test.py::LaxBackedNumpyTests::testIsClose fail on the buggy commit and pass once arguments are promoted to an inexact dtype.",
+        "input_output_examples": [
+          {
+            "input": "jnp.isclose(6, 10, rtol=0.5)",
+            "buggy_output": "Array(False, dtype=bool, weak_type=True) (strict-equality fallback for exact integer operands), while np.isclose(6, 10, rtol=0.5) returns True",
+            "expected_output": "Array(True, dtype=bool, weak_type=True), equal to np.isclose(6, 10, rtol=0.5)",
+            "source": "issue"
+          },
+          {
+            "input": "key = jax.random.key(0); jnp.isclose(key, key)",
+            "buggy_output": "Test failure when isclose is called on extended key dtype (no Boolean value quoted in the evidence; treat as error/failed assertion)",
+            "expected_output": "True",
+            "source": "test"
+          },
+          {
+            "input": "self.assertEqual(np.isclose(6, 10, rtol=0.5), jnp.isclose(6, 10, rtol=0.5))",
+            "buggy_output": "AssertionError: np.isclose(6, 10, rtol=0.5)=True != jnp.isclose(6, 10, rtol=0.5)=False",
+            "expected_output": "Assertion passes: both sides are True",
+            "source": "test"
+          }
+        ],
+        "environment_setup": [
+          "Checkout repo at buggy commit e1e9de0e7b5f29840b4e63ea91e1077bb13f9ed9 (fix not applied).",
+          "Use CPython (CI uses Python 3.10; contributing docs recommend >=3.12). Either should work for a CPU run.",
+          "Install build/test dependencies: pip install -r build/test-requirements.txt",
+          "Install JAX editable for CPU: python -m pip install -e \".[cpu]\" (CI variant: python -m pip install .[ci]).",
+          "Ensure core runtime deps present: numpy>=1.22, scipy>=1.9, ml_dtypes>=0.2.0, importlib_metadata>=4.6, protobuf>=3.13.",
+          "Optional env vars from CI: PY_COLORS=1; JAX_PLATFORMS unset/CPU for a local run. No GPU/TPU needed for this test.",
+          "Verify install: python -c \"import jax, jax.numpy as jnp; print(jax.__version__)\""
+        ],
+        "build_steps": [
+          "pip install -r build/test-requirements.txt",
+          "python -m pip install -e \".[cpu]\"",
+          "Sanity check import: python -c \"import jax.numpy as jnp; print(jnp.isclose(6, 10, rtol=0.5))\""
+        ],
+        "reproduction_steps": [
+          "Confirm HEAD is the buggy commit: git rev-parse HEAD == e1e9de0e7b5f29840b4e63ea91e1077bb13f9ed9.",
+          "Confirm the reproducing assertions exist in tests/lax_numpy_test.py around line 3532 (testIsClose): np.isclose(6,10,rtol=0.5)==jnp.isclose(6,10,rtol=0.5) and jnp.isclose(key, key) with key = jax.random.key(0). If absent, add them manually to testIsClose (do not fix lax_numpy.py).",
+          "Manual check of the numerical divergence: python -c \"import numpy as np, jax.numpy as jnp; print(np.isclose(6,10,rtol=0.5), jnp.isclose(6,10,rtol=0.5))\" \u2014 expect True vs False.",
+          "Manual check of key dtype: python -c \"import jax, jax.numpy as jnp; k=jax.random.key(0); print(jnp.isclose(k,k))\" \u2014 expect an error/failure at the buggy revision.",
+          "Run the full test method: pytest tests/lax_numpy_test.py -k testIsClose -q",
+          "Observe the failure traceback showing assertEqual/assertTrue failing, then record the observed buggy values."
+        ],
+        "test_command": "pytest tests/lax_numpy_test.py -k testIsClose",
+        "test_selector": "tests/lax_numpy_test.py -k testIsClose",
+        "expected_buggy_behavior": "testIsClose FAILS at e1e9de0e: assertEqual(np.isclose(6,10,rtol=0.5), jnp.isclose(6,10,rtol=0.5)) fails because jnp.isclose returns Array(False, dtype=bool, weak_type=True) for exact integer operands instead of True; the added jnp.isclose(key, key) assertion also fails for the extended key dtype.",
+        "expected_fixed_behavior": "After the fix (ae9d677), isclose promotes arguments to an inexact dtype before the tolerance comparison, so jnp.isclose(6,10,rtol=0.5) == np.isclose(6,10,rtol=0.5) == True, and jnp.isclose(key, key) returns True via the extended-dtype equality fallback; testIsClose passes.",
+        "success_criterion": "At the buggy commit, pytest tests/lax_numpy_test.py -k testIsClose exits non-zero with the isclose(6,10,rtol=0.5) mismatch (and/or key-type failure); the same selector passes once the fix is applied.",
+        "risks_or_ambiguities": [
+          "No exact pinned dependency versions given; only lower bounds (numpy>=1.22, scipy>=1.9, ml_dtypes>=0.2.0) \u2014 a newer jaxlib/numpy could shift behavior.",
+          "Python version conflict in evidence: CI uses 3.10, contributing docs say >=3.12; reproduction may behave differently across versions.",
+          "The buggy behavior for jnp.isclose(key, key) is not quoted as a concrete value (evidence says only 'downstream test failures'); it may raise a TypeError rather than return False.",
+          "The reproducing assertions may not already be present at the buggy commit; if testIsClose lacks them they must be added without touching jax/_src/numpy/lax_numpy.py.",
+          "testIsClose lives inside LaxBackedNumpyTests and depends on numpy comparison scaffolding (result_np/result_jax/result_jit) that must import cleanly.",
+          "jaxlib wheel must match the pinned JAX source revision; a mismatched wheel could mask or alter the failure."
+        ],
+        "confidence": 0.82
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 3240,
+        "output_tokens": 1923,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.003966
+      }
+    }
+  ]
+}

@@ -1,0 +1,1754 @@
+[
+  {
+    "slug": "pandas_66640",
+    "bug_type": "accuracy",
+    "image": "python:3.11",
+    "status": "REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 4/6 reported example(s) show the reported difference between the revisions; the numerical oracle agrees (defect signal present on buggy, absent on fixed)",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "flipped",
+    "examples_verdict": "reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import operator\nimport pandas as pd\n\nTimedelta = pd.Timedelta\nTimedeltaIndex = pd.TimedeltaIndex\n\nmul = operator.mul\ntruediv = operator.truediv\nfloordiv = operator.floordiv\n\nop = operator.mul\nobj = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])\ntdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"pd.Timedelta.min * 1.0\", \"pd.Timedelta.min * 1.0\", [], \"Timedelta.min\"], [\"pd.Timedelta.max / 1.0\", \"pd.Timedelta.max / 1.0\", [], \"Timedelta.max\"], [\"(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value\", \"(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value\", [], \"9007199254740993\"], [\"op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]\", \"op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]\", [], \"9007199254740993 (2**53 + 1), and op(td, 1.0) == op(td, 1)\"], [\"op(obj, 1.0) where tdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])\", \"op(obj, 1.0)\", [], \"equal to obj and equal to op(obj, 1)\"], [\"op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]\", \"op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]\", [], \"Timedelta.min and Timedelta.max returned unchanged\"], [\"tdi * 2.0 with tdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])\", \"TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])\", [], \"OutOfBoundsTimedelta matching 'Overflow in int64 multiplication'\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "gh66551_td_integral_float_exactness": "import operator\nimport pandas as pd\nfrom pandas import Timedelta, TimedeltaIndex\n\nBASE = 2 ** 53\n\ndef rec(name, fn, default=0.0):\n    try:\n        probe(name, float(fn()))\n    except Exception:\n        probe(name, float(default))\n\ntd = Timedelta(BASE + 1, \"ns\")\n\ndef off(op):\n    # exact-int64 path keeps the low bit -> offset 1; float64 path drops it -> offset 0\n    return op(td, 1.0)._value - BASE\n\nrec(\"td2p53_mul_offset\", lambda: off(operator.mul))\nrec(\"td2p53_truediv_offset\", lambda: off(operator.truediv))\nrec(\"td2p53_floordiv_offset\", lambda: off(operator.floordiv))\nrec(\"td2p53_mul_matches_int\", lambda: 1.0 if operator.mul(td, 1.0) == operator.mul(td, 1) else 0.0)\n\ndef rt(op, base):\n    return 1.0 if op(base, 1.0) == base else 0.0\n\nrec(\"min_mul_roundtrip\", lambda: rt(operator.mul, Timedelta.min))\nrec(\"min_truediv_roundtrip\", lambda: rt(operator.truediv, Timedelta.min))\nrec(\"min_floordiv_roundtrip\", lambda: rt(operator.floordiv, Timedelta.min))\nrec(\"max_mul_roundtrip\", lambda: rt(operator.mul, Timedelta.max))\nrec(\"max_truediv_roundtrip\", lambda: rt(operator.truediv, Timedelta.max))\nrec(\"max_floordiv_roundtrip\", lambda: rt(operator.floordiv, Timedelta.max))\n\ntdi = TimedeltaIndex([Timedelta(BASE + 1, \"ns\"), Timedelta.min])\nfor nm, op in ((\"mul\", operator.mul), (\"truediv\", operator.truediv), (\"floordiv\", operator.floordiv)):\n    rec(\"tdi_\" + nm + \"_equal_obj\", lambda op=op: 1.0 if (op(tdi, 1.0) == tdi).all() else 0.0)\n",
+        "gh66551_td_intfloat_exact_pair": "import operator\nimport numpy as np\nimport pandas as pd\nfrom pandas import Timedelta, TimedeltaIndex\n\nbig = Timedelta(2**53 + 1, 'ns')\ntarget = 2**53 + 1\nops = [('mul', operator.mul), ('truediv', operator.truediv), ('floordiv', operator.floordiv)]\n\n# exact int64 payload of the 2**53+1 ns value, expressed as a delta from the true value\n# (0 == exact); a float64 round-trip drops the low bit and yields -1.\nfor name, op in ops:\n    try:\n        res = int(op(big, 1.0)._value)\n    except Exception:\n        res = None\n    probe('scalar_' + name + '_payload_delta', 999999 if res is None else res - target)\n\n# do the integral-float ops return Timedelta.min / Timedelta.max unchanged (1) or corrupt/raise (0)?\nfor name, op in ops:\n    for tag, td in [('min', Timedelta.min), ('max', Timedelta.max)]:\n        try:\n            r = op(td, 1.0)\n            ok = 1 if (not pd.isna(r) and int(r._value) == int(td._value)) else 0\n        except Exception:\n            ok = 0\n        probe('scalar_' + name + '_' + tag + '_identity', ok)\n\n# array op(obj, 1.0) == obj for the TimedeltaIndex?\ntdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])\nfor name, op in ops:\n    try:\n        r = op(tdi, 1.0)\n        ok = 1 if bool((r == tdi).all()) else 0\n    except Exception:\n        ok = 0\n    probe('array_' + name + '_identity', ok)",
+        "described_examples": "import operator\n\nfrom pandas import Timedelta\n\n# Names the examples were written against.\nmul = operator.mul\ntruediv = operator.truediv\nfloordiv = operator.floordiv\n\n# Description 1:\n# op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]\n_desc1 = \"op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]\"\ntry:\n    _res1 = [\n        op(Timedelta(2**53 + 1, 'ns'), 1.0)._value\n        for op in [operator.mul, operator.truediv, operator.floordiv]\n    ]\n    probe(_desc1, _res1)\nexcept Exception as _e1:\n    probe_exception(_desc1, _e1)\n\n# Description 2:\n# op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]\n_desc2 = \"op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]\"\ntry:\n    _res2 = []\n    for _op_name, _op in [(\"mul\", mul), (\"truediv\", truediv), (\"floordiv\", floordiv)]:\n        _res2.append([_op_name, _op(Timedelta.min, 1.0), _op(Timedelta.max, 1.0)])\n    probe(_desc2, _res2)\nexcept Exception as _e2:\n    probe_exception(_desc2, _e2)"
+      },
+      "fixed": {
+        "reported_examples": "import operator\nimport pandas as pd\n\nTimedelta = pd.Timedelta\nTimedeltaIndex = pd.TimedeltaIndex\n\nmul = operator.mul\ntruediv = operator.truediv\nfloordiv = operator.floordiv\n\nop = operator.mul\nobj = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])\ntdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"pd.Timedelta.min * 1.0\", \"pd.Timedelta.min * 1.0\", [], \"Timedelta.min\"], [\"pd.Timedelta.max / 1.0\", \"pd.Timedelta.max / 1.0\", [], \"Timedelta.max\"], [\"(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value\", \"(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value\", [], \"9007199254740993\"], [\"op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]\", \"op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]\", [], \"9007199254740993 (2**53 + 1), and op(td, 1.0) == op(td, 1)\"], [\"op(obj, 1.0) where tdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])\", \"op(obj, 1.0)\", [], \"equal to obj and equal to op(obj, 1)\"], [\"op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]\", \"op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]\", [], \"Timedelta.min and Timedelta.max returned unchanged\"], [\"tdi * 2.0 with tdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])\", \"TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])\", [], \"OutOfBoundsTimedelta matching 'Overflow in int64 multiplication'\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "gh66551_td_intfloat_exact_pair": "import operator\nimport numpy as np\nimport pandas as pd\nfrom pandas import Timedelta, TimedeltaIndex\n\nbig = Timedelta(2**53 + 1, 'ns')\ntarget = 2**53 + 1\nops = [('mul', operator.mul), ('truediv', operator.truediv), ('floordiv', operator.floordiv)]\n\n# exact int64 payload of the 2**53+1 ns value, expressed as a delta from the true value\n# (0 == exact); a float64 round-trip drops the low bit and yields -1.\nfor name, op in ops:\n    try:\n        res = int(op(big, 1.0)._value)\n    except Exception:\n        res = None\n    probe('scalar_' + name + '_payload_delta', 999999 if res is None else res - target)\n\n# do the integral-float ops return Timedelta.min / Timedelta.max unchanged (1) or corrupt/raise (0)?\nfor name, op in ops:\n    for tag, td in [('min', Timedelta.min), ('max', Timedelta.max)]:\n        try:\n            r = op(td, 1.0)\n            ok = 1 if (not pd.isna(r) and int(r._value) == int(td._value)) else 0\n        except Exception:\n            ok = 0\n        probe('scalar_' + name + '_' + tag + '_identity', ok)\n\n# array op(obj, 1.0) == obj for the TimedeltaIndex?\ntdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])\nfor name, op in ops:\n    try:\n        r = op(tdi, 1.0)\n        ok = 1 if bool((r == tdi).all()) else 0\n    except Exception:\n        ok = 0\n    probe('array_' + name + '_identity', ok)",
+        "described_examples": "import operator\n\nfrom pandas import Timedelta\n\n# Names the examples were written against.\nmul = operator.mul\ntruediv = operator.truediv\nfloordiv = operator.floordiv\n\n# Description 1:\n# op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]\n_desc1 = \"op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]\"\ntry:\n    _res1 = [\n        op(Timedelta(2**53 + 1, 'ns'), 1.0)._value\n        for op in [operator.mul, operator.truediv, operator.floordiv]\n    ]\n    probe(_desc1, _res1)\nexcept Exception as _e1:\n    probe_exception(_desc1, _e1)\n\n# Description 2:\n# op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]\n_desc2 = \"op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]\"\ntry:\n    _res2 = []\n    for _op_name, _op in [(\"mul\", mul), (\"truediv\", truediv), (\"floordiv\", floordiv)]:\n        _res2.append([_op_name, _op(Timedelta.min, 1.0), _op(Timedelta.max, 1.0)])\n    probe(_desc2, _res2)\nexcept Exception as _e2:\n    probe_exception(_desc2, _e2)"
+      }
+    },
+    "report": {
+      "status": "REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 4/6 reported example(s) show the reported difference between the revisions; the numerical oracle agrees (defect signal present on buggy, absent on fixed)",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "flipped",
+      "examples_verdict": "reproduced",
+      "success_criterion": "On the buggy commit e7ed83ad with the PR's test files applied, the selected tests fail: test_td_integral_float_op_is_exact and test_td64arr_integral_float_op_is_exact fail on the NaT/9007199254740992 values, and the overflow tests fail on the message regex. All pass once the fix routes integral floats through the int64 path.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 12,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 12,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]": [
+                9007199254740992,
+                9007199254740992,
+                9007199254740992
+              ],
+              "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]": {
+                "raised": "OutOfBoundsTimedelta",
+                "message": "Out of bounds nanosecond timedelta: -9223372036854775808",
+                "origin": "pandas/_libs/tslibs/timedeltas.pyx",
+                "in_repository": true
+              }
+            },
+            "fixed_values": {
+              "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]": [
+                9007199254740993,
+                9007199254740993,
+                9007199254740993
+              ],
+              "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]": [
+                [
+                  "mul",
+                  "Timedelta('-106752 days +00:12:43.145224193')",
+                  "Timedelta('106751 days 23:47:16.854775807')"
+                ],
+                [
+                  "truediv",
+                  "Timedelta('-106752 days +00:12:43.145224193')",
+                  "Timedelta('106751 days 23:47:16.854775807')"
+                ],
+                [
+                  "floordiv",
+                  "Timedelta('-106752 days +00:12:43.145224193')",
+                  "Timedelta('106751 days 23:47:16.854775807')"
+                ]
+              ]
+            }
+          },
+          {
+            "label": "gh66551_td_integral_float_exactness",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=1.000e+00, tol=2.000e-09)"
+              ]
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "td2p53_mul_offset": 0.0,
+              "td2p53_truediv_offset": 0.0,
+              "td2p53_floordiv_offset": 0.0,
+              "td2p53_mul_matches_int": 0.0,
+              "min_mul_roundtrip": 0.0,
+              "min_truediv_roundtrip": 0.0,
+              "min_floordiv_roundtrip": 0.0,
+              "max_mul_roundtrip": 0.0,
+              "max_truediv_roundtrip": 0.0,
+              "max_floordiv_roundtrip": 0.0,
+              "tdi_mul_equal_obj": 0.0,
+              "tdi_truediv_equal_obj": 0.0,
+              "tdi_floordiv_equal_obj": 0.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "gh66551_td_intfloat_exact_pair",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=1.000e+00, tol=1.000e-06)"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "scalar_mul_payload_delta": -1,
+              "scalar_truediv_payload_delta": -1,
+              "scalar_floordiv_payload_delta": -1,
+              "scalar_mul_min_identity": 0,
+              "scalar_mul_max_identity": 0,
+              "scalar_truediv_min_identity": 0,
+              "scalar_truediv_max_identity": 0,
+              "scalar_floordiv_min_identity": 0,
+              "scalar_floordiv_max_identity": 0,
+              "array_mul_identity": 0,
+              "array_truediv_identity": 0,
+              "array_floordiv_identity": 0
+            },
+            "fixed_values": {
+              "scalar_mul_payload_delta": 0,
+              "scalar_truediv_payload_delta": 0,
+              "scalar_floordiv_payload_delta": 0,
+              "scalar_mul_min_identity": 1,
+              "scalar_mul_max_identity": 1,
+              "scalar_truediv_min_identity": 1,
+              "scalar_truediv_max_identity": 1,
+              "scalar_floordiv_min_identity": 1,
+              "scalar_floordiv_max_identity": 1,
+              "array_mul_identity": 1,
+              "array_truediv_identity": 1,
+              "array_floordiv_identity": 1
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "pd.Timedelta.min * 1.0": "__error__: OutOfBoundsTimedelta: Out of bounds nanosecond timedelta: -9223372036854775808",
+              "expected::pd.Timedelta.min * 1.0": "Timedelta('-106752 days +00:12:43.145224193')",
+              "pd.Timedelta.max / 1.0": "__error__: OverflowError: Python int too large to convert to C long",
+              "expected::pd.Timedelta.max / 1.0": "Timedelta('106751 days 23:47:16.854775807')",
+              "(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value": 9007199254740992,
+              "expected::(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value": 9007199254740993,
+              "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "op(obj, 1.0) where tdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])": "__error__: OutOfBoundsTimedelta: Overflow in timedelta multiplication",
+              "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "tdi * 2.0 with tdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])": [
+                "Timedelta('53375 days 23:53:38.427387904')",
+                "Timedelta('53375 days 23:53:38.427387904')"
+              ]
+            },
+            "fixed_values": {
+              "pd.Timedelta.min * 1.0": "Timedelta('-106752 days +00:12:43.145224193')",
+              "expected::pd.Timedelta.min * 1.0": "Timedelta('-106752 days +00:12:43.145224193')",
+              "pd.Timedelta.max / 1.0": "Timedelta('106751 days 23:47:16.854775807')",
+              "expected::pd.Timedelta.max / 1.0": "Timedelta('106751 days 23:47:16.854775807')",
+              "(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value": 9007199254740993,
+              "expected::(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value": 9007199254740993,
+              "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "op(obj, 1.0) where tdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])": [
+                "Timedelta('104 days 05:59:59.254740993')",
+                "Timedelta('-106752 days +00:12:43.145224193')"
+              ],
+              "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "tdi * 2.0 with tdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])": [
+                "Timedelta('53375 days 23:53:38.427387904')",
+                "Timedelta('53375 days 23:53:38.427387904')"
+              ]
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "pd.Timedelta.min * 1.0",
+            "expected_output": "Timedelta.min",
+            "expected_value": "Timedelta('-106752 days +00:12:43.145224193')",
+            "expected_from": "evaluated",
+            "buggy_output_reported": "NaT",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "pd.Timedelta.min * 1.0",
+              "observed": "__error__: OutOfBoundsTimedelta: Out of bounds nanosecond timedelta: -9223372036854775808",
+              "evaluation_error": "OutOfBoundsTimedelta: Out of bounds nanosecond timedelta: -9223372036854775808",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Timedelta.min * 1.0",
+              "observed": "Timedelta('-106752 days +00:12:43.145224193')",
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "pd.Timedelta.max / 1.0",
+            "expected_output": "Timedelta.max",
+            "expected_value": "Timedelta('106751 days 23:47:16.854775807')",
+            "expected_from": "evaluated",
+            "buggy_output_reported": "OverflowError: Python int too large to convert to C long",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "pd.Timedelta.max / 1.0",
+              "observed": "__error__: OverflowError: Python int too large to convert to C long",
+              "evaluation_error": "OverflowError: Python int too large to convert to C long",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Timedelta.max / 1.0",
+              "observed": "Timedelta('106751 days 23:47:16.854775807')",
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value",
+            "expected_output": "9007199254740993",
+            "expected_value": 9007199254740993,
+            "expected_from": "evaluated",
+            "buggy_output_reported": "9007199254740992",
+            "outcome": "non_discriminating",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value",
+              "observed": 9007199254740992,
+              "evaluation_error": "",
+              "matches_expected": true,
+              "matches_reported_buggy": true
+            },
+            "fixed": {
+              "record": "(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value",
+              "observed": 9007199254740993,
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]",
+            "expected_output": "9007199254740993 (2**53 + 1), and op(td, 1.0) == op(td, 1)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "9007199254740992 (2**53), i.e. assert op(td, 1.0)._value == 2**53 + 1 fails",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]",
+              "observed": [
+                9007199254740992,
+                9007199254740992,
+                9007199254740992
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]",
+              "observed": [
+                9007199254740993,
+                9007199254740993,
+                9007199254740993
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "op(obj, 1.0) where tdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])",
+            "expected_output": "equal to obj and equal to op(obj, 1)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "not equal to obj: low bit dropped (9007199254740992) and Timedelta.min NaT-corrupted",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "op(obj, 1.0) where tdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])",
+              "observed": "__error__: OutOfBoundsTimedelta: Overflow in timedelta multiplication",
+              "evaluation_error": "OutOfBoundsTimedelta: Overflow in timedelta multiplication",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "op(obj, 1.0) where tdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])",
+              "observed": [
+                "Timedelta('104 days 05:59:59.254740993')",
+                "Timedelta('-106752 days +00:12:43.145224193')"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]",
+            "expected_output": "Timedelta.min and Timedelta.max returned unchanged",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "OutOfBoundsTimedelta: Out of bounds nanosecond timedelta: -9223372036854775808 (iNaT)",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]",
+              "observed": {
+                "raised": "OutOfBoundsTimedelta",
+                "message": "Out of bounds nanosecond timedelta: -9223372036854775808",
+                "origin": "pandas/_libs/tslibs/timedeltas.pyx",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]",
+              "observed": [
+                [
+                  "mul",
+                  "Timedelta('-106752 days +00:12:43.145224193')",
+                  "Timedelta('106751 days 23:47:16.854775807')"
+                ],
+                [
+                  "truediv",
+                  "Timedelta('-106752 days +00:12:43.145224193')",
+                  "Timedelta('106751 days 23:47:16.854775807')"
+                ],
+                [
+                  "floordiv",
+                  "Timedelta('-106752 days +00:12:43.145224193')",
+                  "Timedelta('106751 days 23:47:16.854775807')"
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "tdi * 2.0 with tdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])",
+            "expected_output": "OutOfBoundsTimedelta matching 'Overflow in int64 multiplication'",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "OutOfBoundsTimedelta matching 'Overflow in timedelta multiplication'",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "tdi * 2.0 with tdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])",
+              "observed": [
+                "Timedelta('53375 days 23:53:38.427387904')",
+                "Timedelta('53375 days 23:53:38.427387904')"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "tdi * 2.0 with tdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])",
+              "observed": [
+                "Timedelta('53375 days 23:53:38.427387904')",
+                "Timedelta('53375 days 23:53:38.427387904')"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 3,
+            "n_failed": 2,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 2,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata",
+            "cython>=3.1.0",
+            "meson>=1.2.3",
+            "meson-python>=0.19.0",
+            "numpy",
+            "pytest>=8.3.4",
+            "pytest-cov",
+            "pytest-xdist>=3.6.1",
+            "pytest-localserver",
+            "pytest-cython>=0.4.0",
+            "hypothesis>=6.116.0"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-08-07T11:09:03-07:00",
+        "fixed_commit_date": "2026-08-07T11:09:34-07:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-08-07T11:09:34-07:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.1",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.48.0",
+              "meson-python": "0.20.0",
+              "meson": "1.11.2",
+              "wheel": "0.47.0",
+              "cython": "3.2.9",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "hypothesis>=6.116.0",
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.26.0 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1496.ge7ed83ad33.dirty) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1496.ge7ed83ad33.dirty) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.8.2->pandas==3.1.0.dev0+1496.ge7ed83ad33.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1496.ge7ed83ad33.dirty-cp311-cp311-linux_x86_64.whl size=16078331 sha256=fef09d27a750ae949ae3f71d9c1673eb118996b769bb1006697743dce7287031\n  Stored in directory: /tmp/pip-ephem-wheel-cache-hqtzx13k/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1496.ge7ed83ad33.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.1",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.48.0",
+              "meson-python": "0.20.0",
+              "meson": "1.11.2",
+              "wheel": "0.47.0",
+              "cython": "3.2.9",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "hypothesis>=6.116.0",
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.26.0 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1497.g9fcddfbcad) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1497.g9fcddfbcad) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.8.2->pandas==3.1.0.dev0+1497.g9fcddfbcad) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1497.g9fcddfbcad-cp311-cp311-linux_x86_64.whl size=16078921 sha256=cdd57c3387ef51f4697f36ea5fca4b529674bce19c6c70b4983051dce61675f4\n  Stored in directory: /tmp/pip-ephem-wheel-cache-n5hp51ud/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1497.g9fcddfbcad\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 12,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 12,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 4,
+        "verdict": "flipped",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]": [
+                9007199254740992,
+                9007199254740992,
+                9007199254740992
+              ],
+              "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]": {
+                "raised": "OutOfBoundsTimedelta",
+                "message": "Out of bounds nanosecond timedelta: -9223372036854775808",
+                "origin": "pandas/_libs/tslibs/timedeltas.pyx",
+                "in_repository": true
+              }
+            },
+            "fixed_values": {
+              "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]": [
+                9007199254740993,
+                9007199254740993,
+                9007199254740993
+              ],
+              "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]": [
+                [
+                  "mul",
+                  "Timedelta('-106752 days +00:12:43.145224193')",
+                  "Timedelta('106751 days 23:47:16.854775807')"
+                ],
+                [
+                  "truediv",
+                  "Timedelta('-106752 days +00:12:43.145224193')",
+                  "Timedelta('106751 days 23:47:16.854775807')"
+                ],
+                [
+                  "floordiv",
+                  "Timedelta('-106752 days +00:12:43.145224193')",
+                  "Timedelta('106751 days 23:47:16.854775807')"
+                ]
+              ]
+            }
+          },
+          {
+            "label": "gh66551_td_integral_float_exactness",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=1.000e+00, tol=2.000e-09)"
+              ]
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "td2p53_mul_offset": 0.0,
+              "td2p53_truediv_offset": 0.0,
+              "td2p53_floordiv_offset": 0.0,
+              "td2p53_mul_matches_int": 0.0,
+              "min_mul_roundtrip": 0.0,
+              "min_truediv_roundtrip": 0.0,
+              "min_floordiv_roundtrip": 0.0,
+              "max_mul_roundtrip": 0.0,
+              "max_truediv_roundtrip": 0.0,
+              "max_floordiv_roundtrip": 0.0,
+              "tdi_mul_equal_obj": 0.0,
+              "tdi_truediv_equal_obj": 0.0,
+              "tdi_floordiv_equal_obj": 0.0
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "gh66551_td_intfloat_exact_pair",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "values do not match the reference (finite compare: abs_err=1.000e+00, tol=1.000e-06)"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "scalar_mul_payload_delta": -1,
+              "scalar_truediv_payload_delta": -1,
+              "scalar_floordiv_payload_delta": -1,
+              "scalar_mul_min_identity": 0,
+              "scalar_mul_max_identity": 0,
+              "scalar_truediv_min_identity": 0,
+              "scalar_truediv_max_identity": 0,
+              "scalar_floordiv_min_identity": 0,
+              "scalar_floordiv_max_identity": 0,
+              "array_mul_identity": 0,
+              "array_truediv_identity": 0,
+              "array_floordiv_identity": 0
+            },
+            "fixed_values": {
+              "scalar_mul_payload_delta": 0,
+              "scalar_truediv_payload_delta": 0,
+              "scalar_floordiv_payload_delta": 0,
+              "scalar_mul_min_identity": 1,
+              "scalar_mul_max_identity": 1,
+              "scalar_truediv_min_identity": 1,
+              "scalar_truediv_max_identity": 1,
+              "scalar_floordiv_min_identity": 1,
+              "scalar_floordiv_max_identity": 1,
+              "array_mul_identity": 1,
+              "array_truediv_identity": 1,
+              "array_floordiv_identity": 1
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "pd.Timedelta.min * 1.0": "__error__: OutOfBoundsTimedelta: Out of bounds nanosecond timedelta: -9223372036854775808",
+              "expected::pd.Timedelta.min * 1.0": "Timedelta('-106752 days +00:12:43.145224193')",
+              "pd.Timedelta.max / 1.0": "__error__: OverflowError: Python int too large to convert to C long",
+              "expected::pd.Timedelta.max / 1.0": "Timedelta('106751 days 23:47:16.854775807')",
+              "(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value": 9007199254740992,
+              "expected::(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value": 9007199254740993,
+              "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "op(obj, 1.0) where tdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])": "__error__: OutOfBoundsTimedelta: Overflow in timedelta multiplication",
+              "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "tdi * 2.0 with tdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])": [
+                "Timedelta('53375 days 23:53:38.427387904')",
+                "Timedelta('53375 days 23:53:38.427387904')"
+              ]
+            },
+            "fixed_values": {
+              "pd.Timedelta.min * 1.0": "Timedelta('-106752 days +00:12:43.145224193')",
+              "expected::pd.Timedelta.min * 1.0": "Timedelta('-106752 days +00:12:43.145224193')",
+              "pd.Timedelta.max / 1.0": "Timedelta('106751 days 23:47:16.854775807')",
+              "expected::pd.Timedelta.max / 1.0": "Timedelta('106751 days 23:47:16.854775807')",
+              "(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value": 9007199254740993,
+              "expected::(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value": 9007199254740993,
+              "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "op(obj, 1.0) where tdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])": [
+                "Timedelta('104 days 05:59:59.254740993')",
+                "Timedelta('-106752 days +00:12:43.145224193')"
+              ],
+              "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "tdi * 2.0 with tdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])": [
+                "Timedelta('53375 days 23:53:38.427387904')",
+                "Timedelta('53375 days 23:53:38.427387904')"
+              ]
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 7,
+        "n_judged": 6,
+        "n_reproduced": 4,
+        "evaluable": true,
+        "n_diverged": 1,
+        "n_unobserved": 0,
+        "n_contested": 0,
+        "unobserved": [],
+        "verdict": "reproduced",
+        "examples": [
+          {
+            "input": "pd.Timedelta.min * 1.0",
+            "expected_output": "Timedelta.min",
+            "expected_value": "Timedelta('-106752 days +00:12:43.145224193')",
+            "expected_from": "evaluated",
+            "buggy_output_reported": "NaT",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "pd.Timedelta.min * 1.0",
+              "observed": "__error__: OutOfBoundsTimedelta: Out of bounds nanosecond timedelta: -9223372036854775808",
+              "evaluation_error": "OutOfBoundsTimedelta: Out of bounds nanosecond timedelta: -9223372036854775808",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Timedelta.min * 1.0",
+              "observed": "Timedelta('-106752 days +00:12:43.145224193')",
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "pd.Timedelta.max / 1.0",
+            "expected_output": "Timedelta.max",
+            "expected_value": "Timedelta('106751 days 23:47:16.854775807')",
+            "expected_from": "evaluated",
+            "buggy_output_reported": "OverflowError: Python int too large to convert to C long",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "pd.Timedelta.max / 1.0",
+              "observed": "__error__: OverflowError: Python int too large to convert to C long",
+              "evaluation_error": "OverflowError: Python int too large to convert to C long",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pd.Timedelta.max / 1.0",
+              "observed": "Timedelta('106751 days 23:47:16.854775807')",
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value",
+            "expected_output": "9007199254740993",
+            "expected_value": 9007199254740993,
+            "expected_from": "evaluated",
+            "buggy_output_reported": "9007199254740992",
+            "outcome": "non_discriminating",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value",
+              "observed": 9007199254740992,
+              "evaluation_error": "",
+              "matches_expected": true,
+              "matches_reported_buggy": true
+            },
+            "fixed": {
+              "record": "(pd.Timedelta(2**53 + 1, 'ns') // 1.0)._value",
+              "observed": 9007199254740993,
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]",
+            "expected_output": "9007199254740993 (2**53 + 1), and op(td, 1.0) == op(td, 1)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "9007199254740992 (2**53), i.e. assert op(td, 1.0)._value == 2**53 + 1 fails",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]",
+              "observed": [
+                9007199254740992,
+                9007199254740992,
+                9007199254740992
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]",
+              "observed": [
+                9007199254740993,
+                9007199254740993,
+                9007199254740993
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "op(obj, 1.0) where tdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])",
+            "expected_output": "equal to obj and equal to op(obj, 1)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "not equal to obj: low bit dropped (9007199254740992) and Timedelta.min NaT-corrupted",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "op(obj, 1.0) where tdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])",
+              "observed": "__error__: OutOfBoundsTimedelta: Overflow in timedelta multiplication",
+              "evaluation_error": "OutOfBoundsTimedelta: Overflow in timedelta multiplication",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "op(obj, 1.0) where tdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min])",
+              "observed": [
+                "Timedelta('104 days 05:59:59.254740993')",
+                "Timedelta('-106752 days +00:12:43.145224193')"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]",
+            "expected_output": "Timedelta.min and Timedelta.max returned unchanged",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "OutOfBoundsTimedelta: Out of bounds nanosecond timedelta: -9223372036854775808 (iNaT)",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]",
+              "observed": {
+                "raised": "OutOfBoundsTimedelta",
+                "message": "Out of bounds nanosecond timedelta: -9223372036854775808",
+                "origin": "pandas/_libs/tslibs/timedeltas.pyx",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]",
+              "observed": [
+                [
+                  "mul",
+                  "Timedelta('-106752 days +00:12:43.145224193')",
+                  "Timedelta('106751 days 23:47:16.854775807')"
+                ],
+                [
+                  "truediv",
+                  "Timedelta('-106752 days +00:12:43.145224193')",
+                  "Timedelta('106751 days 23:47:16.854775807')"
+                ],
+                [
+                  "floordiv",
+                  "Timedelta('-106752 days +00:12:43.145224193')",
+                  "Timedelta('106751 days 23:47:16.854775807')"
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "tdi * 2.0 with tdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])",
+            "expected_output": "OutOfBoundsTimedelta matching 'Overflow in int64 multiplication'",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "OutOfBoundsTimedelta matching 'Overflow in timedelta multiplication'",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "tdi * 2.0 with tdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])",
+              "observed": [
+                "Timedelta('53375 days 23:53:38.427387904')",
+                "Timedelta('53375 days 23:53:38.427387904')"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "tdi * 2.0 with tdi = TimedeltaIndex([Timedelta(2**62, 'ns'), Timedelta(2**62, 'ns')])",
+              "observed": [
+                "Timedelta('53375 days 23:53:38.427387904')",
+                "Timedelta('53375 days 23:53:38.427387904')"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 3,
+          "n_failed": 2,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 2,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "On the buggy commit e7ed83ad with the PR's test files applied, the selected tests fail: test_td_integral_float_op_is_exact and test_td64arr_integral_float_op_is_exact fail on the NaT/9007199254740992 values, and the overflow tests fail on the message regex. All pass once the fix routes integral floats through the int64 path."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata",
+          "cython>=3.1.0",
+          "meson>=1.2.3",
+          "meson-python>=0.19.0",
+          "numpy",
+          "pytest>=8.3.4",
+          "pytest-cov",
+          "pytest-xdist>=3.6.1",
+          "pytest-localserver",
+          "pytest-cython>=0.4.0",
+          "hypothesis>=6.116.0"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-08-07T11:09:03-07:00",
+      "fixed_commit_date": "2026-08-07T11:09:34-07:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-08-07T11:09:34-07:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.1",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.48.0",
+            "meson-python": "0.20.0",
+            "meson": "1.11.2",
+            "wheel": "0.47.0",
+            "cython": "3.2.9",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "hypothesis>=6.116.0",
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.26.0 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1496.ge7ed83ad33.dirty) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1496.ge7ed83ad33.dirty) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.8.2->pandas==3.1.0.dev0+1496.ge7ed83ad33.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1496.ge7ed83ad33.dirty-cp311-cp311-linux_x86_64.whl size=16078331 sha256=fef09d27a750ae949ae3f71d9c1673eb118996b769bb1006697743dce7287031\n  Stored in directory: /tmp/pip-ephem-wheel-cache-hqtzx13k/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1496.ge7ed83ad33.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.1",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.48.0",
+            "meson-python": "0.20.0",
+            "meson": "1.11.2",
+            "wheel": "0.47.0",
+            "cython": "3.2.9",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "hypothesis>=6.116.0",
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.26.0 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1497.g9fcddfbcad) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1497.g9fcddfbcad) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.8.2->pandas==3.1.0.dev0+1497.g9fcddfbcad) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1497.g9fcddfbcad-cp311-cp311-linux_x86_64.whl size=16078921 sha256=cdd57c3387ef51f4697f36ea5fca4b529674bce19c6c70b4983051dce61675f4\n  Stored in directory: /tmp/pip-ephem-wheel-cache-n5hp51ud/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1497.g9fcddfbcad\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 7,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce GH#66551: on buggy e7ed83ad whole-numbered float operands on Timedelta/TimedeltaIndex are applied in float64 (NaT corruption, dropped low bit, OverflowError, wrong overflow message), while the fixed revision 9fcddfb routes integral floats through the exact int64 path and matches the reported outputs.",
+          "milestones": [
+            "buggy_revision_ready [buggy] \u2014 Confirm the buggy revision at /workspace/buggy is the expected commit and that its prebuilt venv imports pandas (so tests/probes run against the built package, not the source tree). (1 steps, verify: steps_succeeded)",
+            "buggy_defect_observable [buggy] \u2014 On the buggy revision show the reproducing tests fail and that the report's own input/output examples reproduce the buggy values (NaT for Timedelta.min*1.0, dropped low bit for 2**53+1 ns, OverflowError for Timedelta.max/1.0). (4 steps, verify: test_fails, probe_shows_defect, examples_reproduced)",
+            "fixed_revision_ready [fixed] \u2014 Confirm the fixed revision at /workspace/fixed is the expected commit and that its prebuilt venv imports pandas, with the same test module importable. (1 steps, verify: steps_succeeded)",
+            "fixed_matches_expected [fixed] \u2014 On the fixed revision the same test cases pass, the same probes return the exact int64 values (no dropped bit, Timedelta.min/max round-trip), the report's examples match the expected outputs, and the two revisions differ. (4 steps, verify: test_passes, probe_clean, examples_reproduced, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && git rev-parse HEAD && python -I -c \"import pandas as pd, numpy as np; print('pandas', pd.__version__); print('numpy', np.__version__); print(repr(pd.Timedelta.min)); print(pd.Timedelta.max)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.55
+      },
+      {
+        "verification": {
+          "milestone": "buggy_revision_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs pandas.tests.arithmetic.test_timedelta64 pandas.tests.scalar.timedelta.test_arithmetic --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning -v -k \"test_td64arr_integral_float_op_is_exact or test_td64arr_mul_inf_raises or test_td64arr_mul_div_overflow_non_nano or test_td_integral_float_op_is_exact\"",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 4.7
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          9007199254740992.0,
+          9007199254740992.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "td_intfloat_2p53",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(td_intfloat_2p53) \u2014 Record the exact int64 payload of op(Timedelta(2**53+1,'ns'), 1.0) for mul/truediv/floordiv \u2014 float64 application drops the low bit"
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "td_minmax_float_identity",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(td_minmax_float_identity) \u2014 Record whether op(Timedelta.min/max, 1.0) returns the value unchanged (1) or corrupts/raises (0) on the buggy revision"
+      },
+      {
+        "verification": {
+          "milestone": "buggy_defect_observable",
+          "verified": false,
+          "results": [
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/7 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 6 never evaluated \u2014 the preamble does not bind everything they need: pd.Timedelta.min * 1.0; pd.Timedelta.max / 1.0; op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Decide GH#66551 by directly evaluating the report's own Timedelta/TimedeltaIndex integral-float examples and a paired int64-payload probe on both revisions (no dependence on the fix-shipped regression tests), showing float64 corruption on buggy e7ed83ad and exact int64 results on fixed 9fcddfb.",
+          "milestones": [
+            "buggy_defect_reproduced [buggy] \u2014 On the buggy revision, evaluate the report's examples with a preamble that actually binds pandas/Timedelta/operator and run a paired probe recording the int64 payloads of op(Timedelta(2**53+1),1.0) (mul/truediv/floordiv), the Timedelta.min/max round-trips and the TimedeltaIndex identity, so the drop (2 steps, verify: steps_succeeded, probe_ran, probe_shows_defect, examples_reproduced)",
+            "fixed_revision_ready [fixed] \u2014 Confirm /workspace/fixed is the expected commit 9fcddfb and that its prebuilt venv imports pandas with the Timedelta/TimedeltaIndex API available. (1 steps, verify: steps_succeeded)",
+            "fixed_matches_expected [fixed] \u2014 On the fixed revision the same probe returns the exact int64 values (low bit kept, Timedelta.min/max round-trip, op(obj,1.0)==obj) and the report's examples match the expected outputs, differing from the buggy revision. (2 steps, verify: steps_succeeded, probe_ran, probe_clean, examples_reproduced, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          9007199254740992.0,
+          9007199254740992.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "gh66551_td_integral_float_exactness",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "values do not match the reference (finite compare: abs_err=1.000e+00, tol=2.000e-09)"
+        ],
+        "expected": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "observed": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_defect_reproduced",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'gh66551_td_integral_float_exactness': values do not match the reference (finite compare: abs_err=1.000e+00, tol=2.000e-09)"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/7 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 6 never evaluated \u2014 the preamble does not bind everything they need: pd.Timedelta.min * 1.0; pd.Timedelta.max / 1.0; op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Decide GH#66551 by evaluating the report's own Timedelta/TimedeltaIndex integral-float examples with a preamble that actually binds pandas/Timedelta/operator, and a paired int64-payload probe on both revisions, showing float64 corruption on buggy e7ed83ad and exact int64 results on fixed 9fcddfb.",
+          "milestones": [
+            "buggy_examples_and_payload_reproduced [buggy] \u2014 On the buggy build, evaluate the report's own integral-float examples with a preamble that binds pandas (pd), Timedelta, TimedeltaIndex and operator (so pd.Timedelta.min*1.0, pd.Timedelta.max/1.0 and the op(...) comprehension actually evaluate), and re-record the int64 payloads/identities under one  (2 steps, verify: steps_succeeded, examples_reproduced, probe_ran, probe_shows_defect)",
+            "fixed_revision_ready [fixed] \u2014 Confirm /workspace/fixed is the expected fixed commit 9fcddfb and that its prebuilt venv imports pandas with the Timedelta/TimedeltaIndex API available. (1 steps, verify: steps_succeeded)",
+            "fixed_matches_expected [fixed] \u2014 On the fixed revision the same examples return the expected exact outputs and the identical probe returns exact int64 payloads (delta 0), Timedelta.min/max unchanged and op(obj,1.0)==obj \u2014 differing from the buggy revision. (2 steps, verify: steps_succeeded, probe_ran, probe_clean, examples_reproduced, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          9007199254740992.0,
+          9007199254740992.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "gh66551_td_intfloat_exact_pair",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "values do not match the reference (finite compare: abs_err=1.000e+00, tol=1.000e-06)"
+        ],
+        "expected": [
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "observed": [
+          -1.0,
+          -1.0,
+          -1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_examples_and_payload_reproduced",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/7 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 6 never evaluated \u2014 the preamble does not bind everything they need: pd.Timedelta.min * 1.0; pd.Timedelta.max / 1.0; op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": true,
+              "detail": "probe 'gh66551_td_intfloat_exact_pair': values do not match the reference (finite compare: abs_err=1.000e+00, tol=1.000e-06)"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "buggy_examples_and_payload_reproduced",
+          "revision": "buggy",
+          "failed": [
+            "examples_reproduced"
+          ],
+          "attempts": 2,
+          "detail": [
+            "0/7 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 6 never evaluated \u2014 the preamble does not bind everything they need: pd.Timedelta.min * 1.0; pd.Timedelta.max / 1.0; op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && git rev-parse HEAD && python -I -c \"import pandas as pd; print(pd.__version__); print(repr(pd.Timedelta.min), repr(pd.Timedelta.max)); from pandas import TimedeltaIndex; print(TimedeltaIndex([pd.Timedelta(1,'ns')]).dtype)\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 0.51
+      },
+      {
+        "verification": {
+          "milestone": "fixed_revision_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          9007199254740992.0,
+          9007199254740992.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "gh66551_td_intfloat_exact_pair",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": [
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "observed": [
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "fixed_matches_expected",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": true,
+              "detail": "every probe is clean on fixed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "2/7 mined example(s) reproduced (verdict incomplete, 0 still wrong on fixed); 3 never evaluated \u2014 the preamble does not bind everything they need: op(Timedelta(2**53 + 1, 'ns'), 1.0)._value for op in [operator.mul, operator.truediv, operator.floordiv]; op(obj, 1.0) where tdi = TimedeltaIndex([Timedelta(2**53 + 1, 'ns'), Timedelta.min]); op(Timedelta.min, 1.0) and op(Timedelta.max, 1.0) for op in [mul, truediv, floordiv]"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": true,
+              "detail": "the numerical probe shows the defect only on buggy"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "",
+          "milestones": []
+        }
+      },
+      {
+        "plan_retry": {
+          "attempt": "replan",
+          "reason": "Your previous answer could not be read as a plan. Answer by calling the submit tool with the plan object itself \u2014 no prose, no code fences."
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs pandas.tests.arithmetic.test_timedelta64 -k test_td64arr_integral_float_op_is_exact -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 3.97
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs pandas.tests.arithmetic.test_timedelta64 -k test_td64arr_integral_float_op_is_exact -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.34
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_td64arr_integral_float_op_is_exact",
+          "command": "python -I -m pytest --pyargs pandas.tests.arithmetic.test_timedelta64 -k test_td64arr_integral_float_op_is_exact -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "pandas",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_td64arr_integral_float_op_is_exact",
+              "command": "python -I -m pytest --pyargs pandas.tests.arithmetic.test_timedelta64 -k test_td64arr_integral_float_op_is_exact -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          9007199254740992.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          9007199254740992.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          9007199254740992.0,
+          9007199254740992.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          9007199254740992.0,
+          9007199254740992.0
+        ]
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 7,
+            "recorded": 7,
+            "error": null,
+            "could_not_evaluate": 5
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 7,
+            "recorded": 7,
+            "error": null,
+            "could_not_evaluate": 2
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          9007199254740992.0,
+          9007199254740992.0,
+          9007199254740992.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          9007199254740992.0,
+          9007199254740992.0,
+          9007199254740992.0
+        ]
+      },
+      {
+        "described_examples": {
+          "n_described": 2,
+          "buggy": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "flipped",
+        "examples_verdict": "reproduced",
+        "examples": "4/6"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 4/6 reported example(s) show the reported difference between the revisions; the numerical oracle agrees (defect signal present on buggy, absent on fixed)"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "deepseek-v4-flash",
+      "calls": 7,
+      "input_tokens": 26183,
+      "output_tokens": 90035,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.130367
+    }
+  }
+]

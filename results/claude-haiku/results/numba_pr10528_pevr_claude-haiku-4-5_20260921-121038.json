@@ -1,0 +1,2984 @@
+[
+  {
+    "slug": "numba_10528",
+    "bug_type": "special_value",
+    "image": "python:3.10",
+    "status": "NOT_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "test passes on BOTH revisions (it does not expose the bug); the numerical probe still shows the defect on fixed",
+    "transition": "pass->pass",
+    "fail_to_pass": false,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "not_reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "buggy_complex_multiply_divide_bits": "import numba\nimport numpy as np\nfrom numba import jit, types\nimport struct\nimport math\n\n# Define JIT-compiled multiply and divide functions\n@jit(types.complex128(types.complex128, types.complex128), nopython=True)\ndef mul_jit(a, b):\n    return a * b\n\n@jit(types.complex128(types.complex128, types.complex128), nopython=True)\ndef div_jit(a, b):\n    return a / b\n\ndef bits_of_float64(x):\n    \"\"\"Get bit pattern of a float64 as integer.\"\"\"\n    return struct.unpack('<q', struct.pack('<d', x))[0]\n\n# Test cases focusing on special values that trigger NaN recovery\n# Case 1: inf * 0 -> should recover to proper inf, not nan\nz1 = complex(float('inf'), 0.0)\nw1 = complex(0.0, 0.0)\nresult_mul_1 = mul_jit(z1, w1)\nprobe('mul_inf_times_zero_real', bits_of_float64(result_mul_1.real))\nprobe('mul_inf_times_zero_imag', bits_of_float64(result_mul_1.imag))\n\n# Case 2: inf / inf -> should recover to proper result, not nan\nz2 = complex(float('inf'), float('inf'))\nw2 = complex(float('inf'), float('inf'))\nresult_div_2 = div_jit(z2, w2)\nprobe('div_inf_by_inf_real', bits_of_float64(result_div_2.real))\nprobe('div_inf_by_inf_imag', bits_of_float64(result_div_2.imag))\n\n# Case 3: The specific case from the issue: z=(-inf + nan*j) / (-0.0 - inf*j)\nz3 = complex(float('-inf'), float('nan'))\nw3 = complex(-0.0, float('-inf'))\nresult_div_3 = div_jit(z3, w3)\nprobe('div_neg_inf_nan_by_zero_inf_real', bits_of_float64(result_div_3.real))\nprobe('div_neg_inf_nan_by_zero_inf_imag', bits_of_float64(result_div_3.imag))\n\n# Case 4: Multiply with special values\nz4 = complex(1e200, 1e200)\nw4 = complex(1e200, 1e200)\nresult_mul_4 = mul_jit(z4, w4)\nprobe('mul_large_by_large_real', bits_of_float64(result_mul_4.real))\nprobe('mul_large_by_large_imag', bits_of_float64(result_mul_4.imag))\n\n# Case 5: Pure Python reference (CPython)\npy_mul_1 = z1 * w1\nprobe('py_mul_inf_times_zero_real', bits_of_float64(py_mul_1.real))\nprobe('py_mul_inf_times_zero_imag', bits_of_float64(py_mul_1.imag))\n\npy_div_2 = z2 / w2\nprobe('py_div_inf_by_inf_real', bits_of_float64(py_div_2.real))\nprobe('py_div_inf_by_inf_imag', bits_of_float64(py_div_2.imag))\n\npy_div_3 = z3 / w3\nprobe('py_div_neg_inf_nan_by_zero_inf_real', bits_of_float64(py_div_3.real))\nprobe('py_div_neg_inf_nan_by_zero_inf_imag', bits_of_float64(py_div_3.imag))\n",
+        "reported_examples": "import numba\nimport numpy as np\nfrom numba import jit, types\nimport struct\nimport math\nimport sys\nimport os\nsys.path.insert(0, '/workspace/buggy/numba/tests')\nfrom complex_usecases import mul_usecase, div_usecase, special_values, QNAN_NEG\nimport itertools\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)\", \"z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)\", [], \"0x7ff8000000000000\"], [\"mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)\", \"mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)\", [], \"Matches CPython 3.14+ _Py_c_prod() NaN-recovery result (recovered infinities, not nan+nanj)\"], [\"div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)\", \"div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)\", [], \"Matches CPython 3.14+ _Py_c_quot() NaN-recovery result (recovered infinities, not nan+nanj)\"], [\"cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)\", \"cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)\", [], \"assertRaises(ZeroDivisionError)\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nimport numba\nfrom numba import types\nfrom numba.core import config\nimport itertools\nimport math\n\n# Create QNAN_NEG (negative NaN)\nQNAN_NEG = float('nan')\nQNAN_NEG = np.float64(np.float64('-nan'))\n\n# Define special_values function\ndef special_values():\n    \"\"\"Return special complex128 values for testing\"\"\"\n    return [\n        complex(0.0, 0.0),\n        complex(-0.0, -0.0),\n        complex(0.0, -0.0),\n        complex(-0.0, 0.0),\n        complex(float('inf'), 0.0),\n        complex(float('-inf'), 0.0),\n        complex(0.0, float('inf')),\n        complex(0.0, float('-inf')),\n        complex(float('inf'), float('inf')),\n        complex(float('inf'), float('-inf')),\n        complex(float('-inf'), float('inf')),\n        complex(float('-inf'), float('-inf')),\n        complex(float('nan'), 0.0),\n        complex(0.0, float('nan')),\n        complex(float('nan'), float('nan')),\n        complex(1.0, 1.0),\n        complex(1.0, -1.0),\n        complex(-1.0, 1.0),\n        complex(-1.0, -1.0),\n    ]\n\n# Compile c128_div function\n@numba.njit\ndef c128_div(z, w):\n    return z / w\n\n# Test 1: z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)\ntry:\n    z = complex(float('-inf'), float('nan'))\n    w = complex(-0.0, float('-inf'))\n    result = c128_div(z, w)\n    probe(\"z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)\", result)\nexcept Exception as e:\n    probe_exception(\"z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)\", e)\n\n# Compile mul_usecase\n@numba.njit\ndef mul_usecase(x, y):\n    return x * y\n\n# Test 2: mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags\ntry:\n    results = []\n    for x, y in itertools.product(special_values(), special_values()):\n        results.append(mul_usecase(x, y))\n    probe(\"mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)\", results)\nexcept Exception as e:\n    probe_exception(\"mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)\", e)\n\n# Compile div_usecase\n@numba.njit\ndef div_usecase(x, y):\n    return x / y\n\n# Test 3: div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags\ntry:\n    results = []\n    for x, y in itertools.product(special_values(), special_values()):\n        results.append(div_usecase(x, y))\n    probe(\"div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)\", results)\nexcept Exception as e:\n    probe_exception(\"div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)\", e)\n\n# Test 4: cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)]\n@numba.njit\ndef cfunc(numer, denom):\n    return numer / denom\n\ntry:\n    results = []\n    denoms = [0j, complex(0.0, 0.0), complex(-0.0, -0.0), complex(0.0, -0.0), complex(-0.0, 0.0)]\n    for denom in denoms:\n        results.append(cfunc(1+1j, denom))\n    probe(\"cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)\", results)\nexcept Exception as e:\n    probe_exception(\"cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)\", e)"
+      },
+      "fixed": {
+        "reported_examples": "import numba\nimport numpy as np\nfrom numba import jit, types\nimport struct\nimport math\nimport sys\nimport os\nsys.path.insert(0, '/workspace/buggy/numba/tests')\nfrom complex_usecases import mul_usecase, div_usecase, special_values, QNAN_NEG\nimport itertools\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)\", \"z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)\", [], \"0x7ff8000000000000\"], [\"mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)\", \"mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)\", [], \"Matches CPython 3.14+ _Py_c_prod() NaN-recovery result (recovered infinities, not nan+nanj)\"], [\"div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)\", \"div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)\", [], \"Matches CPython 3.14+ _Py_c_quot() NaN-recovery result (recovered infinities, not nan+nanj)\"], [\"cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)\", \"cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)\", [], \"assertRaises(ZeroDivisionError)\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nimport numba\nfrom numba import types\nfrom numba.core import config\nimport itertools\nimport math\n\n# Create QNAN_NEG (negative NaN)\nQNAN_NEG = float('nan')\nQNAN_NEG = np.float64(np.float64('-nan'))\n\n# Define special_values function\ndef special_values():\n    \"\"\"Return special complex128 values for testing\"\"\"\n    return [\n        complex(0.0, 0.0),\n        complex(-0.0, -0.0),\n        complex(0.0, -0.0),\n        complex(-0.0, 0.0),\n        complex(float('inf'), 0.0),\n        complex(float('-inf'), 0.0),\n        complex(0.0, float('inf')),\n        complex(0.0, float('-inf')),\n        complex(float('inf'), float('inf')),\n        complex(float('inf'), float('-inf')),\n        complex(float('-inf'), float('inf')),\n        complex(float('-inf'), float('-inf')),\n        complex(float('nan'), 0.0),\n        complex(0.0, float('nan')),\n        complex(float('nan'), float('nan')),\n        complex(1.0, 1.0),\n        complex(1.0, -1.0),\n        complex(-1.0, 1.0),\n        complex(-1.0, -1.0),\n    ]\n\n# Compile c128_div function\n@numba.njit\ndef c128_div(z, w):\n    return z / w\n\n# Test 1: z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)\ntry:\n    z = complex(float('-inf'), float('nan'))\n    w = complex(-0.0, float('-inf'))\n    result = c128_div(z, w)\n    probe(\"z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)\", result)\nexcept Exception as e:\n    probe_exception(\"z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)\", e)\n\n# Compile mul_usecase\n@numba.njit\ndef mul_usecase(x, y):\n    return x * y\n\n# Test 2: mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags\ntry:\n    results = []\n    for x, y in itertools.product(special_values(), special_values()):\n        results.append(mul_usecase(x, y))\n    probe(\"mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)\", results)\nexcept Exception as e:\n    probe_exception(\"mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)\", e)\n\n# Compile div_usecase\n@numba.njit\ndef div_usecase(x, y):\n    return x / y\n\n# Test 3: div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags\ntry:\n    results = []\n    for x, y in itertools.product(special_values(), special_values()):\n        results.append(div_usecase(x, y))\n    probe(\"div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)\", results)\nexcept Exception as e:\n    probe_exception(\"div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)\", e)\n\n# Test 4: cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)]\n@numba.njit\ndef cfunc(numer, denom):\n    return numer / denom\n\ntry:\n    results = []\n    denoms = [0j, complex(0.0, 0.0), complex(-0.0, -0.0), complex(0.0, -0.0), complex(-0.0, 0.0)]\n    for denom in denoms:\n        results.append(cfunc(1+1j, denom))\n    probe(\"cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)\", results)\nexcept Exception as e:\n    probe_exception(\"cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)\", e)"
+      }
+    },
+    "report": {
+      "status": "NOT_REPRODUCED",
+      "rationale": "test passes on BOTH revisions (it does not expose the bug); the numerical probe still shows the defect on fixed",
+      "transition": "pass->pass",
+      "fail_to_pass": false,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "not_reproduced",
+      "success_criterion": "The reproducing tests FAIL at buggy commit 0d0938a717dbe464dfda3448f3f8571d2c606978 (on Python 3.14+, with only the PR's test files grafted): failures must be NaN-recovery mismatches between Numba-compiled complex128 mul/div and CPython 3.14 (e.g. bit pattern 0xfff8000000000010 vs 0x7ff8000000000000). The same selectors would pass once the numbers.py fix (43b83d9a) is applied; no source fix may be applied while reproducing.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 2,
+            "failed": null,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 2,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "buggy_complex_multiply_divide_bits",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "mul_inf_times_zero_real": -2251799813685248,
+              "mul_inf_times_zero_imag": -2251799813685248,
+              "div_inf_by_inf_real": -2251799813685248,
+              "div_inf_by_inf_imag": -2251799813685248,
+              "div_neg_inf_nan_by_zero_inf_real": 9221120237041090560,
+              "div_neg_inf_nan_by_zero_inf_imag": 9221120237041090560,
+              "mul_large_by_large_real": -2251799813685248,
+              "mul_large_by_large_imag": 9218868437227405312,
+              "py_mul_inf_times_zero_real": -2251799813685248,
+              "py_mul_inf_times_zero_imag": -2251799813685248,
+              "py_div_inf_by_inf_real": -2251799813685248,
+              "py_div_inf_by_inf_imag": -2251799813685248,
+              "py_div_neg_inf_nan_by_zero_inf_real": -2251799813685248,
+              "py_div_neg_inf_nan_by_zero_inf_imag": 9221120237041090560
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "described_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced NaN",
+                "produced Inf"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced NaN",
+                "produced Inf"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)": {
+                "real": "nan",
+                "imag": "nan"
+              },
+              "mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)": [
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                "\u2026 311 more"
+              ],
+              "div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)": {
+                "raised": "ZeroDivisionError",
+                "message": "complex division by zero",
+                "origin": "/workspace/buggy/.venv/lib/python3.10/site-packages/numba/cpython/numbers.py",
+                "in_repository": false
+              },
+              "cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)": {
+                "raised": "ZeroDivisionError",
+                "message": "complex division by zero",
+                "origin": "/workspace/buggy/.venv/lib/python3.10/site-packages/numba/cpython/numbers.py",
+                "in_repository": false
+              }
+            },
+            "fixed_values": {
+              "z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)": {
+                "real": "nan",
+                "imag": "nan"
+              },
+              "mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)": [
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                "\u2026 311 more"
+              ],
+              "div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)": {
+                "raised": "ZeroDivisionError",
+                "message": "complex division by zero",
+                "origin": "/workspace/fixed/.venv/lib/python3.10/site-packages/numba/cpython/numbers.py",
+                "in_repository": false
+              },
+              "cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)": {
+                "raised": "ZeroDivisionError",
+                "message": "complex division by zero",
+                "origin": "/workspace/fixed/.venv/lib/python3.10/site-packages/numba/cpython/numbers.py",
+                "in_repository": false
+              }
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: ImportError: cannot import name 'special_values' from 'complex_usecases' (/workspace/buggy/numba/tests/complex_usecases.py)"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: ImportError: cannot import name 'special_values' from 'complex_usecases' (/workspace/buggy/numba/tests/complex_usecases.py)"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          }
+        ],
+        "examples": [
+          {
+            "input": "z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)",
+            "expected_output": "real bits = 0x7ff8000000000000 (cpython_result z / w)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "real bits = 0xfff8000000000010 (negative NaN propagated)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)",
+              "observed": {
+                "real": "nan",
+                "imag": "nan"
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)",
+              "observed": {
+                "real": "nan",
+                "imag": "nan"
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)",
+            "expected_output": "Matches CPython 3.14+ _Py_c_prod() NaN-recovery result (recovered infinities, not nan+nanj)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Numba result for inf-producing products is nan+nanj (no _Py_c_prod NaN recovery), differing from CPython on 3.14",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)",
+              "observed": [
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                "\u2026 311 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)",
+              "observed": [
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                "\u2026 311 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)",
+            "expected_output": "Matches CPython 3.14+ _Py_c_quot() NaN-recovery result (recovered infinities, not nan+nanj)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Numba result for inf-producing quotients is nan+nanj (no _Py_c_quot NaN recovery), differing from CPython on 3.14",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)",
+            "expected_output": "assertRaises(ZeroDivisionError)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Evidence does not assert a specific buggy value; zero-division guard/ZeroDivisionError is what the fix adds",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 13,
+            "n_failed": 5,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 6,
+            "n_failed": 2,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-08-03T07:30:29-07:00",
+        "fixed_commit_date": "2026-08-12T08:08:01-05:00",
+        "reproducing_test_present": true,
+        "build_detected": "setup.py:ext_modules",
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-08-12T08:08:01-05:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.10/site-packages/numba/__init__.py",
+            "build_requires": [
+              "setuptools",
+              "wheel"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [
+              "llvmlite"
+            ],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.2.6",
+              "pandas": "2.3.3",
+              "matplotlib": "3.10.9",
+              "pyparsing": "3.3.2",
+              "setuptools": "84.0.0",
+              "wheel": "0.48.0"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (setup.py): started\n  Preparing metadata (setup.py): finished with status 'done'\nCollecting llvmlite<0.51,>=0.50.0dev0\n  Downloading llvmlite-0.50.0rc3-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (59.7 MB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 59.7/59.7 MB 98.6 MB/s eta 0:00:00\nRequirement already satisfied: numpy>=1.22 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from numba==0+unknown) (2.2.6)\nBuilding wheels for collected packages: numba\n  Building wheel for numba (setup.py): started\n  Building wheel for numba (setup.py): finished with status 'done'\n  Created wheel for numba: filename=numba-0+unknown-cp310-cp310-linux_x86_64.whl size=3511368 sha256=45d0dfd8ef66a02626d753c5c7478bc94a069e4ef0e15bcd73920fe3be6ce7bd\n  Stored in directory: /tmp/pip-ephem-wheel-cache-266_f74d/wheels/ed/f7/86/c0f1039ac56a217e74c3b8eda25eb10695c47995525191ed3e\nSuccessfully built numba\nInstalling collected packages: llvmlite, numba\n  Attempting uninstall: llvmlite\n    Found existing installation: llvmlite 0.49.0\n    Uninstalling llvmlite-0.49.0:\n      Successfully uninstalled llvmlite-0.49.0\nSuccessfully installed llvmlite-0.50.0rc3 numba-0+unknown\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.10/site-packages/numba/__init__.py",
+            "build_requires": [
+              "setuptools",
+              "wheel"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [
+              "llvmlite"
+            ],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.2.6",
+              "pandas": "2.3.3",
+              "matplotlib": "3.10.9",
+              "pyparsing": "3.3.2",
+              "setuptools": "84.0.0",
+              "wheel": "0.48.0"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (setup.py): started\n  Preparing metadata (setup.py): finished with status 'done'\nCollecting llvmlite<0.51,>=0.50.0dev0\n  Downloading llvmlite-0.50.0rc3-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (59.7 MB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 59.7/59.7 MB 98.5 MB/s eta 0:00:00\nRequirement already satisfied: numpy>=1.22 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from numba==0+unknown) (2.2.6)\nBuilding wheels for collected packages: numba\n  Building wheel for numba (setup.py): started\n  Building wheel for numba (setup.py): finished with status 'done'\n  Created wheel for numba: filename=numba-0+unknown-cp310-cp310-linux_x86_64.whl size=3511963 sha256=bcfe81a169937995200935ebe01493bb007d6ba77fcff8eeaa632f61bc977be6\n  Stored in directory: /tmp/pip-ephem-wheel-cache-omk4dbyc/wheels/e7/d9/e6/2becdd66929be2a2e7d7caf6055a3b033c7fa76967b6c0543a\nSuccessfully built numba\nInstalling collected packages: llvmlite, numba\n  Attempting uninstall: llvmlite\n    Found existing installation: llvmlite 0.49.0\n    Uninstalling llvmlite-0.49.0:\n      Successfully uninstalled llvmlite-0.49.0\nSuccessfully installed llvmlite-0.50.0rc3 numba-0+unknown\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 2,
+        "failed": null,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 2,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "pass->pass",
+      "fail_to_pass": false,
+      "numeric": {
+        "n_pairs": 3,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "buggy_complex_multiply_divide_bits",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "mul_inf_times_zero_real": -2251799813685248,
+              "mul_inf_times_zero_imag": -2251799813685248,
+              "div_inf_by_inf_real": -2251799813685248,
+              "div_inf_by_inf_imag": -2251799813685248,
+              "div_neg_inf_nan_by_zero_inf_real": 9221120237041090560,
+              "div_neg_inf_nan_by_zero_inf_imag": 9221120237041090560,
+              "mul_large_by_large_real": -2251799813685248,
+              "mul_large_by_large_imag": 9218868437227405312,
+              "py_mul_inf_times_zero_real": -2251799813685248,
+              "py_mul_inf_times_zero_imag": -2251799813685248,
+              "py_div_inf_by_inf_real": -2251799813685248,
+              "py_div_inf_by_inf_imag": -2251799813685248,
+              "py_div_neg_inf_nan_by_zero_inf_real": -2251799813685248,
+              "py_div_neg_inf_nan_by_zero_inf_imag": 9221120237041090560
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "described_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "produced NaN",
+                "produced Inf"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "produced NaN",
+                "produced Inf"
+              ]
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)": {
+                "real": "nan",
+                "imag": "nan"
+              },
+              "mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)": [
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                "\u2026 311 more"
+              ],
+              "div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)": {
+                "raised": "ZeroDivisionError",
+                "message": "complex division by zero",
+                "origin": "/workspace/buggy/.venv/lib/python3.10/site-packages/numba/cpython/numbers.py",
+                "in_repository": false
+              },
+              "cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)": {
+                "raised": "ZeroDivisionError",
+                "message": "complex division by zero",
+                "origin": "/workspace/buggy/.venv/lib/python3.10/site-packages/numba/cpython/numbers.py",
+                "in_repository": false
+              }
+            },
+            "fixed_values": {
+              "z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)": {
+                "real": "nan",
+                "imag": "nan"
+              },
+              "mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)": [
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                "\u2026 311 more"
+              ],
+              "div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)": {
+                "raised": "ZeroDivisionError",
+                "message": "complex division by zero",
+                "origin": "/workspace/fixed/.venv/lib/python3.10/site-packages/numba/cpython/numbers.py",
+                "in_repository": false
+              },
+              "cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)": {
+                "raised": "ZeroDivisionError",
+                "message": "complex division by zero",
+                "origin": "/workspace/fixed/.venv/lib/python3.10/site-packages/numba/cpython/numbers.py",
+                "in_repository": false
+              }
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: ImportError: cannot import name 'special_values' from 'complex_usecases' (/workspace/buggy/numba/tests/complex_usecases.py)"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: ImportError: cannot import name 'special_values' from 'complex_usecases' (/workspace/buggy/numba/tests/complex_usecases.py)"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 4,
+        "n_judged": 2,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 2,
+        "n_contested": 0,
+        "unobserved": [
+          "div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)",
+          "cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)"
+        ],
+        "verdict": "not_reproduced",
+        "examples": [
+          {
+            "input": "z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)",
+            "expected_output": "real bits = 0x7ff8000000000000 (cpython_result z / w)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "real bits = 0xfff8000000000010 (negative NaN propagated)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)",
+              "observed": {
+                "real": "nan",
+                "imag": "nan"
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "z = complex(float('-inf'), QNAN_NEG); w = complex(-0.0, float('-inf')); Numba-compiled c128_div(z, w)",
+              "observed": {
+                "real": "nan",
+                "imag": "nan"
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)",
+            "expected_output": "Matches CPython 3.14+ _Py_c_prod() NaN-recovery result (recovered infinities, not nan+nanj)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Numba result for inf-producing products is nan+nanj (no _Py_c_prod NaN recovery), differing from CPython on 3.14",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)",
+              "observed": [
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                "\u2026 311 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "mul_usecase(x, y) = x * y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_mul)",
+              "observed": [
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": -0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": -0.0
+                },
+                {
+                  "real": 0.0,
+                  "imag": 0.0
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                {
+                  "real": "nan",
+                  "imag": "nan"
+                },
+                "\u2026 311 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "div_usecase(x, y) = x / y for x, y in itertools.product(special_values(), special_values()), types.complex128, no_pyobj_flags (TestComplexNaNRecovery.test_div)",
+            "expected_output": "Matches CPython 3.14+ _Py_c_quot() NaN-recovery result (recovered infinities, not nan+nanj)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Numba result for inf-producing quotients is nan+nanj (no _Py_c_quot NaN recovery), differing from CPython on 3.14",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "cfunc(1+1j, denom) for denom in [0j, complex(0.0,0.0), complex(-0.0,-0.0), complex(0.0,-0.0), complex(-0.0,0.0)] (TestComplexNaNRecovery.test_div_zero)",
+            "expected_output": "assertRaises(ZeroDivisionError)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Evidence does not assert a specific buggy value; zero-division guard/ZeroDivisionError is what the fix adds",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": null,
+              "observed": null,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 13,
+          "n_failed": 5,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 6,
+          "n_failed": 2,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "The reproducing tests FAIL at buggy commit 0d0938a717dbe464dfda3448f3f8571d2c606978 (on Python 3.14+, with only the PR's test files grafted): failures must be NaN-recovery mismatches between Numba-compiled complex128 mul/div and CPython 3.14 (e.g. bit pattern 0xfff8000000000010 vs 0x7ff8000000000000). The same selectors would pass once the numbers.py fix (43b83d9a) is applied; no source fix may be applied while reproducing."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-08-03T07:30:29-07:00",
+      "fixed_commit_date": "2026-08-12T08:08:01-05:00",
+      "reproducing_test_present": true,
+      "build_detected": "setup.py:ext_modules",
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-08-12T08:08:01-05:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.10/site-packages/numba/__init__.py",
+          "build_requires": [
+            "setuptools",
+            "wheel"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [
+            "llvmlite"
+          ],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.2.6",
+            "pandas": "2.3.3",
+            "matplotlib": "3.10.9",
+            "pyparsing": "3.3.2",
+            "setuptools": "84.0.0",
+            "wheel": "0.48.0"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (setup.py): started\n  Preparing metadata (setup.py): finished with status 'done'\nCollecting llvmlite<0.51,>=0.50.0dev0\n  Downloading llvmlite-0.50.0rc3-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (59.7 MB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 59.7/59.7 MB 98.6 MB/s eta 0:00:00\nRequirement already satisfied: numpy>=1.22 in /workspace/.venvs/buggy/lib/python3.10/site-packages (from numba==0+unknown) (2.2.6)\nBuilding wheels for collected packages: numba\n  Building wheel for numba (setup.py): started\n  Building wheel for numba (setup.py): finished with status 'done'\n  Created wheel for numba: filename=numba-0+unknown-cp310-cp310-linux_x86_64.whl size=3511368 sha256=45d0dfd8ef66a02626d753c5c7478bc94a069e4ef0e15bcd73920fe3be6ce7bd\n  Stored in directory: /tmp/pip-ephem-wheel-cache-266_f74d/wheels/ed/f7/86/c0f1039ac56a217e74c3b8eda25eb10695c47995525191ed3e\nSuccessfully built numba\nInstalling collected packages: llvmlite, numba\n  Attempting uninstall: llvmlite\n    Found existing installation: llvmlite 0.49.0\n    Uninstalling llvmlite-0.49.0:\n      Successfully uninstalled llvmlite-0.49.0\nSuccessfully installed llvmlite-0.50.0rc3 numba-0+unknown\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.10/site-packages/numba/__init__.py",
+          "build_requires": [
+            "setuptools",
+            "wheel"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [
+            "llvmlite"
+          ],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.2.6",
+            "pandas": "2.3.3",
+            "matplotlib": "3.10.9",
+            "pyparsing": "3.3.2",
+            "setuptools": "84.0.0",
+            "wheel": "0.48.0"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (setup.py): started\n  Preparing metadata (setup.py): finished with status 'done'\nCollecting llvmlite<0.51,>=0.50.0dev0\n  Downloading llvmlite-0.50.0rc3-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (59.7 MB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 59.7/59.7 MB 98.5 MB/s eta 0:00:00\nRequirement already satisfied: numpy>=1.22 in /workspace/.venvs/fixed/lib/python3.10/site-packages (from numba==0+unknown) (2.2.6)\nBuilding wheels for collected packages: numba\n  Building wheel for numba (setup.py): started\n  Building wheel for numba (setup.py): finished with status 'done'\n  Created wheel for numba: filename=numba-0+unknown-cp310-cp310-linux_x86_64.whl size=3511963 sha256=bcfe81a169937995200935ebe01493bb007d6ba77fcff8eeaa632f61bc977be6\n  Stored in directory: /tmp/pip-ephem-wheel-cache-omk4dbyc/wheels/e7/d9/e6/2becdd66929be2a2e7d7caf6055a3b033c7fa76967b6c0543a\nSuccessfully built numba\nInstalling collected packages: llvmlite, numba\n  Attempting uninstall: llvmlite\n    Found existing installation: llvmlite 0.49.0\n    Uninstalling llvmlite-0.49.0:\n      Successfully uninstalled llvmlite-0.49.0\nSuccessfully installed llvmlite-0.50.0rc3 numba-0+unknown\n\n[notice] A new release of pip is available: 23.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 7,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce PR#10528's complex128 NaN-recovery bug: verify that on Python 3.14+, Numba's compiled complex multiplication/division produces different bit patterns for special values than CPython 3.14's _Py_c_prod/_Py_c_quot NaN recovery.",
+          "milestones": [
+            "buggy_environment_ready [buggy] \u2014 Set up the buggy revision environment with dependencies and verify Python 3.14+ is available (3 steps, verify: steps_succeeded)",
+            "graft_test_infrastructure [buggy] \u2014 Add the test infrastructure and test cases that PR#10528 introduces (they don't exist in buggy commit) (8 steps, verify: steps_succeeded)",
+            "verify_test_structure [buggy] \u2014 Verify that the grafted test infrastructure is properly in place and importable (3 steps, verify: steps_succeeded)",
+            "observe_buggy_behavior_with_probe [buggy] \u2014 Directly probe the buggy revision to capture NaN-recovery mismatches in complex multiply/divide (1 steps, verify: probe_ran)",
+            "test_buggy_fails [buggy] \u2014 Run the reproducing tests against buggy revision and verify they fail (1 steps, verify: test_ran, test_fails)",
+            "fixed_environment_ready [fixed] \u2014 Set up the fixed revision environment and verify it is ready (3 steps, verify: steps_succeeded)",
+            "test_fixed_passes [fixed] \u2014 Run the reproducing tests against fixed revision and verify they pass (1 steps, verify: test_ran, test_passes)",
+            "observe_fixed_behavior_with_probe [fixed] \u2014 Directly probe the fixed revision to verify NaN-recovery matches CPython 3.14+ (1 steps, verify: probe_ran, probe_clean)",
+            "verify_revisions_differ [fixed] \u2014 Confirm that buggy and fixed revisions produce different results for complex NaN-recovery (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python --version && python -c \"from numba.misc import utils; print('PYVERSION:', utils.PYVERSION)\"",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 0.46
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -c \"import numpy; import llvmlite; print('numpy:', numpy.__version__, 'llvmlite:', llvmlite.__version__)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.27
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c \"import numba; print('Numba version:', numba.__version__)\"",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 0.4
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_ready",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`python --version && python -c \"from numba.misc import utils; print('PYVERSION:',` exited 1: me '_typeconv' from 'numba.core.typeconv' (/workspace/buggy/numba/core/typeconv/__init__.py)'.\nFor help, please visit:\n\nhttps://numba.readthedocs.io/en/stable/user/faq.html#numba-could-not-be-imported; `cd /workspace/buggy && python -c \"import numba; print('Numba version:', numba.__` exited 1: me '_typeconv' from 'numba.core.typeconv' (/workspace/buggy/numba/core/typeconv/__init__.py)'.\nFor help, please visit:\n\nhttps://numba.readthedocs.io/en/stable/user/faq.html#numba-could-not-be-imported"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce PR#10528's complex128 NaN-recovery bug by measuring Numba's compiled complex multiply/divide against CPython 3.14+ on both revisions.",
+          "milestones": [
+            "buggy_environment_setup [buggy] \u2014 Build and verify the buggy revision environment with a working Numba installation. (5 steps, verify: steps_succeeded)",
+            "buggy_nan_recovery_probe [buggy] \u2014 Directly measure Numba's complex128 multiply and divide NaN-recovery behavior on the buggy revision. (1 steps, verify: probe_ran)",
+            "fixed_environment_setup [fixed] \u2014 Build and verify the fixed revision environment with a working Numba installation. (5 steps, verify: steps_succeeded)",
+            "fixed_nan_recovery_probe [fixed] \u2014 Directly measure Numba's complex128 multiply and divide NaN-recovery behavior on the fixed revision. (1 steps, verify: probe_ran)",
+            "verify_nan_recovery_difference [fixed] \u2014 Confirm that buggy and fixed revisions produce different NaN-recovery results for complex multiply/divide. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python --version",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.14
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -m pip install --upgrade build wheel setuptools",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 2.41
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python setup.py build_ext --inplace 2>&1 | tail -20",
+        "purpose": "build",
+        "refused": "refused: buggy is ALREADY built and installed in buggy/.venv (the harness did it before you started), and this command would replace that install with an un-built source tree \u2014 the package then imports from nowhere and every test and probe fails on this revision only. Run tests and probes against the existing build instead; nothing needs building. Use `pip install` only for a MISSING third-party dependency, never for this package."
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c 'import numba; print(\"Numba version:\", numba.__version__); from numba.core import typeconv; print(\"typeconv imported OK\")'",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 0.42
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c 'from numba.misc import utils; print(\"PYVERSION:\", utils.PYVERSION)'",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 0.4
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_setup",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -c 'import numba; print(\"Numba version:\", numba.__` exited 1: me '_typeconv' from 'numba.core.typeconv' (/workspace/buggy/numba/core/typeconv/__init__.py)'.\nFor help, please visit:\n\nhttps://numba.readthedocs.io/en/stable/user/faq.html#numba-could-not-be-imported; `cd /workspace/buggy && python -c 'from numba.misc import utils; print(\"PYVERSION` exited 1: me '_typeconv' from 'numba.core.typeconv' (/workspace/buggy/numba/core/typeconv/__init__.py)'.\nFor help, please visit:\n\nhttps://numba.readthedocs.io/en/stable/user/faq.html#numba-could-not-be-imported"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "buggy_environment_setup",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 2,
+          "detail": [
+            "`cd /workspace/buggy && python -c 'import numba; print(\"Numba version:\", numba.__` exited 1: me '_typeconv' from 'numba.core.typeconv' (/workspace/buggy/numba/core/typeconv/__init__.py)'.\nFor help, please visit:\n\nhttps://numba.readthedocs.io/en/stable/user/faq.html#numba-could-not-be-imported; `cd /workspace/buggy && python -c 'from numba.misc import utils; print(\"PYVERSION` exited 1: me '_typeconv' from 'numba.core.typeconv' (/workspace/buggy/numba/core/typeconv/__init__.py)'.\nFor help, please visit:\n\nhttps://numba.readthedocs.io/en/stable/user/faq.html#numba-could-not-be-imported"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "buggy_complex_multiply_divide",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(buggy_complex_multiply_divide) \u2014 Measure bit patterns of complex multiply/divide results and compare against CPython 3.14+ if available"
+      },
+      {
+        "verification": {
+          "milestone": "buggy_nan_recovery_probe",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce PR#10528's complex128 NaN-recovery bug by directly measuring Numba's compiled complex multiply/divide results on special values against CPython.",
+          "milestones": [
+            "verify_buggy_import [buggy] \u2014 Verify the pre-built Numba in the buggy revision is importable and working. (2 steps, verify: steps_succeeded)",
+            "buggy_nan_recovery_probe [buggy] \u2014 Directly measure Numba's complex128 multiply and divide NaN-recovery behavior on the buggy revision by examining bit patterns and special values. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "verify_fixed_import [fixed] \u2014 Verify the pre-built Numba in the fixed revision is importable and working. (2 steps, verify: steps_succeeded)",
+            "fixed_nan_recovery_probe [fixed] \u2014 Directly measure Numba's complex128 multiply and divide NaN-recovery behavior on the fixed revision using the same special value test cases. (1 steps, verify: probe_ran, probe_clean)",
+            "verify_nan_recovery_difference [fixed] \u2014 Confirm that buggy and fixed revisions produce different NaN-recovery results for complex multiply/divide operations. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c 'import numba; print(\"Numba imported successfully from:\", numba.__file__); import numba.cpython.numbers as n; print(\"numbers module loaded\")'",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 0.39
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c 'import sys; print(\"Python version:\", sys.version)'",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.16
+      },
+      {
+        "verification": {
+          "milestone": "verify_buggy_import",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -c 'import numba; print(\"Numba imported successful` exited 1: me '_typeconv' from 'numba.core.typeconv' (/workspace/buggy/numba/core/typeconv/__init__.py)'.\nFor help, please visit:\n\nhttps://numba.readthedocs.io/en/stable/user/faq.html#numba-could-not-be-imported"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "verify_buggy_import",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 3,
+          "detail": [
+            "`cd /workspace/buggy && python -c 'import numba; print(\"Numba imported successful` exited 1: me '_typeconv' from 'numba.core.typeconv' (/workspace/buggy/numba/core/typeconv/__init__.py)'.\nFor help, please visit:\n\nhttps://numba.readthedocs.io/en/stable/user/faq.html#numba-could-not-be-imported"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "buggy_complex_multiply_divide_bits",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          -2251799813685248.0,
+          -2251799813685248.0,
+          -2251799813685248.0,
+          -2251799813685248.0,
+          9.221120237041091e+18,
+          9.221120237041091e+18,
+          -2251799813685248.0,
+          9.218868437227405e+18,
+          -2251799813685248.0,
+          -2251799813685248.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_nan_recovery_probe",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "no probe exhibited the defect on buggy (values [-2251799813685248.0, -2251799813685248.0, -2251799813685248.0, -2251799813685248.0])"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce PR#10528's complex128 NaN-recovery bug by directly measuring Numba's compiled complex multiply/divide results on special values against CPython on both buggy and fixed revisions.",
+          "milestones": [
+            "verify_fixed_import [fixed] \u2014 Verify the pre-built Numba in the fixed revision is importable and working. (2 steps, verify: steps_succeeded)",
+            "fixed_nan_recovery_probe [fixed] \u2014 Directly measure Numba's complex128 multiply and divide NaN-recovery behavior on the fixed revision using the reported special values. (1 steps, verify: probe_ran, probe_clean)",
+            "buggy_nan_recovery_probe_corrected [buggy] \u2014 Directly measure Numba's complex128 multiply and divide NaN-recovery behavior on the buggy revision using the same special values test cases. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "verify_nan_recovery_difference [fixed] \u2014 Confirm that buggy and fixed revisions produce different NaN-recovery results for complex multiply/divide operations. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -c 'import numba; print(\"Numba version:\", numba.__version__); from numba.misc import utils; print(\"Python version:\", utils.PYVERSION)'",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 0.48
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -c 'import numpy as np; import numba; from numba import jit, types; print(\"Imports successful\")'",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 0.45
+      },
+      {
+        "verification": {
+          "milestone": "verify_fixed_import",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/fixed && python -c 'import numba; print(\"Numba version:\", numba.__` exited 1: me '_typeconv' from 'numba.core.typeconv' (/workspace/fixed/numba/core/typeconv/__init__.py)'.\nFor help, please visit:\n\nhttps://numba.readthedocs.io/en/stable/user/faq.html#numba-could-not-be-imported; `cd /workspace/fixed && python -c 'import numpy as np; import numba; from numba i` exited 1: me '_typeconv' from 'numba.core.typeconv' (/workspace/fixed/numba/core/typeconv/__init__.py)'.\nFor help, please visit:\n\nhttps://numba.readthedocs.io/en/stable/user/faq.html#numba-could-not-be-imported"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs numba.tests.test_complex -k test_mul -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.64
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs numba.tests.test_complex -k test_mul -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.0
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs numba.tests.test_complex -k test_div -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.74
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs numba.tests.test_complex -k test_div -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 2.12
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs numba.tests.test_complex -k test_div_zero -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.01
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs numba.tests.test_complex -k test_div_zero -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 0.9
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs numba.tests.test_complex -k test_log_base -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.85
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs numba.tests.test_complex -k test_log_base -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 2.38
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_log_base",
+          "command": "python -I -m pytest --pyargs numba.tests.test_complex -k test_log_base -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "numba",
+          "statuses": {
+            "buggy": "pass",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 0,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_mul",
+              "command": "python -I -m pytest --pyargs numba.tests.test_complex -k test_mul -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "no_tests",
+              "fixed": "no_tests"
+            },
+            {
+              "case": "test_div",
+              "command": "python -I -m pytest --pyargs numba.tests.test_complex -k test_div -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "pass",
+              "fixed": "pass"
+            },
+            {
+              "case": "test_div_zero",
+              "command": "python -I -m pytest --pyargs numba.tests.test_complex -k test_div_zero -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "no_tests",
+              "fixed": "no_tests"
+            },
+            {
+              "case": "test_log_base",
+              "command": "python -I -m pytest --pyargs numba.tests.test_complex -k test_log_base -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "pass",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_error",
+        "pathology": null,
+        "reasons": [
+          "the probe itself could not run (ImportError: attempted relative import with no known parent package) \u2014 fix the probe, not the revision"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_error",
+        "pathology": null,
+        "reasons": [
+          "the probe itself could not run (ImportError: attempted relative import with no known parent package) \u2014 fix the probe, not the revision"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: ImportError: cannot import name 'c128_div' from 'complex_usecases' (/workspace/buggy/numba/tests/complex_usecases.py)"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: ImportError: cannot import name 'c128_div' from 'complex_usecases' (/workspace/buggy/numba/tests/complex_usecases.py)"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: ImportError: cannot import name 'special_values' from 'complex_usecases' (/workspace/buggy/numba/tests/complex_usecases.py)"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: ImportError: cannot import name 'special_values' from 'complex_usecases' (/workspace/buggy/numba/tests/complex_usecases.py)"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "exception",
+            "checked": 4,
+            "recorded": 0,
+            "error": null,
+            "could_not_evaluate": 0,
+            "traceback": "Traceback (most recent call last):\n  File \"/tmp/_numagent_runner.py\", line 158, in <module>\n    exec(compile(_ast.Module(body=_rest, type_ignores=[]), \"/tmp/_numagent_probe.py\", \"exec\"), _g)\n  File \"/tmp/_numagent_probe.py\", line 9, in <module>\n    from complex_usecases import mul_usecase, div_usecase, special_values, QNAN_NEG\nImportError: cannot import name 'special_values' from 'complex_usecases' (/workspace/buggy/numba/tests/complex_usecases.py)"
+          },
+          "fixed": {
+            "status": "exception",
+            "checked": 4,
+            "recorded": 0,
+            "error": null,
+            "could_not_evaluate": 0,
+            "traceback": "Traceback (most recent call last):\n  File \"/tmp/_numagent_runner.py\", line 158, in <module>\n    exec(compile(_ast.Module(body=_rest, type_ignores=[]), \"/tmp/_numagent_probe.py\", \"exec\"), _g)\n  File \"/tmp/_numagent_probe.py\", line 9, in <module>\n    from complex_usecases import mul_usecase, div_usecase, special_values, QNAN_NEG\nImportError: cannot import name 'special_values' from 'complex_usecases' (/workspace/buggy/numba/tests/complex_usecases.py)"
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced NaN",
+          "produced Inf"
+        ],
+        "expected": null,
+        "observed": [
+          "nan",
+          "nan",
+          0.0,
+          0.0,
+          0.0,
+          -0.0,
+          0.0,
+          0.0,
+          -0.0,
+          0.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced NaN",
+          "produced Inf"
+        ],
+        "expected": null,
+        "observed": [
+          "nan",
+          "nan",
+          0.0,
+          0.0,
+          0.0,
+          -0.0,
+          0.0,
+          0.0,
+          -0.0,
+          0.0
+        ]
+      },
+      {
+        "described_examples": {
+          "n_described": 4,
+          "buggy": {
+            "status": "ok",
+            "n_records": 4,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 4,
+            "target_reached": true
+          },
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "pass->pass",
+        "fail_to_pass": false,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "not_reproduced",
+        "examples": "0/2"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "NOT_REPRODUCED",
+        "rationale": "test passes on BOTH revisions (it does not expose the bug); the numerical probe still shows the defect on fixed"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "claude-haiku-4-5-20251001",
+      "calls": 7,
+      "input_tokens": 28838,
+      "output_tokens": 18471,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.121193
+    }
+  }
+]

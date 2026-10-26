@@ -1,0 +1,100 @@
+{
+  "input": "pipeline_no_historic/scikit-learn_33626/mined/scikit-learn__scikit-learn_33626.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 26134,
+    "output_tokens": 8261,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scikit-learn/scikit-learn",
+      "pr_number": 33626,
+      "reference": "https://github.com/scikit-learn/scikit-learn/pull/33626",
+      "buggy_commit": "6f8b95aa2234102acc3804fc8c7a3e6bd0506bfb",
+      "fixed_commit": "76e81962bc4c9e048b0e12e66c781f33c0706990",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7234,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the svd-vs-eigen disagreement in sklearn LinearDiscriminantAnalysis and QuadraticDiscriminantAnalysis at buggy commit 6f8b95aa2234 by building that revision from source, applying the PR test file, and running the solver-agreement tests. The buggy _solve_svd scales by 1/(n_samples - n_classes) while _solve_eigen uses the ML 1/n_samples covariance, so svd and eigen decision functions and coefficients differ. The fixed revision (fac = 1.0 / n_samples) should make them agree.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "scipy",
+            "joblib",
+            "threadpoolctl",
+            "pytest",
+            "cython",
+            "meson-python",
+            "ninja"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain with OpenMP support (gcc or clang)",
+            "git"
+          ],
+          "build_commands": [
+            "git checkout 6f8b95aa2234",
+            "git apply reproducing_test.patch (the PR test diff for sklearn/tests/test_discriminant_analysis.py)",
+            "pip install -r build requirements listed in pyproject.toml",
+            "pip install --no-build-isolation -e . (compile the Cython extensions at the buggy commit)"
+          ],
+          "pinned_because": []
+        },
+        "test_command": "pytest sklearn/tests/test_discriminant_analysis.py -q -p no:cacheprovider -k 'solver_agreement or lda_coefs or qda_coefs or qda_store_covariance or qda_priors or lda_orthogonality'",
+        "reproducing_test": "sklearn/tests/test_discriminant_analysis.py::test_lda_solver_agreement and sklearn/tests/test_discriminant_analysis.py::test_qda_solver_agreement",
+        "success_criterion": "On buggy 6f8b95aa2234 with the PR test file applied, test_lda_solver_agreement and test_qda_solver_agreement fail: assert_allclose raises AssertionError because the svd decision_function (and transform magnitudes for LDA) differ from eigen by the factor sqrt(n/(n-K)). On the fixed revision (fac = 1.0 / n_samples in _solve_svd, and the QDA svd path switched to ML covariance) both tests pass with assert_allclose default tolerances.",
+        "numerical_probe": "Fit LinearDiscriminantAnalysis(solver='svd') and solver='eigen' on the same data (module-level X, y, or make_blobs with n_samples=1000, 5 features, 2 classes) and compare coef_ with assert_allclose at default rtol=1e-7. On the buggy revision the ratio of svd to eigen coefficients should be about sqrt(n/(n-K)), not 1.",
+        "input_output_examples": [],
+        "risks": [
+          "The passages give no numeric values for X, y, X6, y6, coef_, intercept_, or decision functions, so the exact magnitude of the svd/eigen gap on the module-level data is unknown. The transition should still hold because the scaling factor sqrt(n/(n-K)) is deterministic, but the size of the gap depends on n.",
+          "X6 and y6 are referenced by the new test but not defined in the supplied passages. Take them from the test module at the PR head, and do not assume their contents.",
+          "The PR test diff also changes test_lda_orthogonality, test_qda_store_covariance, test_qda_priors (neg changed to 1e-30, data changed to X, y), and test_qda_coefs (n_samples 3000 to 100, rtol removed). Some of these may fail or behave differently on the buggy revision for reasons unrelated to the svd scaling. Base the transition on test_lda_solver_agreement and test_qda_solver_agreement, and treat the others as supporting evidence only.",
+          "test_qda_priors with neg=1e-30 is sensitive to floating-point precision and BLAS backend, so it could be platform-dependent and is not the selector for this transition.",
+          "The documented dependency constraints are unresolved template placeholders (|NumPyMinVersion| and similar) with no era ceiling. No numeric version is documented, so python_version and pinned versions are null and must be chosen as recent versions compatible with the buggy commit's build. This is not a documented or era-inferred pin.",
+          "The issue #32590 reproducer raises NotImplementedError for svd with shrinkage, so it cannot demonstrate the numerical discrepancy. Do not use it as the reproducer.",
+          "The issue #8212 reproducer uses unseeded np.random.randn, so results are non-deterministic. Use the seeded test data (global_random_seed or fixed data) instead.",
+          "The transition needs a compiled build of the buggy commit. Building a scikit-learn source checkout with an incompatible compiler, NumPy ABI, or Python version will fail before any test runs, so the build must be verified first.",
+          "No platform, architecture, or sanitizer is named in the evidence. The defect is pure-Python numerics on top of BLAS and LAPACK and is expected to appear on any x86_64 or aarch64 Linux build, but this is inferred and not stated.",
+          "The default assert_allclose tolerance (rtol=1e-7) is the threshold for the transition. A different BLAS could change last-digit results, but not the order-of-magnitude sqrt(n/(n-K)) gap, so the transition should be stable across BLAS backends."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "assert_allclose default rtol=1e-7, atol=0",
+          "reference_source": "The eigen solver (ML covariance, 1/n_samples) is the reference the svd solver must match.",
+          "why": "Solver agreement is the property under test. The PR changes svd to use the same ML covariance as eigen, so default-tolerance agreement between solvers is the correct check. The issue also states that the existing test compared only 1 decimal place, which is why the tolerance has been tightened."
+        },
+        "fails_on_buggy": "On the buggy revision, test_lda_solver_agreement and test_qda_solver_agreement call assert_allclose(decision_svd, decision_eigen) with default tolerances. The svd decision function uses the unbiased scaling 1/(n-K), so its coefficients differ from eigen's by about sqrt(n/(n-K)), and assert_allclose raises AssertionError.",
+        "passes_on_fixed": "On the fixed revision the svd and eigen solvers both use the 1/n_samples ML covariance, so their coef_, intercept_, transform magnitudes and decision functions agree to within default assert_allclose tolerance, and both tests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 8495,
+        "output_tokens": 4515,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 17639,
+        "output_tokens": 3746,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

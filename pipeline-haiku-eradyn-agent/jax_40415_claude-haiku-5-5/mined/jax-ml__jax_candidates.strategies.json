@@ -1,0 +1,96 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/jax_40415_claude-haiku-5-5/mined/jax-ml__jax_40415.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 16828,
+    "output_tokens": 6999,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "jax-ml/jax",
+      "pr_number": 40415,
+      "reference": "https://github.com/jax-ml/jax/pull/40415",
+      "buggy_commit": "cc95c6c81dc9e1384375dc0e4c4d5245a72f8313",
+      "fixed_commit": "6af60b85a2e49341bcfa8c219b02bc119bd55256",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 4484,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the buggy default tanh JVP on CPU by checking out cc95c6c81dc9 and running tests/lax_test.py::LaxTest::testTanhGradSymmetry. The test asserts bit-exact equality of jvp and grad at x and -x for g=1.3. On the buggy revision the formula (g + g*ans)*(1-ans) should break exact symmetry, so the first assertArraysEqual fails. On the fixed revision g*((1+ans)*(1-ans)) should make both sides identical, so the test passes. No compiled rebuild is needed because the change is Python-level in jax/_src/lax/lax.py, but jax and jaxlib versions are unconstrained by the evidence and must be chosen by the strategy.",
+        "needs_build": false,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "jax (source checkout at cc95c6c81dc9, installed editable)",
+            "jaxlib (CPU wheel matching the version declared in the jax tree at cc95c6c81dc9, e.g. read from jax/version.py)",
+            "numpy",
+            "pytest",
+            "absl-py",
+            "ml_dtypes",
+            "scipy"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "git checkout cc95c6c81dc9",
+            "pip install -e .",
+            "JAX_PLATFORMS=cpu python -c 'import jax; print(jax.__version__)'"
+          ],
+          "pinned_because": [
+            "jax and jaxlib have no documented constraint in the README and no era table entry, so the strategy chooses jaxlib to match the jax source version at the buggy commit; this is a choice, not a documented requirement",
+            "Python version is null in the evidence; choose a CPython version that the jax tree at that commit supports (era-inferred, not documented)",
+            "JAX_PLATFORMS=cpu pins the numerical backend to XLA CPU, since the evidence names XLA but no GPU or TPU platform"
+          ]
+        },
+        "test_command": "JAX_PLATFORMS=cpu python -m pytest tests/lax_test.py::LaxTest::testTanhGradSymmetry -x -q",
+        "reproducing_test": "tests/lax_test.py::LaxTest::testTanhGradSymmetry (added by the PR; jvp_pos vs jvp_neg and grad_fn(x) vs grad_fn(-x) compared with assertArraysEqual)",
+        "success_criterion": "On the buggy revision cc95c6c81dc9 the test FAILS: the first assertArraysEqual, on jvp at x versus -x with g=1.3, raises AssertionError because (g+g*ans)*(1-ans) is not bit-identical at +x and -x. On the fixed revision (the PR commit that changes the non-HIGHEST branch to g*((1+ans)*(1-ans))) the test PASSES, with both jvp and grad symmetric bit-for-bit. Only this fail-to-pass transition counts; no printed values are checked.",
+        "numerical_probe": "On the buggy checkout, run: import jax, jax.numpy as jnp, numpy as np; from jax import lax; x=jnp.linspace(0.1,8.9,100,dtype=jnp.float32); g=jnp.full_like(x,1.3); _,p=jax.jvp(lax.tanh,(x,),(g,)); _,n=jax.jvp(lax.tanh,(-x,),(g,)); print(np.array_equal(np.asarray(p),np.asarray(n))). A False result confirms the asymmetry is present before running the full test.",
+        "input_output_examples": [],
+        "risks": [
+          "Architecture and backend dependence: the asymmetry requires XLA's CPU tanh and float32 rounding to produce different last bits for +x and -x. On other architectures (for example ARM, or a different XLA CPU codegen with vectorised or fast-math tanh) the buggy formula may happen to be symmetric on these 100 points, so the test would not transition. Only x86_64 Linux CPU is assumed here.",
+          "The fixed version also needs ans(-x) to equal -ans(x) exactly. If the XLA tanh implementation is not exactly odd, the fixed revision can fail too, so the transition is not guaranteed.",
+          "Accuracy-mode branch: the diff changes the non-HIGHEST branch of the tanh JVP. If the default accuracy mode in this era resolves to HIGHEST, the buggy branch is never taken and the test passes on the buggy revision. Confirm the default accuracy mode at cc95c6c81dc9 before trusting a fail result.",
+          "Version mismatch: the test file and lax.py at the PR commit may depend on jaxlib or jax internals that differ from the chosen wheel. The jaxlib version is inferred from the source tree, not from documentation, so an import or API error would be a setup failure, not a reproduction.",
+          "Dtype scope: the evidence fixes the test dtype at float32 only. Other dtypes, and the xla_metadata_test HLO-structure change, are not reproduction conditions and are not verified here.",
+          "Tolerance: the test is exact equality with no tolerance. An assertAllClose substitution would hide the defect and must not be used.",
+          "Grad versus jvp scaling: the grad check multiplies by jnp.float32(1.3) while the jvp check uses a full-array g of 1.3, so the two paths differ in setup. A failure on the grad side alone would still be a valid transition, but the jvp assertion is expected to fail first."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "the test itself: assertArraysEqual comparing jvp and grad at x and -x",
+          "why": "The defect is described as a bit-level symmetry violation, and the test asserts exact equality with no tolerance, so the oracle is bit-exact equality of the two sides."
+        },
+        "fails_on_buggy": "The first assertion, assertArraysEqual(jvp_pos, jvp_neg), sees jvp values at +x and -x that differ in the last bits for some x in linspace(0.1, 8.9, 100), because (g+g*ans)*(1-ans) is not odd-symmetric under rounding when g is not 1. The assertion raises AssertionError and the test fails.",
+        "passes_on_fixed": "With g*((1+ans)*(1-ans)), the value at -x is computed as g*((1-ans)*(1+ans)), which is bit-identical by commutativity of float multiplication given ans(-x)=-ans(x). Both jvp and grad assertions hold exactly, and the test passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4533,
+        "output_tokens": 4203,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 12295,
+        "output_tokens": 2796,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

@@ -1,0 +1,228 @@
+diff --git a/crates/burn-backend-tests/tests/autodiff/mod.rs b/crates/burn-backend-tests/tests/autodiff/mod.rs
+index fd7e19f04ac..6dec1e3a82e 100644
+--- a/crates/burn-backend-tests/tests/autodiff/mod.rs
++++ b/crates/burn-backend-tests/tests/autodiff/mod.rs
+@@ -77,6 +77,7 @@ mod sign;
+ mod slice;
+ mod slice_assign;
+ mod softmax;
++mod softplus;
+ mod sort;
+ mod sqrt;
+ mod sub;
+diff --git a/crates/burn-backend-tests/tests/autodiff/softplus.rs b/crates/burn-backend-tests/tests/autodiff/softplus.rs
+new file mode 100644
+index 00000000000..09a70584359
+--- /dev/null
++++ b/crates/burn-backend-tests/tests/autodiff/softplus.rs
+@@ -0,0 +1,38 @@
++use super::*;
++use burn_tensor::{TensorData, Tolerance, activation};
++
++#[test]
++fn should_diff_softplus() {
++    let device = AutodiffDevice::new();
++    let tensor = TestTensor::<1>::from_data([-1.0, 0.0, 2.0], &device).require_grad();
++
++    let output = activation::softplus(tensor.clone(), 1.0).sum();
++    let grads = output.backward();
++
++    // The derivative of softplus is `sigmoid(beta * x)`.
++    let expected = TensorData::from([0.268941, 0.5, 0.880797]);
++    tensor
++        .grad(&grads)
++        .unwrap()
++        .to_data()
++        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
++}
++
++#[test]
++fn should_diff_softplus_saturated() {
++    let device = AutodiffDevice::new();
++    // A naive `log(exp(x) + 1)` forward saturates to `inf` here, which yields a `NaN`
++    // gradient and poisons the rest of the backward pass.
++    let tensor = TestTensor::<1>::from_data([-100.0, 0.0, 100.0], &device).require_grad();
++
++    let output = activation::softplus(tensor.clone(), 1.0).sum();
++    let grads = output.backward();
++
++    // `sigmoid` saturates to 0 and 1 without ever becoming `NaN`.
++    let expected = TensorData::from([0.0, 0.5, 1.0]);
++    tensor
++        .grad(&grads)
++        .unwrap()
++        .to_data()
++        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
++}
+diff --git a/crates/burn-backend-tests/tests/tensor/float/activation/softplus.rs b/crates/burn-backend-tests/tests/tensor/float/activation/softplus.rs
+index a0911e241a0..98924b0b2a0 100644
+--- a/crates/burn-backend-tests/tests/tensor/float/activation/softplus.rs
++++ b/crates/burn-backend-tests/tests/tensor/float/activation/softplus.rs
+@@ -2,6 +2,64 @@ use super::*;
+ use burn_tensor::Tolerance;
+ use burn_tensor::{TensorData, activation};
+ 
++#[test]
++fn test_softplus_large_values_do_not_overflow() {
++    // `exp` overflows above ~88.7 in f32, so a naive `log(exp(beta * x) + 1)` returns `inf`
++    // here. For large `beta * x`, softplus converges to the identity.
++    let tensor = TestTensor::<1>::from([20.0, 50.0, 100.0, 1000.0]);
++
++    let output = activation::softplus(tensor.clone(), 1.0);
++    let expected = TensorData::from([20.0, 50.0, 100.0, 1000.0]);
++    output
++        .into_data()
++        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
++
++    // `beta` scales the input, so `beta = 5` overflows from `x = ~18` upwards.
++    let output = activation::softplus(tensor, 5.0);
++    let expected = TensorData::from([20.0, 50.0, 100.0, 1000.0]);
++    output
++        .into_data()
++        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
++}
++
++#[test]
++fn test_softplus_small_values_do_not_underflow() {
++    // For very negative `beta * x`, softplus converges to `exp(beta * x) / beta`.
++    let tensor = TestTensor::<1>::from([-20.0, -50.0]);
++
++    let output = activation::softplus(tensor, 1.0);
++    let expected = TensorData::from([2.0611537e-9, 1.9287499e-22]);
++    output
++        .into_data()
++        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
++}
++
++#[test]
++fn test_softplus_with_threshold() {
++    let tensor = TestTensor::<1>::from([5.0, 25.0]);
++
++    // The default threshold of 20 evaluates the first element and substitutes the second.
++    let output = activation::softplus(tensor.clone(), 1.0);
++    let expected = TensorData::from([5.0067153, 25.0]);
++    output
++        .into_data()
++        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
++
++    // Raising it past both evaluates both, which is still accurate well beyond the default.
++    let output = activation::softplus_with_threshold(tensor.clone(), 1.0, 80.0);
++    let expected = TensorData::from([5.0067153, 25.0]);
++    output
++        .into_data()
++        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
++
++    // Lowering it below both substitutes the identity for both.
++    let output = activation::softplus_with_threshold(tensor, 1.0, 1.0);
++    let expected = TensorData::from([5.0, 25.0]);
++    output
++        .into_data()
++        .assert_approx_eq::<FloatElem>(&expected, Tolerance::default());
++}
++
+ #[test]
+ fn test_softplus_d2() {
+     let tensor = TestTensor::<2>::from([[-0.4240, -0.9574, -0.2215], [-0.5767, 0.7218, -0.1620]]);
+diff --git a/crates/burn-nn/src/activation/softplus.rs b/crates/burn-nn/src/activation/softplus.rs
+index 5358f66a20e..0d133dbb7db 100644
+--- a/crates/burn-nn/src/activation/softplus.rs
++++ b/crates/burn-nn/src/activation/softplus.rs
+@@ -94,9 +109,48 @@ mod tests {
+             .assert_approx_eq::<FT>(&expected, Tolerance::default());
+     }
+ 
++    #[test]
++    fn test_softplus_default_threshold() {
++        let device = Default::default();
++        let model = SoftplusConfig::new().init();
++        assert_eq!(model.threshold, 20.0);
++
++        // The default threshold keeps saturated inputs finite.
++        let input = Tensor::<2>::from_data(TensorData::from([[100.0, 1000.0]]), &device);
++        let out = model.forward(input);
++        let expected = TensorData::from([[100.0, 1000.0]]);
++        out.to_data()
++            .assert_approx_eq::<FT>(&expected, Tolerance::default());
++    }
++
++    #[test]
++    fn test_softplus_with_threshold() {
++        let device = Default::default();
++        let input = Tensor::<2>::from_data(TensorData::from([[5.0]]), &device);
++
++        // Below the threshold the curve is evaluated: softplus(5) = log(1 + e^5) ≈ 5.0067.
++        let out = SoftplusConfig::new()
++            .with_threshold(10.0)
++            .init()
++            .forward(input.clone());
++        out.to_data()
++            .assert_approx_eq::<FT>(&TensorData::from([[5.0067153]]), Tolerance::default());
++
++        // Above it, the identity is substituted instead.
++        let out = SoftplusConfig::new()
++            .with_threshold(1.0)
++            .init()
++            .forward(input);
++        out.to_data()
++            .assert_approx_eq::<FT>(&TensorData::from([[5.0]]), Tolerance::default());
++    }
++
+     #[test]
+     fn display() {
+         let config = SoftplusConfig::new().init();
+-        assert_eq!(alloc::format!("{config}"), "Softplus {beta: 1}");
++        assert_eq!(
++            alloc::format!("{config}"),
++            "Softplus {beta: 1, threshold: 20}"
++        );
+     }
+ }
+diff --git a/crates/burn-nn/src/loss/soft_margin.rs b/crates/burn-nn/src/loss/soft_margin.rs
+index dd8bda58daf..c7ddffc5bbd 100644
+--- a/crates/burn-nn/src/loss/soft_margin.rs
++++ b/crates/burn-nn/src/loss/soft_margin.rs
+@@ -86,4 +86,22 @@ mod tests {
+         sum.into_data()
+             .assert_approx_eq::<FT>(&TensorData::from([3.888344]), Tolerance::default());
+     }
++
++    #[test]
++    fn test_soft_margin_loss_confidently_wrong() {
++        let device = Default::default();
++        // A confidently wrong prediction drives `-target * logit` large and positive, which
++        // is exactly where a naive softplus overflows to `inf` and poisons the backward pass.
++        let logits = Tensor::<2>::from_data(TensorData::from([[-100.0, -20.0, -5.0]]), &device);
++        let targets = Tensor::<2>::from_data(TensorData::from([[1.0, 1.0, 1.0]]), &device);
++
++        let loss = SoftMarginLoss::new();
++        let no_reduction = loss.forward_no_reduction(logits, targets);
++
++        // The loss converges to `-target * logit` for confidently wrong predictions.
++        let expected = TensorData::from([[100.0, 20.0, 5.006715]]);
++        no_reduction
++            .into_data()
++            .assert_approx_eq::<FT>(&expected, Tolerance::default());
++    }
+ }
+diff --git a/crates/burn-tensor/src/tensor/activation/base.rs b/crates/burn-tensor/src/tensor/activation/base.rs
+index 7a03f4990e0..52f083a1974 100644
+--- a/crates/burn-tensor/src/tensor/activation/base.rs
++++ b/crates/burn-tensor/src/tensor/activation/base.rs
+@@ -699,3 +766,17 @@ fn hard_sigmoid_impl(p: BridgeTensor, alpha: f64, beta: f64) -> BridgeTensor {
+ fn log_sigmoid_impl(p: BridgeTensor) -> BridgeTensor {
+     BridgeTensor::float(Dispatch::log_sigmoid(p.into_float()))
+ }
++
++#[cfg(test)]
++mod softplus_threshold_tests {
++    use super::*;
++
++    #[test]
++    fn thresholds_follow_dtype_exp_range() {
++        assert_eq!(max_finite_exp_arg(DType::F64), 709.0);
++        assert_eq!(max_finite_exp_arg(DType::F32), 88.0);
++        assert_eq!(max_finite_exp_arg(DType::BF16), 88.0);
++        assert_eq!(max_finite_exp_arg(DType::F16), 11.0);
++        assert_eq!(max_finite_exp_arg(DType::Flex32), 11.0);
++    }
++}

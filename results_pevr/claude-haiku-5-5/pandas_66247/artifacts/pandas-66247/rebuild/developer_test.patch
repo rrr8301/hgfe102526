@@ -1,0 +1,62 @@
+diff --git a/pandas/tests/scalar/timedelta/test_constructors.py b/pandas/tests/scalar/timedelta/test_constructors.py
+index e970795d5591f..abaf3d324c41c 100644
+--- a/pandas/tests/scalar/timedelta/test_constructors.py
++++ b/pandas/tests/scalar/timedelta/test_constructors.py
+@@ -226,6 +226,32 @@ def test_unit_non_round_float(self):
+         assert td.unit == "ns"
+         assert td == Timedelta(45_500, unit="ms")
+ 
++    @pytest.mark.parametrize("val", [np.inf, -np.inf])
++    def test_float_inf_raises(self, val):
++        # GH#63275 non-finite floats used to raise a bare OverflowError from
++        #  int(item); they should raise OutOfBoundsTimedelta (a ValueError)
++        #  so that errors="coerce" can catch them.
++        msg = "without overflow"
++        with pytest.raises(OutOfBoundsTimedelta, match=msg):
++            Timedelta(val)
++
++        with pytest.raises(OutOfBoundsTimedelta, match=msg):
++            to_timedelta(val)
++
++        assert to_timedelta(val, errors="coerce") is NaT
++
++    def test_round_float_overflow_unit(self):
++        # GH#63275 a round float whose value overflows int64 at the requested
++        #  unit should raise OutOfBoundsTimedelta, not a bare OverflowError
++        #  (the round float is routed through the integer path).
++        msg = "without overflow"
++        with pytest.raises(OutOfBoundsTimedelta, match=msg):
++            Timedelta(1e19, unit="s")
++
++        # matching integer behavior
++        with pytest.raises(OutOfBoundsTimedelta, match=msg):
++            Timedelta(10**19, unit="s")
++
+ 
+ def test_construct_from_kwargs_overflow():
+     # GH#55503
+diff --git a/pandas/tests/tools/test_to_timedelta.py b/pandas/tests/tools/test_to_timedelta.py
+index 8313a15f408da..052570c59f781 100644
+--- a/pandas/tests/tools/test_to_timedelta.py
++++ b/pandas/tests/tools/test_to_timedelta.py
+@@ -354,6 +354,20 @@ def test_to_timedelta_unit_non_round_floats(self):
+         result2 = to_timedelta(arr2, unit="s")
+         assert result2.unit == "ns"
+ 
++    @pytest.mark.parametrize("val", [np.inf, -np.inf])
++    def test_to_timedelta_object_inf(self, val):
++        # GH#63275 non-finite floats in an object array used to raise a bare
++        #  OverflowError from int(item); coerce should give NaT and the
++        #  default should raise OutOfBoundsTimedelta.
++        arr = np.array([1.0, val, 3.0], dtype=object)
++
++        result = to_timedelta(arr, errors="coerce")
++        expected = TimedeltaIndex([1, "NaT", 3])
++        tm.assert_index_equal(result, expected)
++
++        with pytest.raises(OutOfBoundsTimedelta, match="without overflow"):
++            to_timedelta(arr)
++
+     def test_to_timedelta_unit_mixed_round_and_non_round_floats(self):
+         # GH#65150 - round floats mixed with non-round floats should
+         # respect the unit for all values

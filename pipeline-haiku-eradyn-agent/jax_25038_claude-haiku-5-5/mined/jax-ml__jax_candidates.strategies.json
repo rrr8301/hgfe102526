@@ -1,0 +1,102 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/jax_25038_claude-haiku-5-5/mined/jax-ml__jax_25038.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 23974,
+    "output_tokens": 7603,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "jax-ml/jax",
+      "pr_number": 25038,
+      "reference": "https://github.com/jax-ml/jax/pull/25038",
+      "buggy_commit": "e707edeafaf1c9d71b2b172596c95299474d04a0",
+      "fixed_commit": "96c012990de86ccb0eb815a11ae4e2c337802794",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5448,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the jax_debug_nans false positive in jax.scipy.stats.gamma.logpdf/pdf on the buggy commit e707edeafaf1 using the PR's regression test testGammaDebugNans. On the buggy revision, gamma.pdf(0.0, 1.0, 1.0) with x=0 below loc=1 computes log of a negative (x-loc)/scale internally, debug_nans raises FloatingPointError, and the test errors before comparing values. On the fixed revision, jnp.where guards keep the internal computation NaN-free, the debug_nans check passes, and the result matches scipy (-inf logpdf / 0 pdf). Pure-Python CPU reproduction; versions are a choice, not a documented constraint.",
+        "needs_build": false,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "jax==0.4.35",
+            "jaxlib==0.4.35",
+            "numpy==2.1.3",
+            "scipy",
+            "pytest",
+            "absl-py"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "git checkout e707edeafaf1",
+            "apply the PR test diff to tests/scipy_stats_test.py (add testGammaDebugNans after testGammaLogPdfZero)",
+            "pip install jax==0.4.35 jaxlib==0.4.35 numpy==2.1.3 scipy pytest absl-py",
+            "pip install -e . --no-deps so the tests import jax from the checkout under test"
+          ],
+          "pinned_because": [
+            "jax 0.4.35 and jaxlib 0.4.35 are the versions the reporter observed the bug with; no documented constraint exists, so this is an observed-version choice, not an era-inferred one",
+            "numpy 2.1.3 is the version the reporter used; no documented constraint, chosen to match the observed run",
+            "scipy is unpinned because it is only needed as the reference implementation for osp_stats; no version is stated in the evidence"
+          ]
+        },
+        "test_command": "JAX_PLATFORMS=cpu python -m pytest tests/scipy_stats_test.py -k testGammaDebugNans -x -p no:cacheprovider",
+        "reproducing_test": "tests/scipy_stats_test.py::testGammaDebugNans (method added by PR #25038 in the scipy stats test class, selected by -k)",
+        "success_criterion": "Buggy e707edeafaf1 with the PR test applied: the test ERRORS (fails) with FloatingPointError: invalid value (nan) encountered in jit(log) raised inside the jax.debug_nans(True) block when calling lsp_stats.gamma.pdf(0.0, 1.0, 1.0). Fixed revision (PR head): the test PASSES, with no FloatingPointError and assertAllClose matching scipy's gamma.pdf(0.0, 1.0, 1.0).",
+        "numerical_probe": "Under jax.debug_nans(True), evaluate jax.scipy.stats.gamma.logpdf(0.0, 1.0, 1.0) (x=0 below loc=1, scale default 1) and confirm whether a FloatingPointError is raised.",
+        "input_output_examples": [
+          {
+            "input": "lsp_stats.gamma.pdf(0.0, 1.0, 1.0) under jax.debug_nans(True), i.e. x=0.0, a=1.0, loc=1.0",
+            "buggy_output": "FloatingPointError: invalid value (nan) encountered in jit(log)",
+            "expected_output": "no FloatingPointError; result matches osp_stats.gamma.pdf(0.0, 1.0, 1.0)"
+          }
+        ],
+        "risks": [
+          "The buggy behaviour depends on jax_debug_nans being active during the lsp call; the test enables it via the jax.debug_nans(True) context manager, so do not drop that block.",
+          "Only the test's own x<loc input is established by the evidence; the failure is shown for the issue's mle_loss path, which also applies clamp and log, so the NaN source in that path may differ from gamma.pdf itself.",
+          "The dtype is not stated; the reporter saw the error with jax_enable_x64 both on and off, so the default float32 path is assumed. The magnitude regime beyond x<loc is not stated.",
+          "The jax/jaxlib/numpy pins are observed-run choices. If the checkout is built against a different jaxlib, the debug_nans behaviour may differ and the transition may not occur.",
+          "The evidence does not name the test class containing testGammaDebugNans; -k selects by method name so the command does not depend on it.",
+          "CPU is the only backend stated in the evidence. Nothing shows the behaviour needs a GPU, TPU or sanitiser, but the transition is not verified on other platforms.",
+          "If the buggy run does not raise because the eager path differs from the jitted path, the test would not transition; the evidence reports the failure under jit, and this plan does not confirm the eager path also raises."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "default assertAllClose tolerances (not stated in evidence)",
+          "reference_source": "scipy.stats.gamma via osp_stats in the test",
+          "why": "The regression test compares the lsp result to scipy with default assertAllClose; the bug is a FloatingPointError, not a wrong value, so the oracle only needs to confirm the fixed result matches scipy."
+        },
+        "fails_on_buggy": "The test raises FloatingPointError (invalid value nan in jit(log)) inside the debug_nans block when lsp_stats.gamma.pdf(0.0, 1.0, 1.0) runs, because the unguarded log of the negative (x-loc)/scale is NaN; the exception occurs before assertAllClose is reached, so the test errors.",
+        "passes_on_fixed": "With jnp.where(ok, ..., one) guarding y and the final jnp.where(ok, log_probs, -jnp.inf), no NaN is produced internally, the debug_nans check passes, and the result matches scipy's value for x below loc."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4325,
+        "output_tokens": 4109,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 19649,
+        "output_tokens": 3494,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

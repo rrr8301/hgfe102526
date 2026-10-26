@@ -1,0 +1,95 @@
+diff --git a/pandas/tests/extension/test_arrow.py b/pandas/tests/extension/test_arrow.py
+index 8db837b176fe9..7e7cd8fb13456 100644
+--- a/pandas/tests/extension/test_arrow.py
++++ b/pandas/tests/extension/test_arrow.py
+@@ -2686,6 +2686,7 @@ def test_dt_tz_localize_unsupported_tz_options():
+         ser.dt.tz_localize("UTC", nonexistent="NaT")
+ 
+ 
++@pytest.mark.xfail(reason="Converts to UTC before localizing GH#61780")
+ def test_dt_tz_localize_none():
+     ser = pd.Series(
+         [datetime(year=2023, month=1, day=2, hour=3), None],
+@@ -2693,7 +2694,7 @@ def test_dt_tz_localize_none():
+     )
+     result = ser.dt.tz_localize(None)
+     expected = pd.Series(
+-        [datetime(year=2023, month=1, day=2, hour=3), None],
++        [ser[0].tz_localize(None), None],
+         dtype=ArrowDtype(pa.timestamp("ns")),
+     )
+     tm.assert_series_equal(result, expected)
+@@ -2753,7 +2754,7 @@ def test_dt_tz_convert_none():
+     )
+     result = ser.dt.tz_convert(None)
+     expected = pd.Series(
+-        [datetime(year=2023, month=1, day=2, hour=3), None],
++        [ser[0].tz_convert(None), None],
+         dtype=ArrowDtype(pa.timestamp("ns")),
+     )
+     tm.assert_series_equal(result, expected)
+@@ -2767,7 +2768,7 @@ def test_dt_tz_convert(unit):
+     )
+     result = ser.dt.tz_convert("US/Eastern")
+     expected = pd.Series(
+-        [datetime(year=2023, month=1, day=2, hour=3), None],
++        [ser[0].tz_convert("US/Eastern"), None],
+         dtype=ArrowDtype(pa.timestamp(unit, "US/Eastern")),
+     )
+     tm.assert_series_equal(result, expected)
+@@ -3548,3 +3549,30 @@ def test_arrow_json_type():
+     dtype = ArrowDtype(pa.json_(pa.string()))
+     result = dtype.type
+     assert result == str
++
++
++def test_timestamp_dtype_disallows_decimal():
++    # GH#61773 constructing with pyarrow timestamp dtype should disallow
++    #  Decimal NaN, just like pd.to_datetime
++    vals = [pd.Timestamp("2016-01-02 03:04:05"), Decimal("NaN")]
++
++    msg = "<class 'decimal.Decimal'> is not convertible to datetime"
++    with pytest.raises(TypeError, match=msg):
++        # Check that the non-pyarrow version raises as expected
++        pd.to_datetime(vals)
++
++    with pytest.raises(TypeError, match=msg):
++        pd.array(vals, dtype=ArrowDtype(pa.timestamp("us")))
++
++
++def test_timestamp_dtype_matches_to_datetime():
++    # GH#61775
++    dtype1 = "datetime64[ns, US/Eastern]"
++    dtype2 = "timestamp[ns, US/Eastern][pyarrow]"
++
++    ts = pd.Timestamp("2025-07-03 18:10")
++
++    result = pd.Series([ts], dtype=dtype2)
++    expected = pd.Series([ts], dtype=dtype1).convert_dtypes(dtype_backend="pyarrow")
++
++    tm.assert_series_equal(result, expected)
+diff --git a/pandas/tests/io/test_sql.py b/pandas/tests/io/test_sql.py
+index 4a6a5635eb68c..6f4c1602a5e64 100644
+--- a/pandas/tests/io/test_sql.py
++++ b/pandas/tests/io/test_sql.py
+@@ -8,6 +8,7 @@
+     time,
+     timedelta,
+ )
++from decimal import Decimal
+ from io import StringIO
+ from pathlib import Path
+ import sqlite3
+@@ -1038,6 +1039,12 @@ def test_dataframe_to_sql_arrow_dtypes(conn, request):
+ def test_dataframe_to_sql_arrow_dtypes_missing(conn, request, nulls_fixture):
+     # GH 52046
+     pytest.importorskip("pyarrow")
++    if isinstance(nulls_fixture, Decimal):
++        pytest.skip(
++            # GH#61773
++            reason="Decimal('NaN') not supported in constructor for timestamp dtype"
++        )
++
+     df = DataFrame(
+         {
+             "datetime": pd.array(

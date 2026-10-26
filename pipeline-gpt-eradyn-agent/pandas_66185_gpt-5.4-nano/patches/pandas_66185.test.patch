@@ -1,0 +1,107 @@
+diff --git a/pandas/tests/tools/test_to_datetime.py b/pandas/tests/tools/test_to_datetime.py
+index 452989678eaab..2e84ba63ba9cd 100644
+--- a/pandas/tests/tools/test_to_datetime.py
++++ b/pandas/tests/tools/test_to_datetime.py
+@@ -2050,6 +2050,22 @@ def test_float_to_datetime_raise_near_bounds(self):
+         with pytest.raises(OutOfBoundsDatetime, match=msg3):
+             Timestamp(should_fail2[1], unit="D")
+ 
++    def test_float_to_datetime_near_int64_boundary(self):
++        # GH#57366 within a few ULP of +/-2**63 ns the float bound check must be
++        # exact. A negative float whose ns value lands just past int64 min must
++        # raise instead of silently wrapping to a positive timestamp...
++        wrapped = np.array([-(2**63 + 200) / 1e9], dtype="float64")
++        with pytest.raises(OutOfBoundsDatetime, match="cannot convert input"):
++            to_datetime(wrapped, unit="s", errors="raise")
++        assert to_datetime(wrapped, unit="s", errors="coerce")[0] is NaT
++
++        # ...and an in-bounds float just shy of int64 max must not spuriously
++        # raise (it did for units D/W, diverging from the scalar path).
++        oneday_in_ns = 1e9 * 60 * 60 * 24
++        val = (2**63 - 1 - 100) / oneday_in_ns
++        arr = np.array([val], dtype="float64")
++        assert to_datetime(arr, unit="D")[0] == Timestamp(val, unit="D")
++
+     def test_float_to_datetime_raise_oob_ns(self):
+         value = np.float64(2**63)
+         arr = np.array([value], dtype=np.float64)
+diff --git a/pandas/tests/tools/test_to_timedelta.py b/pandas/tests/tools/test_to_timedelta.py
+index 8313a15f408da..ded56d1ce6733 100644
+--- a/pandas/tests/tools/test_to_timedelta.py
++++ b/pandas/tests/tools/test_to_timedelta.py
+@@ -392,6 +392,21 @@ def test_float_to_timedelta_raise_near_bounds(self):
+         with pytest.raises(OutOfBoundsTimedelta, match=scalar_msg2):
+             pd.Timedelta(should_fail2[1], unit="D")
+ 
++    def test_float_to_timedelta_near_int64_boundary(self):
++        # GH#57366 within a few ULP of +/-2**63 ns the float bound check must be
++        # exact. A negative float whose ns value lands just past int64 min must
++        # raise instead of silently wrapping to a large positive timedelta...
++        wrapped = np.array([-(2**63 + 200) / 1e9], dtype="float64")
++        with pytest.raises(OutOfBoundsTimedelta, match="cannot convert input"):
++            to_timedelta(wrapped, unit="s")
++
++        # ...and an in-bounds float just shy of int64 max must not spuriously
++        # raise (it did for units D/W, diverging from the scalar path).
++        oneday_in_ns = 1e9 * 60 * 60 * 24
++        val = (2**63 - 1 - 100) / oneday_in_ns
++        arr = np.array([val], dtype="float64")
++        assert to_timedelta(arr, unit="D")[0] == pd.Timedelta(val, unit="D")
++
+     def test_to_timedelta_day_offset(self):
+         # GH#64240
+         result = to_timedelta(to_offset("D"))
+diff --git a/pandas/tests/tslibs/test_conversion.py b/pandas/tests/tslibs/test_conversion.py
+index 5a6d76d78df53..6d2e3f205ece7 100644
+--- a/pandas/tests/tslibs/test_conversion.py
++++ b/pandas/tests/tslibs/test_conversion.py
+@@ -7,6 +7,7 @@
+ import pytest
+ 
+ from pandas._libs.tslibs import (
++    OutOfBoundsDatetime,
+     OutOfBoundsTimedelta,
+     astype_overflowsafe,
+     conversion,
+@@ -17,6 +18,7 @@
+ )
+ 
+ from pandas import (
++    Timedelta,
+     Timestamp,
+     date_range,
+ )
+@@ -165,3 +167,33 @@ def test_localize_pydatetime_dt_types(dt, expected):
+     # localize_pydatetime
+     result = conversion.localize_pydatetime(dt, timezone.utc)
+     assert result == expected
++
++
++@pytest.mark.parametrize("unit", ["us", "ms", "s", "m", "h", "D", "W"])
++def test_cast_from_unit_vectorized_near_int64_boundary(unit):
++    # GH#57366 near +/-2**63 ns the array cast must agree with the scalar cast;
++    # near-bound floats used to wrap or spuriously raise. Walk every representable
++    # float straddling each int64 bound and check the two match.
++    ns_per_unit = np.timedelta64(1, unit).astype("timedelta64[ns]").astype(np.int64)
++
++    values = []
++    for bound in (-(2**63), 2**63 - 1):
++        low = high = np.float64(bound / ns_per_unit)
++        for _ in range(60):
++            low = np.nextafter(low, -np.inf)
++            high = np.nextafter(high, np.inf)
++        walker = low
++        while walker <= high:
++            values.append(walker)
++            walker = np.nextafter(walker, np.inf)
++
++    for val in values:
++        arr = np.array([val], dtype="float64")
++        # Timedelta(...).value is the scalar cast_from_unit result in ns
++        try:
++            expected = Timedelta(val, unit=unit).value
++        except (OutOfBoundsDatetime, OutOfBoundsTimedelta, OverflowError):
++            with pytest.raises(OutOfBoundsDatetime):
++                conversion.cast_from_unit_vectorized(arr, unit)
++        else:
++            assert conversion.cast_from_unit_vectorized(arr, unit)[0] == expected

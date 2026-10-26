@@ -1,0 +1,120 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/pandas_65389_claude-haiku-5-5/mined/pandas-dev__pandas_65389.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 25101,
+    "output_tokens": 9995,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 65389,
+      "reference": "https://github.com/pandas-dev/pandas/pull/65389",
+      "buggy_commit": "94fe9d6d03029ca6c8d244f6c70e89e97845265a",
+      "fixed_commit": "32e6988fa84deabcc2baba117ef2b75e7838f491",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6068,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#46819 by building pandas at the buggy commit 94fe9d6d0302 from source (Cython extension required), then running the total_seconds tests from the PR diff. On the buggy revision the nanosecond-residual scalar test and the integer-second boundary tests should fail; on the fixed revision (PR head, hash not given in the evidence) they should pass. Environment versions other than the build chain are unbounded in the evidence, so this plan chooses a current stack and labels each choice.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "meson-python",
+            "meson",
+            "versioneer[toml]",
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "git",
+            "a C compiler (gcc or clang)",
+            "a C++ compiler"
+          ],
+          "build_commands": [
+            "git checkout 94fe9d6d0302",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true",
+            "git checkout <fixed PR head, hash not stated in evidence>",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "python_version 3.12 is this plan's choice; the evidence states no Python version",
+            "numpy is documented in the README with no constraint and no era table entry; the plan uses the current numpy 2.x series as an unbounded choice, not a stated requirement",
+            "python-dateutil, tzdata, cython and pytest are unbounded choices and not numerically relevant to the transition",
+            "build tools (meson-python, meson, versioneer, cython) are needed for --no-build-isolation and are chosen to match the pandas build-system requirements, not stated in the evidence"
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/scalar/timedelta/test_timedelta.py pandas/tests/arrays/test_timedeltas.py -k total_seconds -p no:cacheprovider -q",
+        "reproducing_test": "pandas/tests/scalar/timedelta/test_timedelta.py::test_total_seconds_includes_nanoseconds (the diff hunk does not state the enclosing class, so select by name with -k rather than a full node id), plus test_total_seconds_stays_strictly_inside_integer_seconds in both test files",
+        "success_criterion": "On the buggy revision, test_total_seconds_includes_nanoseconds fails because Timedelta(nanoseconds=999).total_seconds() returns 0.0 rather than 999e-9, and the scalar and array boundary tests fail because naive float rounding lands the 1-ns-off values exactly on the integer-second boundary (1552212000 or -1552212000). On the fixed revision these same tests pass, and the transition from fail to pass on those tests is the success criterion.",
+        "numerical_probe": "pandas/tests/scalar/timedelta/test_timedelta.py -k test_total_seconds_includes_nanoseconds",
+        "input_output_examples": [
+          {
+            "input": "Timedelta(nanoseconds=999).total_seconds()",
+            "buggy_output": "0.0",
+            "expected_output": "9.99e-07"
+          },
+          {
+            "input": "Timedelta(1_552_211_999_999_999_999).total_seconds()",
+            "buggy_output": "1552212000.0 (boundary; naive float rounds onto it per evidence)",
+            "expected_output": "a value strictly below 1552212000"
+          },
+          {
+            "input": "Timedelta(nanoseconds=-1).total_seconds()",
+            "buggy_output": "0.0 (nanos dropped per test comment)",
+            "expected_output": "a value within 1e-15 of -1e-09"
+          }
+        ],
+        "risks": [
+          "Platform: the defect is pure float64 arithmetic on the scalar and vector paths, so it should reproduce on 64-bit x86_64 or arm64 Linux. The array bit-for-bit tests are skipped unless IS64, and on 32-bit x87 excess precision could change their results. Run on 64-bit; no sanitizer or specific architecture is shown to be required.",
+          "Gating conflict: the commit message says the nudge is gated on unit == 'ns', while the test test_total_seconds_matches_scalar_non_nano and test_total_seconds_boundary_non_nano assert the guard applies at s, ms and us. The non-nano tests may therefore pass on the buggy revision and not discriminate; the ns-only tests are the reliable transition signal.",
+          "test_total_seconds_matches_scalar_non_nano builds Timedelta(val, unit=unit) with int64 max values in s and us units, which likely raises OutOfBoundsTimedelta on both revisions. It may error rather than transition and should be treated as non-discriminating.",
+          "test_total_seconds_above_float64_integer_spacing is beyond 2**52 seconds, where the evidence says the boundary cannot be avoided, so it may also pass on the buggy revision and not discriminate.",
+          "The ULP figure of about 238 ns comes from a test comment, not a stated tolerance; the evidence gives no tolerance at which correct and incorrect answers separate, so the boundary tests rely on strict inequality rather than a tolerance.",
+          "The PR body mentions a single asi8 / pps division losing precision above 2**53 ticks, which is not reconciled with the 2**52 guard threshold; the array parity tests may depend on that split and are not clearly tied to the same mechanism.",
+          "Editable rebuild: the fixed commit changes Cython sources, so the extension must be rebuilt after checkout; a stale build would make the fixed run look like the buggy run."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "the developer's test assertions in the PR diff (strict inequalities against integer-second boundaries, and exact equality to 999e-9 for the scalar nanosecond case)",
+          "why": "The primary assertions are strict inequalities at integer-second boundaries and an exact float equality for 999e-9; one case uses a 1e-15 absolute tolerance for the -1 ns result. The evidence states no separate tolerance."
+        },
+        "fails_on_buggy": "test_total_seconds_includes_nanoseconds asserts Timedelta(nanoseconds=999).total_seconds() == 999e-9 and receives 0.0, so the assertion fails. The boundary tests assert the 1-ns-off values stay strictly off 1552212000; on buggy float64 these round onto the boundary, so the strict inequality fails.",
+        "passes_on_fixed": "With the nanosecond residual included and the boundary nudge applied, the scalar nanosecond assertion equals 999e-9 exactly and the boundary inequalities hold, so the targeted tests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 7184,
+        "output_tokens": 5838,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 17917,
+        "output_tokens": 4157,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

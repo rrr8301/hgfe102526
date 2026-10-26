@@ -1,0 +1,60 @@
+diff --git a/modules/core/include/opencv2/core/hal/intrin_rvv_scalable.hpp b/modules/core/include/opencv2/core/hal/intrin_rvv_scalable.hpp
+index 67c9d12741be..ca82d140f836 100644
+--- a/modules/core/include/opencv2/core/hal/intrin_rvv_scalable.hpp
++++ b/modules/core/include/opencv2/core/hal/intrin_rvv_scalable.hpp
+@@ -2145,28 +2145,29 @@ inline v_float64 v_dotprod_expand_fast(const v_int32& a, const v_int32& b, const
+ { return v_add(v_dotprod_expand_fast(a, b) , c); }
+ #endif
+ 
+-// TODO: only 128 bit now.
+ inline v_float32 v_matmul(const v_float32& v, const v_float32& mat0,
+                             const v_float32& mat1, const v_float32& mat2,
+                             const v_float32& mat3)
+ {
+-    vfloat32m2_t res;
+-    res = __riscv_vfmul_vf_f32m2(mat0, v_extract_n(v, 0), VTraits<v_float32>::vlanes());
+-    res = __riscv_vfmacc_vf_f32m2(res, v_extract_n(v, 1), mat1, VTraits<v_float32>::vlanes());
+-    res = __riscv_vfmacc_vf_f32m2(res, v_extract_n(v, 2), mat2, VTraits<v_float32>::vlanes());
+-    res = __riscv_vfmacc_vf_f32m2(res, v_extract_n(v, 3), mat3, VTraits<v_float32>::vlanes());
+-    return res;
++    const int vl = VTraits<v_float32>::vlanes();
++    vuint32m2_t idx = __riscv_vand(__riscv_vid_v_u32m2(vl), 0xfffffffc, vl);
++    v_float32 v0 = __riscv_vrgather(v, idx, vl);
++    v_float32 v1 = __riscv_vrgather(v, __riscv_vadd(idx, 1, vl), vl);
++    v_float32 v2 = __riscv_vrgather(v, __riscv_vadd(idx, 2, vl), vl);
++    v_float32 v3 = __riscv_vrgather(v, __riscv_vadd(idx, 3, vl), vl);
++    return v_fma(v0, mat0, v_fma(v1, mat1, v_fma(v2, mat2, v_mul(v3, mat3))));
+ }
+ 
+-// TODO: only 128 bit now.
+ inline v_float32 v_matmuladd(const v_float32& v, const v_float32& mat0,
+                                const v_float32& mat1, const v_float32& mat2,
+                                const v_float32& a)
+ {
+-    vfloat32m2_t res = __riscv_vfmul_vf_f32m2(mat0, v_extract_n(v,0), VTraits<v_float32>::vlanes());
+-    res = __riscv_vfmacc_vf_f32m2(res, v_extract_n(v,1), mat1, VTraits<v_float32>::vlanes());
+-    res = __riscv_vfmacc_vf_f32m2(res, v_extract_n(v,2), mat2, VTraits<v_float32>::vlanes());
+-    return __riscv_vfadd(res, a, VTraits<v_float32>::vlanes());
++    const int vl = VTraits<v_float32>::vlanes();
++    vuint32m2_t idx = __riscv_vand(__riscv_vid_v_u32m2(vl), 0xfffffffc, vl);
++    v_float32 v0 = __riscv_vrgather(v, idx, vl);
++    v_float32 v1 = __riscv_vrgather(v, __riscv_vadd(idx, 1, vl), vl);
++    v_float32 v2 = __riscv_vrgather(v, __riscv_vadd(idx, 2, vl), vl);
++    return v_fma(v0, mat0, v_fma(v1, mat1, v_fma(v2, mat2, a)));
+ }
+ 
+ inline void v_cleanup() {}
+diff --git a/modules/core/src/matmul.simd.hpp b/modules/core/src/matmul.simd.hpp
+index f089c90a01cc..5645617dd162 100644
+--- a/modules/core/src/matmul.simd.hpp
++++ b/modules/core/src/matmul.simd.hpp
+@@ -1596,8 +1596,7 @@ static void
+ transform_32f( const float* src, float* dst, const float* m, int len, int scn, int dcn )
+ {
+ // Disabled for RISC-V Vector (scalable), because of:
+-// 1. v_matmuladd for RVV is 128-bit only but not scalable, this will fail the test `Core_Transform.accuracy`.
+-// 2. Both gcc and clang can autovectorize this, with better performance than using Universal intrinsic.
++// 1. Both gcc and clang can autovectorize this, with better performance than using Universal intrinsic.
+ #if (CV_SIMD || CV_SIMD_SCALABLE) && !defined(__aarch64__) && !defined(_M_ARM64) && !defined(_M_ARM64EC) && !(CV_TRY_RVV && CV_RVV)
+     int x = 0;
+     if( scn == 3 && dcn == 3 )

@@ -1,0 +1,99 @@
+{
+  "input": "pipeline-gpt-5.4-nano/astropy_16550_gpt-5.4-nano/mined/astropy__astropy_16550.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 13079,
+    "output_tokens": 3182,
+    "cost_usd": 0.006594,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "astropy/astropy",
+      "pr_number": 16550,
+      "reference": "https://github.com/astropy/astropy/pull/16550",
+      "buggy_commit": "e85ba377e915ce14e78a535527f9d93957ec57b7",
+      "fixed_commit": "9ff62a8a258d3000be48c6741f1fc9de6063e178",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 5342,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce astropy special-value bug where reading integer compressed FITS images with BLANK/ZBLANK header/table specifications can raise a spurious exception instead of returning the expected float32 image with NaNs at blank locations. The reproduction hinges on running astropy\u2019s compressed tiled FITS regression test `test_integer_blank_support` on the buggy commit vs the fixed commit.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip",
+            "python -m pip install -U setuptools wheel",
+            "python -m pip install -U '.[test]'"
+          ],
+          "pinned_because": [
+            "Numpy is the only numerically-relevant dependency mentioned by the extracted context (np.where, np.nan, np.float32(np.nan) are used in astropy\u2019s compressed FITS code path). No version constraint is provided in the evidence; use a recent stable numpy unless your CI baseline requires otherwise."
+          ]
+        },
+        "test_command": "python -m pytest -q astropy/io/fits/hdu/compressed/tests/test_tiled_compression.py -k test_integer_blank_support",
+        "reproducing_test": "astropy/io/fits/hdu/compressed/tests/test_tiled_compression.py::test_integer_blank_support",
+        "success_criterion": "On the buggy revision, running `test_integer_blank_support` raises an exception during uncompression/blank handling (the test fails before asserting array equality). On the fixed revision, the test completes and asserts that the uncompressed data equals the reference float32 image with NaNs at the blanked pixels for all generated FITS variants (and for the cfile3 variant it instead emits an AstropyUserWarning and still matches the reference).",
+        "numerical_probe": "The oracle is array-equality to `reference = data.astype(np.float32)` with `reference[[1, 2, 3], [1, 2, 3]] = np.nan`, and confirmation that the uncompressed header contains BLANK=blank (or BLANK=-32768 for the missing-BLANK-with-zblank-table-column variant). The probe is not computed separately by the test; it is compared via `assert_equal` inside the test.",
+        "input_output_examples": [
+          {
+            "input": "A 64x64 subset from m13.fits: `data = hdul[0].data[116:180, 116:180]` is cast to an integer image with blanks and written as a compressed tiled image using `compression_type='RICE_1'` and `tile_shape=(16, 16)`, with header `BLANK` set and additional variants created by replacing BLANK->ZBLANK in the extension header and/or in the compressed binary table column.",
+            "buggy_output": "Test fails due to a spurious exception when reading/uncompressing integer compressed images with blanks (spurious exception mentioned by the bug report context), so no successful array comparison occurs.",
+            "expected_output": "Test passes: uncompressed `hdul[1].data` equals `reference` where `reference = data.astype(np.float32)` and `reference[[1, 2, 3], [1, 2, 3]] = np.nan`. For variants lacking BLANK keyword, header gets default BLANK=-32768 and the read emits `AstropyUserWarning` with message matching `Setting default value -32768 for missing BLANK keyword in compressed extension`."
+          }
+        ],
+        "risks": [
+          "No explicit fixed commit hash is provided in the evidence context; you must identify the fixed revision corresponding to astropy/astropy#16550 (PR merged commit) and run the same test on that commit. The transition requirement is: test must fail on the buggy commit `e85ba377e915` and pass on the fixed one.",
+          "The evidence does not provide platform/toolchain constraints (e.g., specific architectures, compiler versions, or sanitizers). If this exception is sensitive to native cfitsio behavior, ensure the environment uses the same linkage/build configuration that astropy\u2019s CI uses for compressed FITS (astropy bundles/depends on cfitsio in its build process, but exact details are not in the provided context).",
+          "Numpy version is unbounded in the evidence; while the bug is likely independent of a specific numpy minor, reproductions could vary if different numpy versions change `np.where` dtype promotion behavior for large uint types. This test targets int16 and uses `np.float32(np.nan)` in the reference, so dtype promotion risk is lower, but still avoid unusual numpy builds.",
+          "If `canonical_data_base_path` (the fixture providing `m13.fits`) is not available in your local checkout, you must ensure the astropy test data download mechanism is enabled/complete (common with astropy\u2019s test fixtures). Otherwise the test will fail for missing data rather than the bug."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": "test file constructs `reference = data.astype(np.float32)` and sets `reference[[1, 2, 3], [1, 2, 3]] = np.nan`; assertions use `assert_equal` on `hdul[1].data` vs `reference`.",
+          "why": "The evidence indicates correctness is determined by exact array equality (including NaNs) via `assert_equal`, and that the regression is about an exception rather than a numeric tolerance mismatch."
+        },
+        "fails_on_buggy": {
+          "type": "string",
+          "description": "On commit `e85ba377e915`, the test triggers the buggy integer blank handling path for compressed tiled FITS and raises a spurious exception during `fits.open(...)`/decompression, so the `assert_equal(hdul[1].data, reference)` assertions are never reached and pytest reports a failure due to the exception.",
+          "value": null
+        },
+        "passes_on_fixed": {
+          "type": "string",
+          "description": "On the fixed commit for astropy/astropy#16550, `fits.open(...)` successfully uncompresses all three/four generated FITS variants; for `cfile1`, `cfile2`, and `cfile4` it matches `reference` exactly and `hdul[1].header.get('BLANK') == blank`; for `cfile3` it emits the expected `AstropyUserWarning` and still matches `reference` with `hdul[1].header.get('BLANK') == -32768`.",
+          "value": null
+        }
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3354,
+        "output_tokens": 1349,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002357
+      },
+      "miner_usage": {
+        "input_tokens": 9725,
+        "output_tokens": 1833,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.004237,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

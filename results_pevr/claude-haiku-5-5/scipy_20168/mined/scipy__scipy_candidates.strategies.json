@@ -1,0 +1,107 @@
+{
+  "input": "pipeline_no_historic/scipy_20168/mined/scipy__scipy_20168.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 20120,
+    "output_tokens": 6051,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 20168,
+      "reference": "https://github.com/scipy/scipy/pull/20168",
+      "buggy_commit": "ecbd58a7ad953f48d3aa4808bb30bc9f3ed398f4",
+      "fixed_commit": "ed00eb8d03e9e13a71d1933a0074a38ec512b0e9",
+      "bug_type": "convergence",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6762,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the nnls inner-loop non-convergence in scipy/optimize/_nnls.py at buggy commit ecbd58a7ad95 by applying the PR test diff and running test_nnls_inner_loop_case1, which should raise RuntimeError (maximum iterations reached) on the buggy revision and pass on the fixed revision where the active-set check is s[P].min() <= 0. The environment uses Python 3.12 with numpy 1.26.4, the version observed in the issue traceback, and a locally built scipy; the failure is reported under MKL/AVX512 BLAS, so an OpenBLAS-only build may not reproduce it.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "numpy==1.26.4",
+            "pytest",
+            "cython==3.0.8",
+            "pythran==0.15.0",
+            "meson-python",
+            "ninja",
+            "pybind11"
+          ],
+          "system_packages": [
+            "gfortran",
+            "libopenblas-dev or MKL (see risks: MKL/AVX512 reportedly needed)",
+            "pkg-config",
+            "git"
+          ],
+          "build_commands": [
+            "git clone https://github.com/scipy/scipy.git && cd scipy && git checkout ecbd58a7ad95 && git submodule update --init",
+            "git apply test_patch.diff  (adds test_nnls_inner_loop_case1 and case2 and the _nnls.py warning-filter entry)",
+            "pip install -r requirements/build.txt && pip install -e . --no-build-isolation  (or python dev.py build)"
+          ],
+          "pinned_because": [
+            "numpy 1.26.4: observed in issue#20302 traceback (numpy/core/_methods.py); no documented constraint, so this pin is era-inferred from the observation and not a documented requirement",
+            "cython 3.0.8 and pythran 0.15.0: build versions named in issue#20302; documented in the issue but numerically irrelevant, so they are a convenience pin",
+            "scipy: built from the buggy commit itself, so no version pin is needed; the 1.12.0 version in the issue is era context only",
+            "pybind11: no evidence in the passages; left unpinned"
+          ]
+        },
+        "test_command": "python -m pytest scipy/optimize/tests/test_nnls.py -k test_nnls_inner_loop_case1 -v",
+        "reproducing_test": "scipy/optimize/tests/test_nnls.py::TestNNLS::test_nnls_inner_loop_case1",
+        "success_criterion": "On the buggy revision with the test diff applied, test_nnls_inner_loop_case1 ERRORS with RuntimeError: Maximum number of iterations reached, raised from nnls when the inner loop cycles and hits maxiter. On the fixed revision with the s[P].min() <= 0 check, the same test PASSES: nnls returns a solution and assert_allclose(dact, d, rtol=0, atol=1e-10) holds. The transition from RuntimeError to pass is the success condition.",
+        "numerical_probe": "Run nnls(W @ A, W @ k) directly on the case1 inputs (n, k, A, w, W built exactly as in the test) on the buggy build and check whether it raises RuntimeError; then rerun with the 1e-10 perturbation from the comment to confirm the loop-termination sensitivity. This only confirms the mechanism; it is not graded.",
+        "input_output_examples": [
+          {
+            "input": "nnls(W @ A, W @ k) with n, k, A, w, W constructed exactly as in TestNNLS.test_nnls_inner_loop_case1 (N=65 lower-triangular system with zeroed rows where n_i = 0)",
+            "buggy_output": "RuntimeError: Maximum number of iterations reached.",
+            "expected_output": "Converged dact matching d within atol=1e-10 with no RuntimeError"
+          }
+        ],
+        "risks": [
+          "The reported failure depends on the BLAS/SIMD path: issue#20470 says MKL with AVX512 reproduces it, while issue#20302 used OpenBLAS (pkgconfig). An OpenBLAS build on a non-AVX512 machine may pass on the buggy revision, so the transition could not be observed there. Plan to run on an MKL/AVX512 machine, or confirm the failure first on the buggy build before trusting the transition.",
+          "The nnls inner loop is driven by floating-point rounding in the s[P].min() comparison. Without a fixed random seed or deterministic BLAS threading, the outcome may vary run to run; set OMP_NUM_THREADS=1 and OPENBLAS/MKL_NUM_THREADS=1 to reduce variance.",
+          "The test diff also adds test_nnls_inner_loop_case2 and test_nnls_gh20302; only case1 is in the required test_command. test_nnls_gh20302 comes from issue#20302 and may depend on later changes, so it should not be counted in the transition.",
+          "The 1e-10 perturbation workaround is reported to hide the bug but is not a fix; do not add it to the test input when checking the transition.",
+          "The passages do not state dtype, precision, or the exact stopping criterion beyond s[P].min(); the plan assumes float64 default inputs, which is not stated by the evidence.",
+          "No sanitiser or architecture requirement is documented beyond the MKL/AVX512 note; if the failure only occurs under a specific build flag, the transition will not appear on a default scipy build."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "atol=1e-10, rtol=0 (assert_allclose in test_nnls_inner_loop_case1)",
+          "reference_source": "The active-set reference in the cited Lawson-Hanson NNLS algorithm paper (constraint s[P].min() <= 0), as referenced in the PR",
+          "why": "The test compares the solution against a precomputed d with an absolute tolerance, so small differences in the solution are accepted; the failure mode, however, is an exception from maxiter, not a value mismatch."
+        },
+        "fails_on_buggy": "The buggy check s[P].min() <= tol keeps the inner loop cycling, so nnls exhausts maxiter and raises RuntimeError before any assertion runs; the test therefore errors on the nnls call rather than failing an assert_allclose.",
+        "passes_on_fixed": "With the s[P].min() <= 0 check, nnls terminates, returns dact, and assert_allclose against d with atol=1e-10 holds, so the test passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 9971,
+        "output_tokens": 3997,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 10149,
+        "output_tokens": 2054,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

@@ -1,0 +1,105 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/jax_23523_claude-haiku-5-5/mined/jax-ml__jax_23523.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 17146,
+    "output_tokens": 5807,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "jax-ml/jax",
+      "pr_number": 23523,
+      "reference": "https://github.com/jax-ml/jax/pull/23523",
+      "buggy_commit": "72c095261fb2d678005bdaa963d4146d11634af0",
+      "fixed_commit": "7d2f0a75c1c10aeae63ed1a0ced17b7aeb979989",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5204,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the Pallas GPU (Triton) sign lowering bug: on the buggy revision jnp.sign of a NaN float32 inside a pallas_call returns 0.0 instead of NaN, so the developer's test_sign float32 nan case fails; on the fixed revision the float path applies jnp.where(jnp.isnan(x), nan, out) and the case passes. Requires an NVIDIA GPU with a CUDA jaxlib, since the test runs the kernel through the Triton backend.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "jax[cuda12]",
+            "numpy",
+            "absl-py",
+            "pytest",
+            "parameterized"
+          ],
+          "system_packages": [
+            "NVIDIA driver with CUDA 12-compatible runtime (CUDA GPU required, e.g. sm_70 or newer)",
+            "git"
+          ],
+          "build_commands": [
+            "git clone https://github.com/jax-ml/jax && cd jax",
+            "git checkout 72c095261fb2",
+            "pip install -e '.[cuda12]' or pip install jaxlib built at the same commit with CUDA plugin, then pip install -e . so the source tree matches the buggy revision",
+            "pip install absl-py pytest numpy parameterized"
+          ],
+          "pinned_because": [
+            "jax and jaxlib must come from the same revision as the buggy commit 72c095261fb2 so that the pallas triton lowering under test is the buggy one; this is era-inferred from the PR number and issue #23504 timing, not a documented constraint",
+            "numpy is unbounded in the evidence (documented null, no era entry); chose a numpy release compatible with the chosen jax, and the choice is a judgement, not a stated constraint",
+            "python 3.12 is taken from the issue traceback path in site-packages, which is evidence-based"
+          ]
+        },
+        "test_command": "python -m pytest tests/pallas/ops_test.py -k 'test_sign and float32 and nan' -x -v",
+        "reproducing_test": "tests/pallas/ops_test.py::OpsTest::test_sign (parameter float32 with value nan, from the SIGN_PARAMS list in the diff)",
+        "success_criterion": "On buggy revision 72c095261fb2 the float32_nan case of test_sign runs a pallas_call whose kernel stores jnp.sign(x_ref[...]) and fails in np.testing.assert_array_equal with a nan location mismatch (kernel output zeros vs expected nan). On the fixed revision (PR 23523) the same case passes because sign_lowering_helper returns nan for NaN inputs. The transition fail-to-pass is the whole criterion.",
+        "numerical_probe": "No separate probe is needed; the test's own assert_array_equal comparison is the decision point.",
+        "input_output_examples": [
+          {
+            "input": "jnp.full((8, 128), jnp.nan, dtype=jnp.float32) passed through a pallas_call kernel doing o_ref[...] = jnp.sign(x_ref[...])",
+            "buggy_output": "array of 0.0 values (nan location mismatch reported by assert_array_equal)",
+            "expected_output": "array of nan values, equal to jnp.sign(x)"
+          }
+        ],
+        "risks": [
+          "Needs an NVIDIA GPU with a CUDA jaxlib. The bug lives in the Triton lowering path; on CPU or TPU the same test will skip, error, or pass for unrelated reasons and will not show the transition.",
+          "OpsInterpretTest runs the same test with interpret=True, which uses jax's own numerics rather than the Triton lowering, so it is not expected to transition. Select only the non-interpret class.",
+          "The float64_nan case also exercises NaN in sign and may fail on buggy and pass on fixed for the same reason, but it additionally requires x64 and is not the reported case; the float32 nan case is the target.",
+          "Under the exact -k filter, absl parameterized naming may differ in the generated test id; if the filter selects nothing, fall back to running the whole test_sign set and reading the float32_nan result.",
+          "Exact CUDA, driver, and jaxlib wheel versions are not stated in the evidence; the build must match the buggy commit or the transition may not reproduce.",
+          "Triton may compile (x>0)-(x<0) with fast-math or constant folding that changes NaN handling across GPU architectures; the evidence does not establish the GPU model, so the transition is only confirmed on the architecture actually tested.",
+          "Subnormals and signed zero are not part of the reported failure and are not needed for the transition.",
+          "Tolerance is not applicable; the comparison is exact equality with NaN positions matched by numpy's default equal_nan behaviour in assert_array_equal."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "jnp.sign(x) computed outside the kernel on the same input",
+          "why": "np.testing.assert_array_equal treats NaNs in matching positions as equal, so a NaN output matching the reference passes and a 0.0 output fails with a nan location mismatch."
+        },
+        "fails_on_buggy": "assert_array_equal sees kernel output of 0.0 where the expected jnp.sign(nan) is nan, so it reports a nan location mismatch because the buggy float path computes (x>0)-(x<0), which is 0 for NaN, without a NaN guard.",
+        "passes_on_fixed": "The fixed sign_lowering_helper returns jnp.where(jnp.isnan(x), jnp.nan, out) for floating dtypes, so the kernel output is nan at every position and matches the reference."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5197,
+        "output_tokens": 3912,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 11949,
+        "output_tokens": 1895,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

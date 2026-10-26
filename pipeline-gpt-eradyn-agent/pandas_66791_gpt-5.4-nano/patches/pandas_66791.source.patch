@@ -1,0 +1,33 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 08f5692c515f7..f4f1d493ccdf6 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -566,6 +566,7 @@ Conversion
+ - Bug in :class:`DataFrame` constructor where ``NaT`` in a :class:`TimedeltaIndex` row was incorrectly inferred as ``datetime64`` instead of ``timedelta64`` (:issue:`23985`)
+ - Bug in :class:`DataFrame` constructor where constructing from a list of uniform-dtype arrays (e.g. pyarrow, :class:`CategoricalDtype`, nullable dtypes) lost the dtype (:issue:`49593`)
+ - Bug in :func:`pd.array` silently converting NaN to a nonsensical integer when given float data containing NaN and a NumPy integer dtype (:issue:`41724`)
++- Bug in :meth:`DataFrame.convert_dtypes` and :meth:`Series.convert_dtypes` raising ``OverflowError`` for ``object``-dtype data holding integers outside the ``int64``/``uint64`` range; these now retain ``object`` dtype, and data holding both ``NA`` and integers above the ``int64`` range now converts to ``UInt64`` (:issue:`66517`)
+ - Bug in :meth:`Series.astype` to an :class:`ArrowDtype` ``duration`` with a non-nanosecond unit silently returning wrong values (often all zeros) when converting a string column that had been sliced, including the default ``str`` dtype (:issue:`64320`)
+ - Bug in dtype inference from ``object``-dtype data (e.g. :class:`Series` construction, :meth:`Series.map`, :meth:`DataFrame.infer_objects`) raising ``OverflowError`` instead of inferring ``object`` dtype when given an integer outside the ``float64`` range (:issue:`66519`)
+ - Bug in dtype inference from ``object``-dtype data (e.g. :class:`Series` construction, :meth:`Series.map`, :meth:`DataFrame.infer_objects`) returning ``float64`` instead of ``object`` when a ``None`` came before an integer outside the ``int64``/``uint64`` range, or before a mix of signed and unsigned integers; these now infer the same dtype as the equivalent data without the ``None`` (:issue:`66519`)
+diff --git a/pandas/core/dtypes/cast.py b/pandas/core/dtypes/cast.py
+index f3c619aa632b4..2487cb07c9e94 100644
+--- a/pandas/core/dtypes/cast.py
++++ b/pandas/core/dtypes/cast.py
+@@ -972,7 +972,15 @@ def convert_dtypes(
+                 and input_array.dtype == object
+                 and (isinstance(inferred_dtype, str) and inferred_dtype == "integer")
+             ):
+-                inferred_dtype = target_int_dtype
++                # GH#66517 the values need not fit in int64; ask for the dtype
++                #  that can actually hold them and retain object if there is none
++                maybe_casted = lib.maybe_convert_objects(
++                    input_array.ravel(), convert_to_nullable_dtype=True
++                )
++                if isinstance(maybe_casted.dtype, BaseMaskedDtype):
++                    inferred_dtype = maybe_casted.dtype
++                else:
++                    inferred_dtype = input_array.dtype
+ 
+         if convert_floating:
+             if input_array.dtype.kind in "fb":

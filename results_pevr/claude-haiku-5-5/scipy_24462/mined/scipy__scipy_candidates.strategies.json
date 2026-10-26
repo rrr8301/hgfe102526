@@ -1,0 +1,112 @@
+{
+  "input": "pipeline_no_historic/scipy_24462/mined/scipy__scipy_24462.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 22799,
+    "output_tokens": 7284,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 24462,
+      "reference": "https://github.com/scipy/scipy/pull/24462",
+      "buggy_commit": "f835efb16637ac667a43337720340d3f7c7716d0",
+      "fixed_commit": "e987feb77a4d2fc742097f4b9927a5249b6afc96",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7112,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce scipy PR 24462 (ridder underflow): check out buggy commit f835efb16637, apply the developer's test diff, build scipy from source so the C solver in ridder.c is compiled from that revision, then run TestRidderUnderflow. The buggy revision raises RuntimeError from ridder; the fixed revision converges to root 0.",
+        "needs_build": true,
+        "language": "Python with C extension (scipy.optimize ridder solver in C, built via meson-python)",
+        "environment": {
+          "python_version": "3.14",
+          "pip_packages": [
+            "numpy==2.4.1",
+            "pybind11==3.0.1",
+            "cython==3.2.4",
+            "pythran==0.18.1",
+            "meson",
+            "meson-python",
+            "ninja",
+            "pytest"
+          ],
+          "system_packages": [
+            "gcc 14.2.1 (c, c++, fortran via gfortran)",
+            "ld.bfd linker",
+            "pkg-config",
+            "scipy-openblas (OpenBLAS 0.3.30) found via pkgconfig"
+          ],
+          "build_commands": [
+            "git checkout f835efb16637",
+            "git apply reproducing_test.patch (the TestRidderUnderflow diff from PR 24462, applied to scipy/optimize/tests/test_zeros.py)",
+            "python -m pip install meson-python meson ninja numpy==2.4.1 pybind11==3.0.1 cython==3.2.4 pythran==0.18.1 pytest",
+            "python -m pip install --no-build-isolation -e . -v"
+          ],
+          "pinned_because": [
+            "python 3.14 observed in issue#24425 environment report (observational, not a documented constraint)",
+            "numpy 2.4.1 observed in issue#24425 version report (observational, not documented; chosen to match the reporter)",
+            "pybind11 3.0.1, cython 3.2.4, pythran 0.18.1 observed in issue#24425 build report (observational; no documented constraint, so these are reproduction choices, not requirements)",
+            "scipy is NOT pinned to the 1.17.0 wheel seen in the traceback: that is a released version, while the buggy commit is a development build from source"
+          ]
+        },
+        "test_command": "python -m pytest scipy/optimize/tests/test_zeros.py::TestRidderUnderflow -v",
+        "reproducing_test": "scipy/optimize/tests/test_zeros.py::TestRidderUnderflow::test_gh_issue_underflow",
+        "success_criterion": "On buggy f835efb16637, test_gh_issue_underflow FAILS (optimize.ridder(x**5, -1, 5, xtol=1e-300, full_output=True, maxiter=10000) raises RuntimeError 'Failed to converge after 10000 iterations', so the test errors). On the fixed PR 24462 revision, the same test PASSES: result.converged is True and abs(root) < 1e-10. Companion test_early_exit_funcalls should also pass on the fixed revision.",
+        "numerical_probe": "python -c \"from scipy import optimize; f=lambda x: x**5; print(optimize.ridder(f,-1,5,xtol=1e-300,full_output=True,maxiter=10000))\" run on buggy vs fixed build; the transition is pass/fail of the exception, not the printed values",
+        "input_output_examples": [
+          {
+            "input": "f = lambda x: x**5; opt.ridder(f, -1, 5, xtol=1e-300, full_output=True, maxiter=10000)",
+            "buggy_output": "RuntimeError: Failed to converge after 10000 iterations.",
+            "expected_output": "converged result with result.converged True and abs(root) < 1e-10"
+          }
+        ],
+        "risks": [
+          "The underflow is only reached with xtol=1e-300 and maxiter=10000; if the build or test patch is altered, the defect may not appear.",
+          "Dtype is not stated in the evidence; the test uses Python floats (float64 in C doubles), so a float32 path cannot be grounded.",
+          "Stale build artifacts: the C change in ridder.c must be rebuilt from f835efb16637. An editable install that was not rebuilt after checkout would silently test the wrong code and mask the transition.",
+          "Installing the released scipy 1.17.0 wheel instead of building the buggy commit would not reproduce the defect against the intended revision.",
+          "The buggy commit f835efb16637 and PR date are unconfirmed by the passages; verify the parent of PR 24462 before relying on the buggy result.",
+          "test_chandrupatla_collection in the same PR removes the known_fail for fun7.4 for ridder; on the buggy revision that collection test may fail for reasons unrelated to the underflow, so judge only TestRidderUnderflow for the transition.",
+          "test_early_exit_funcalls covers the fm==0 early-exit path and funcall counting, a separate path from the underflow fix; its failure on buggy would not be the underflow transition.",
+          "Underflow behavior depends on floating-point mode: compiler fast-math or flush-to-zero flags would change whether fm*fm underflows; the stated toolchain is gcc 14.2.1 with ld.bfd and default flags.",
+          "Platform: the evidence only shows Linux x86-style toolchain and scipy-openblas; behaviour on other architectures (e.g. ARM, Windows, or sanitiser builds) is unverified and may not reproduce."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "1e-10 on abs(root); plus result.converged must be True",
+          "reference_source": "Ridders' method (1979) Equation 6 normalized by fa, as cited in PR 24462; test comment says zero should be found",
+          "why": "The root of x**5 is 0, so the test asserts the returned root is within 1e-10 of 0 and that the solver reports convergence rather than raising."
+        },
+        "fails_on_buggy": "The call optimize.ridder(f, -1, 5, xtol=1e-300, full_output=True, maxiter=10000) raises RuntimeError ('Failed to converge after 10000 iterations') because fm*fm underflows to zero before convergence, so the test errors before any assertion is reached.",
+        "passes_on_fixed": "The fixed ridder uses the fm/fa ratio (Equation 6), so values stay representable; the call returns with converged True and |root| below 1e-10, and both assertions pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5601,
+        "output_tokens": 4409,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 17198,
+        "output_tokens": 2875,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

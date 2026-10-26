@@ -1,0 +1,192 @@
+diff --git a/crates/burn-backend-tests/tests/tensor/float/ops/aggregation.rs b/crates/burn-backend-tests/tests/tensor/float/ops/aggregation.rs
+index 7fe47f2222b..d82b3aeb6c3 100644
+--- a/crates/burn-backend-tests/tests/tensor/float/ops/aggregation.rs
++++ b/crates/burn-backend-tests/tests/tensor/float/ops/aggregation.rs
+@@ -443,7 +443,14 @@ fn test_mean_dims_2d() {
+ 
+ #[test]
+ fn test_multiple_reduce_dims_permuted() {
+-    // Regression test for https://github.com/tracel-ai/burn/issues/4461
++    // Regression test for https://github.com/tracel-ai/burn/issues/4461.
++    //
++    // Also pins the f16/bf16 `mean_dim` overflow fix: after the first reduction
++    // the second `mean_dim` sums 256 values that peak near 1021, so the f32
++    // intermediate reaches ~261k (well above f16::MAX = 65504). A naive
++    // sum-then-divide in f16 would overflow to +inf. See the sibling
++    // `test_should_mean_overflow_intermediate_sum` for the scalar `.mean()`
++    // code path.
+     let tensor = TestTensorInt::arange(0..2 * 2 * 256, &Default::default())
+         .float()
+         .reshape([2, 2, 256]);
+diff --git a/crates/burn-backend-tests/tests/tensor/float/quantization/ops/matmul.rs b/crates/burn-backend-tests/tests/tensor/float/quantization/ops/matmul.rs
+index b324613faa7..ba15b4db745 100644
+--- a/crates/burn-backend-tests/tests/tensor/float/quantization/ops/matmul.rs
++++ b/crates/burn-backend-tests/tests/tensor/float/quantization/ops/matmul.rs
+@@ -166,6 +166,39 @@ fn test_matmul_lhs_float_rhs_quantized() {
+     assert!(output.dtype.is_float());
+ }
+ 
++#[test]
++fn test_matmul_lhs_quantized_rhs_float() {
++    // Mirror of test_matmul_lhs_float_rhs_quantized: pins the symmetric
++    // (QFloat, Float) arm of the q_matmul dispatch so a future split of the
++    // collapsed match arm cannot regress one direction silently. Uses the
++    // relative tolerance shared by the other quantized matmul tests in this
++    // file because the lhs dynamic range here is smaller than the rhs in the
++    // sibling test, so int8 noise dominates the result more.
++    let tensor_1 = QTensor::<2>::int8([
++        [1.0, 6.35, 2.0, 3.0],
++        [2.0, 3.0, 4.0, 5.0],
++        [1.0, 3.0, 5.0, 7.0],
++    ]);
++    let tensor_2 = TestTensor::<2>::from([
++        [4.0, 8.0, 12.7, 1.6],
++        [2.0, 3.0, 6.0, 4.0],
++        [1.0, 5.0, 9.0, 2.5],
++        [3.0, 7.0, 11.0, 0.5],
++    ]);
++    let tensor_3 = tensor_1.matmul(tensor_2);
++
++    let expected = TensorData::from([
++        [27.7, 58.05, 101.8, 33.5],
++        [33., 80., 134.4, 27.7],
++        [36., 91., 152.7, 29.6],
++    ]);
++    let output = tensor_3.into_data();
++    output.assert_approx_eq::<FloatElem>(&expected, Tolerance::relative(2e-2));
++
++    // Default quantization scheme does not propagate quantization with matmul
++    assert!(output.dtype.is_float());
++}
++
+ #[test]
+ fn test_matmul_mixed_block_scale() {
+     let tensor_1 = TestTensor::<2>::from([
+diff --git a/crates/burn-backend-tests/tests/tensor_f16.rs b/crates/burn-backend-tests/tests/tensor_f16.rs
+index 330c2ff94eb..1d3d4e15c19 100644
+--- a/crates/burn-backend-tests/tests/tensor_f16.rs
++++ b/crates/burn-backend-tests/tests/tensor_f16.rs
+@@ -5,7 +5,8 @@
+     feature = "vulkan",
+     feature = "cuda",
+     feature = "rocm",
+-    feature = "metal"
++    feature = "metal",
++    feature = "flex"
+ ))]
+ 
+ extern crate alloc;
+diff --git a/crates/burn-flex/src/ops/reduce.rs b/crates/burn-flex/src/ops/reduce.rs
+index ccfafa502b8..aa59b8b6a47 100644
+--- a/crates/burn-flex/src/ops/reduce.rs
++++ b/crates/burn-flex/src/ops/reduce.rs
+@@ -2142,6 +2345,109 @@ mod tests {
+         assert_eq!(values, vec![2.0, 5.0]);
+     }
+ 
++    #[test]
++    fn test_mean_f16_overflow_intermediate_sum() {
++        // Scalar `mean()` for f16 must fuse sum+divide on the f32 accumulator.
++        // Sum of 0..1024 is 523776, well above f16::MAX (65504), so a naive
++        // sum-then-divide that materialises the intermediate in f16 would clip
++        // to inf. The final mean (511.5) fits f16 comfortably.
++        let data: Vec<f16> = (0..1024).map(|i| f16::from_f32(i as f32)).collect();
++        let tensor = FlexTensor::from_data(TensorData::new(data, [1024]));
++
++        let result = mean(tensor);
++        let result_data = result.into_data();
++        let values: &[f16] = bytemuck::cast_slice(&result_data.bytes);
++
++        assert_eq!(values.len(), 1);
++        let mean = values[0].to_f32();
++        assert!(mean.is_finite(), "mean overflowed to {mean}");
++        assert!((mean - 511.5).abs() < 0.5, "expected ~511.5, got {mean}");
++    }
++
++    #[test]
++    fn test_mean_dim_f16_zero_outer_dim() {
++        // Regression test for mean_dim_half / sum_dim_contiguous_f32 clamping
++        // `outer_size.max(1)` in the last-dim branch: shape [0, 4] reducing
++        // dim=1 has outer_size=0, and the old clamp produced rows=1 which
++        // ran sum_rows_f32 past the end of an empty buffer. Result should be
++        // an empty tensor with shape [0, 1].
++        let data: Vec<f16> = Vec::new();
++        let tensor = FlexTensor::from_data(TensorData::new(data, [0, 4]));
++        let result = mean_dim(tensor, 1);
++
++        assert_eq!(result.layout().shape().to_vec(), vec![0, 1]);
++        let result_data = result.into_data();
++        let values: &[f16] = bytemuck::cast_slice(&result_data.bytes);
++        assert!(values.is_empty());
++    }
++
++    #[test]
++    fn test_sum_dim_f32_zero_outer_dim() {
++        // Regression: the f32 last-dim SIMD path (`reduce_last_dim_f32`) used
++        // `rows = outer_size.max(1)` which would index past the end of an
++        // empty data buffer for shape [0, K]. Guarded by the `out_size == 0`
++        // early return in `reduce_dim_f32`.
++        let data: Vec<f32> = Vec::new();
++        let tensor = FlexTensor::from_data(TensorData::new(data, [0, 4]));
++        let result = sum_dim(tensor, 1);
++
++        assert_eq!(result.layout().shape().to_vec(), vec![0, 1]);
++        assert!(result.into_data().bytes.is_empty());
++    }
++
++    #[test]
++    fn test_sum_dim_f32_zero_inner_dim() {
++        // Mirror of the outer-zero case: shape [3, 0] reducing dim=0 has
++        // inner_size=0. The middle/fallback paths previously would have
++        // allocated an empty result but still iterated `outer_size.max(1)`
++        // times with zero inner, producing correct (empty) output by
++        // accident. The early return makes the intent explicit.
++        let data: Vec<f32> = Vec::new();
++        let tensor = FlexTensor::from_data(TensorData::new(data, [3, 0]));
++        let result = sum_dim(tensor, 0);
++
++        assert_eq!(result.layout().shape().to_vec(), vec![1, 0]);
++        assert!(result.into_data().bytes.is_empty());
++    }
++
++    #[test]
++    fn test_sum_dim_f64_zero_outer_dim() {
++        // Covers `reduce_dim_impl` (generic contiguous/non-contiguous path)
++        // for the zero-sized non-reduced dim case.
++        let data: Vec<f64> = Vec::new();
++        let tensor = FlexTensor::from_data(TensorData::new(data, [0, 4]));
++        let result = sum_dim(tensor, 1);
++
++        assert_eq!(result.layout().shape().to_vec(), vec![0, 1]);
++        assert!(result.into_data().bytes.is_empty());
++    }
++
++    #[test]
++    fn test_sum_dim_i8_zero_outer_dim() {
++        // Covers `reduce_dim_widening` (i8/i16/u8/u16 path that accumulates
++        // in i64) for the zero-sized non-reduced dim case.
++        let data: Vec<i8> = Vec::new();
++        let tensor = FlexTensor::from_data(TensorData::new(data, [0, 4]));
++        let result = sum_dim(tensor, 1);
++
++        assert_eq!(result.layout().shape().to_vec(), vec![0, 1]);
++        assert!(result.into_data().bytes.is_empty());
++    }
++
++    #[test]
++    fn test_sum_dim_bf16_zero_outer_dim() {
++        // Covers `reduce_dim_half` (bf16/f16 sum_dim/prod_dim path) for the
++        // zero-sized non-reduced dim case. Note: f16 `mean_dim` goes through
++        // `mean_dim_half` which has its own test above; bf16 `sum_dim` goes
++        // through `reduce_dim_half`, which is why this test uses bf16+sum.
++        let data: Vec<bf16> = Vec::new();
++        let tensor = FlexTensor::from_data(TensorData::new(data, [0, 4]));
++        let result = sum_dim(tensor, 1);
++
++        assert_eq!(result.layout().shape().to_vec(), vec![0, 1]);
++        assert!(result.into_data().bytes.is_empty());
++    }
++
+     #[test]
+     fn test_mean_dim_i8_large_dimension() {
+         // dim_size=200 exceeds i8::MAX (127). Before the fix, 200 as i8 = -56,

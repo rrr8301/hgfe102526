@@ -1,0 +1,103 @@
+{
+  "input": "pipeline_no_historic/pandas_66520/mined/pandas-dev__pandas_66520.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 26925,
+    "output_tokens": 6644,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66520,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66520",
+      "buggy_commit": "982854070758cd2015fc9e64395684546b1c5444",
+      "fixed_commit": "082e77392bdbb7683fa29a2dfd335fa5c7f623f0",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 4846,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the pandas NaT-sentinel bug (values rendering or shifting onto iNaT == INT64_MIN, which is one below Timestamp.min, read back as NaT) by running the developer's added tests across Timestamp constructors, to_datetime parser legs, and the C read_csv fastpath; the transition is FAIL on buggy commit 982854070758 and PASS on the fixed PR #66520 revision.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "numpy is documented in README Dependencies but no constraint is stated; left unbounded and chosen as the one current to the checkout, not pinned from evidence",
+            "python-dateutil and tzdata have no documented constraint; tzdata is only required on Windows/Emscripten per README, so on Linux it is not needed for the transition",
+            "cython is documented as required for source installs; no version constraint is stated, so the build uses whatever is current and this is an era-unverified choice"
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/scalar/timestamp/test_constructors.py pandas/tests/scalar/timestamp/methods/test_replace.py pandas/tests/tools/test_to_datetime.py pandas/tests/io/parser/test_parse_dates.py -k 'nat_sentinel or NaT_sentinel or nat_sentinel_neighbour or offset_shifts_off_nat_sentinel or offset_overflow or hits_nat_sentinel or shift_hits_nat_sentinel or nat_sentinel_message' -p no:cacheprovider",
+        "reproducing_test": "pandas/tests/io/parser/test_parse_dates.py::test_parse_dates_c_fastpath_nat_sentinel (parametrized low_memory False/True), with pandas/tests/scalar/timestamp/test_constructors.py::test_constructor_naive_datetime_renders_nat_sentinel and pandas/tests/tools/test_to_datetime.py::test_to_datetime_hits_nat_sentinel as scalar and to_datetime counterparts",
+        "success_criterion": "On the buggy revision 982854070758 the sentinel tests fail: the value 1677-09-21 00:12:43.145224192 is accepted or returns NaT instead of raising OutOfBoundsDatetime with the 'Out of bounds nanosecond timestamp' message, so pytest.raises fails with DID NOT RAISE or the asserted fallback/equality does not hold. On the fixed PR revision the same tests pass, because the sentinel value is rejected (or falls back to raw strings in read_csv) and the neighbouring 193 ns value still parses to INT64_MIN+1.",
+        "numerical_probe": "Timestamp('1677-09-21 00:12:43.145224192')._value should be -(2**63) and the buggy build should not raise; the neighbour Timestamp('1677-09-21 00:12:43.145224193')._value should be -(2**63)+1 on both revisions.",
+        "input_output_examples": [
+          {
+            "input": "Timestamp(datetime(1677, 9, 21, 0, 12, 43, 145224), nanosecond=192)",
+            "buggy_output": "returns a Timestamp whose _value is iNaT (INT64_MIN), indistinguishable from NaT",
+            "expected_output": "raises OutOfBoundsDatetime: Out of bounds nanosecond timestamp: 1677-09-21 00:12:43.145224192"
+          },
+          {
+            "input": "to_datetime(['1677-09-21 00:12:43.145224193'])",
+            "buggy_output": "parses",
+            "expected_output": "parses to _value -(2**63)+1"
+          }
+        ],
+        "risks": [
+          "The defect is an int64 arithmetic boundary, not platform-specific; it should reproduce on Linux x86_64 with stock NumPy, but the README does not state a native backend, so no BLAS/LAPACK effect is assumed.",
+          "Dependency versions are unbounded: numpy, python-dateutil, tzdata and cython have no documented constraint and no era ceiling, so the chosen versions are inferred from the checkout date, not from the evidence; a NumPy change to float64 accumulation or to datetime64 casting could change which tests fail.",
+          "The reads-of-info.deltas[ntrans] out-of-bounds issue for nonexistent= shifts east of UTC is noted as unstable between calls; tests touching that path may be flaky on the buggy revision and should not be treated as a clean transition.",
+          "Named-timezone array_strptime leg rendering onto the NaT sentinel is a documented residual per the evidence, so the test for that leg may still read back as NaT even on the fixed revision; a failure there would not indicate a reproduction error.",
+          "Several sentinel tests depend on the fixed revision's exact error message text; if the message differs the transition may be masked by a regex mismatch rather than the behaviour.",
+          "The Timedelta sum and cumsum overflow behaviours in the observed_behavior field are not covered by the supplied tests, so this plan does not verify them; it reproduces only the Timestamp/to_datetime/read_csv sentinel facet.",
+          "The C fastpath read_csv tests run in both low_memory modes; the fastpath is decided at parse time, so the transition is only meaningful if the compiled extension is rebuilt from the buggy source."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "the expected OutOfBoundsDatetime message and _value integers asserted in the developer's tests",
+          "why": "The transition is decided by exact int64 values and exception type, so exact comparison is the appropriate oracle."
+        },
+        "fails_on_buggy": "On buggy 982854070758 the sentinel value 1677-09-21 00:12:43.145224192 renders onto iNaT (INT64_MIN) without an error, so pytest.raises(OutOfBoundsDatetime) reports DID NOT RAISE, or the read_csv equality check fails because the column is parsed to NaT instead of falling back to strings.",
+        "passes_on_fixed": "On the fixed revision the sentinel is rejected with OutOfBoundsDatetime, read_csv falls back to raw strings matching the python engine, and the 193 ns neighbour still parses to INT64_MIN+1, so the tests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 9526,
+        "output_tokens": 2179,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 17399,
+        "output_tokens": 4465,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

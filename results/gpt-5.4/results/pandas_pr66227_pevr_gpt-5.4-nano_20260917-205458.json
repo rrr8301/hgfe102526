@@ -1,0 +1,1620 @@
+[
+  {
+    "slug": "pandas_66227",
+    "bug_type": "special_value",
+    "image": "python:3.11",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but only 1/3 reported example(s) reproduce \u2014 1 still disagree on fixed",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "flipped",
+    "examples_verdict": "partial",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import numpy as np\nimport pandas as pd\nfrom pandas import DataFrame, Series\naxis = 0\nskipna = True\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\\\"m8[ns]\\\"); df = DataFrame({\\\"a\\\": arr, \\\"b\\\": arr, \\\"c\\\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]\", \"half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\\\"m8[ns]\\\"); df = DataFrame({\\\"a\\\": arr, \\\"b\\\": arr, \\\"c\\\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]\", [], \"\\\"overflow in timedelta operation\\\"\"], [\"ser = Series(np.array([\\\"NaT\\\", \\\"NaT\\\", \\\"NaT\\\"], dtype=\\\"m8[ns]\\\")); ser.sum(skipna=False)\", \"ser.sum(skipna=False)\", [\"ser = Series(np.array([\\\"NaT\\\", \\\"NaT\\\", \\\"NaT\\\"], dtype=\\\"m8[ns]\\\"))\"], \"pd.NaT\"], [\"nat = np.array([\\\"NaT\\\", \\\"NaT\\\", \\\"NaT\\\"], dtype=\\\"m8[ns]\\\"); df = DataFrame({\\\"a\\\": nat, \\\"b\\\": nat, \\\"c\\\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]\", \"nat = np.array([\\\"NaT\\\", \\\"NaT\\\", \\\"NaT\\\"], dtype=\\\"m8[ns]\\\"); df = DataFrame({\\\"a\\\": nat, \\\"b\\\": nat, \\\"c\\\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]\", [], \"result.dtype == \\\"m8[ns]\\\" and result.isna().all()\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nfrom pandas import DataFrame\n\nfor axis in [0, 1]:\n    for skipna in [True, False]:\n        name = 'half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]'\n        try:\n            half = np.iinfo(np.int64).max // 2\n            arr = np.array([half, half, half], dtype='m8[ns]')\n            df = DataFrame({'a': arr, 'b': arr, 'c': arr})\n            res = df.sum(axis=axis, skipna=skipna)\n            probe(name, res)\n        except Exception as e:\n            probe_exception(name, e)\n\nfor axis in [0, 1]:\n    name = 'nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]'\n    try:\n        nat = np.array(['NaT', 'NaT', 'NaT'], dtype='m8[ns]')\n        df = DataFrame({'a': nat, 'b': nat, 'c': nat})\n        res = df.sum(axis=axis, skipna=False)\n        probe(name, res)\n    except Exception as e:\n        probe_exception(name, e)"
+      },
+      "fixed": {
+        "td64_reported_semantics_pandas_probe": "import numpy as np\nimport pandas as pd\nimport warnings\n\nnp_half = np.iinfo(np.int64).max // 2\nhalf = np_half\narr = np.array([half, half, half], dtype='m8[ns]')\ndf_over = pd.DataFrame({'a': arr, 'b': arr, 'c': arr})\n\ndef run_case_df(axis, skipna):\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter('always')\n        try:\n            res = df_over.sum(axis=axis, skipna=skipna)\n            out = {\n                'kind': 'value',\n                'dtype': str(res.dtype),\n                'all_nan': getattr(res, 'isna', lambda: pd.Series([False]*len(res))).all() if hasattr(res,'isna') else None,\n                'values': res.to_numpy().astype('int64', copy=False) if res.dtype.kind in ['m','M'] else None,\n                'nanat_count': int(getattr(res, 'isna', lambda: pd.Series([False]*len(res))).sum()) if hasattr(res,'isna') else None,\n                'warnings': [str(x.message) for x in w],\n                'runtime_warning_present': any('overflow' in str(x.message).lower() for x in w),\n            }\n            return out\n        except Exception as e:\n            out = {\n                'kind': 'exception',\n                'exc_type': type(e).__name__,\n                'exc_msg': str(e),\n                'warnings': [str(x.message) for x in w],\n            }\n            return out\n\naxes = [0,1]\nskips = [True, False]\nresults = {}\nfor axis in axes:\n    for skipna in skips:\n        key = f'df_over.sum_axis{axis}_skipna{skipna}'\n        results[key] = run_case_df(axis, skipna)\n\nser_nat = pd.Series(np.array(['NaT','NaT','NaT'], dtype='m8[ns]'))\n\ndef run_case_ser_skipna_false():\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter('always')\n        try:\n            res = ser_nat.sum(skipna=False)\n            return {\n                'kind':'value',\n                'dtype': str(getattr(res,'dtype', None)),\n                'isna': pd.isna(res),\n                'value': str(res),\n                'warnings':[str(x.message) for x in w],\n            }\n        except Exception as e:\n            return {\n                'kind':'exception',\n                'exc_type': type(e).__name__,\n                'exc_msg': str(e),\n                'warnings':[str(x.message) for x in w],\n            }\n\nnat = np.array(['NaT','NaT','NaT'], dtype='m8[ns]')\ndf_nat = pd.DataFrame({'a': nat, 'b': nat, 'c': nat})\n\ndef run_case_df_nat(axis):\n    with warnings.catch_warnings(record=True) as w:\n        warnings.simplefilter('always')\n        try:\n            res = df_nat.sum(axis=axis, skipna=False)\n            out = {\n                'kind':'value',\n                'dtype': str(res.dtype),\n                'all_na': bool(res.isna().all()),\n                'values_as_str': [str(x) for x in res.to_numpy()],\n                'warnings':[str(x.message) for x in w],\n            }\n            return out\n        except Exception as e:\n            return {\n                'kind':'exception',\n                'exc_type': type(e).__name__,\n                'exc_msg': str(e),\n                'warnings':[str(x.message) for x in w],\n            }\n\nresults['ser_nat.sum_skipnaFalse'] = run_case_ser_skipna_false()\nfor axis in [0,1]:\n    results[f'df_nat.sum_axis{axis}_skipnaFalse'] = run_case_df_nat(axis)\n\nfor k,v in results.items():\n    probe(k, v)\n",
+        "reported_examples": "import numpy as np\nimport pandas as pd\nfrom pandas import DataFrame, Series\naxis = 0\nskipna = True\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\\\"m8[ns]\\\"); df = DataFrame({\\\"a\\\": arr, \\\"b\\\": arr, \\\"c\\\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]\", \"half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\\\"m8[ns]\\\"); df = DataFrame({\\\"a\\\": arr, \\\"b\\\": arr, \\\"c\\\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]\", [], \"\\\"overflow in timedelta operation\\\"\"], [\"ser = Series(np.array([\\\"NaT\\\", \\\"NaT\\\", \\\"NaT\\\"], dtype=\\\"m8[ns]\\\")); ser.sum(skipna=False)\", \"ser.sum(skipna=False)\", [\"ser = Series(np.array([\\\"NaT\\\", \\\"NaT\\\", \\\"NaT\\\"], dtype=\\\"m8[ns]\\\"))\"], \"pd.NaT\"], [\"nat = np.array([\\\"NaT\\\", \\\"NaT\\\", \\\"NaT\\\"], dtype=\\\"m8[ns]\\\"); df = DataFrame({\\\"a\\\": nat, \\\"b\\\": nat, \\\"c\\\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]\", \"nat = np.array([\\\"NaT\\\", \\\"NaT\\\", \\\"NaT\\\"], dtype=\\\"m8[ns]\\\"); df = DataFrame({\\\"a\\\": nat, \\\"b\\\": nat, \\\"c\\\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]\", [], \"result.dtype == \\\"m8[ns]\\\" and result.isna().all()\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nfrom pandas import DataFrame\n\nfor axis in [0, 1]:\n    for skipna in [True, False]:\n        name = 'half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]'\n        try:\n            half = np.iinfo(np.int64).max // 2\n            arr = np.array([half, half, half], dtype='m8[ns]')\n            df = DataFrame({'a': arr, 'b': arr, 'c': arr})\n            res = df.sum(axis=axis, skipna=skipna)\n            probe(name, res)\n        except Exception as e:\n            probe_exception(name, e)\n\nfor axis in [0, 1]:\n    name = 'nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]'\n    try:\n        nat = np.array(['NaT', 'NaT', 'NaT'], dtype='m8[ns]')\n        df = DataFrame({'a': nat, 'b': nat, 'c': nat})\n        res = df.sum(axis=axis, skipna=False)\n        probe(name, res)\n    except Exception as e:\n        probe_exception(name, e)"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but only 1/3 reported example(s) reproduce \u2014 1 still disagree on fixed",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "flipped",
+      "examples_verdict": "partial",
+      "success_criterion": "On buggy commit 6850d49c8de29df8f048f7b90fcf897464fff0f4 with the PR's test files added and no nanops.py fix applied, running the test_command shows all three selected tests FAILING (overflow case does not raise / all-NaT cases wrongly raise); they would PASS once the fix in 263e401f3 is applied.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 4,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 4,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "IEEE FP exception: invalid"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]": {
+                "__numagent_repeated__": [
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ]
+                ]
+              },
+              "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]": {
+                "__numagent_repeated__": [
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ]
+                ]
+              }
+            },
+            "fixed_values": {
+              "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]": {
+                "__numagent_repeated__": [
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  },
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  },
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  },
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  }
+                ]
+              },
+              "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]": {
+                "__numagent_repeated__": [
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ]
+                ]
+              }
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]": "overflow in timedelta operation",
+              "ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)": "__error__: OutOfBoundsTimedelta: overflow in timedelta operation",
+              "expected::ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)": "NaT",
+              "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]": "overflow in timedelta operation",
+              "ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)": "NaT",
+              "expected::ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)": "NaT",
+              "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          },
+          {
+            "label": "td64_reported_semantics_pandas_probe",
+            "outcome": "unpaired",
+            "buggy": null,
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": null,
+            "fixed_status": "ok",
+            "values_differ": null,
+            "buggy_values": null,
+            "fixed_values": {
+              "df_over.sum_axis0_skipnaTrue": {
+                "kind": "exception",
+                "exc_type": "OutOfBoundsTimedelta",
+                "exc_msg": "overflow in timedelta operation",
+                "warnings": []
+              },
+              "df_over.sum_axis0_skipnaFalse": {
+                "kind": "exception",
+                "exc_type": "OutOfBoundsTimedelta",
+                "exc_msg": "overflow in timedelta operation",
+                "warnings": []
+              },
+              "df_over.sum_axis1_skipnaTrue": {
+                "kind": "exception",
+                "exc_type": "OutOfBoundsTimedelta",
+                "exc_msg": "overflow in timedelta operation",
+                "warnings": []
+              },
+              "df_over.sum_axis1_skipnaFalse": {
+                "kind": "exception",
+                "exc_type": "OutOfBoundsTimedelta",
+                "exc_msg": "overflow in timedelta operation",
+                "warnings": []
+              },
+              "ser_nat.sum_skipnaFalse": {
+                "kind": "value",
+                "dtype": "None",
+                "isna": true,
+                "value": "NaT",
+                "warnings": []
+              },
+              "df_nat.sum_axis0_skipnaFalse": {
+                "kind": "value",
+                "dtype": "timedelta64[ns]",
+                "all_na": true,
+                "values_as_str": [
+                  "NaT",
+                  "NaT",
+                  "NaT"
+                ],
+                "warnings": []
+              },
+              "df_nat.sum_axis1_skipnaFalse": {
+                "kind": "value",
+                "dtype": "timedelta64[ns]",
+                "all_na": true,
+                "values_as_str": [
+                  "NaT",
+                  "NaT",
+                  "NaT"
+                ],
+                "warnings": []
+              }
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]",
+            "expected_output": "raises pd.errors.OutOfBoundsTimedelta with match=\"overflow in timedelta operation\"",
+            "expected_value": "overflow in timedelta operation",
+            "expected_from": "evaluated",
+            "buggy_output_reported": "DataFrame.sum silently returns an int64-max-saturated result with only a RuntimeWarning (no exception raised)",
+            "outcome": "still_wrong",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]",
+              "observed": {
+                "__numagent_repeated__": [
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ]
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": false,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]",
+              "observed": {
+                "__numagent_repeated__": [
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  },
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  },
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  },
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  }
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)",
+            "expected_output": "pd.NaT",
+            "expected_value": "NaT",
+            "expected_from": "evaluated",
+            "buggy_output_reported": "falsely raised OutOfBoundsTimedelta (NaT sentinels accumulate past int64 bounds -> false overflow); not identical to pd.NaT",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)",
+              "observed": "__error__: OutOfBoundsTimedelta: overflow in timedelta operation",
+              "evaluation_error": "OutOfBoundsTimedelta: overflow in timedelta operation",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)",
+              "observed": "NaT",
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]",
+            "expected_output": "result.dtype == \"m8[ns]\" and result.isna().all()",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "mistaken for overflow (false raise) rather than returning NaT",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]",
+              "observed": {
+                "__numagent_repeated__": [
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ]
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]",
+              "observed": {
+                "__numagent_repeated__": [
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ]
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 10,
+            "n_failed": 4,
+            "ran_test": true,
+            "failed_setup_or_build": [
+              "python -c \"import pandas as pd; import sys; print(pd.__version__); print(pd.__file__); print(sys.executable)\""
+            ]
+          },
+          "fixed": {
+            "n_commands": 2,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata",
+            "cython>=3.1.0",
+            "meson>=1.2.3",
+            "meson-python>=0.19.0",
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1",
+            "numpy>=2.0.0",
+            "hypothesis>=6.116.0"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-07-11T10:34:25-07:00",
+        "fixed_commit_date": "2026-07-11T11:24:53-07:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-07-11T11:24:53-07:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4.0.0a0",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.0",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.48.0",
+              "meson-python": "0.20.0",
+              "meson": "1.11.2",
+              "wheel": "0.47.0",
+              "cython": "3.2.8",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "hypothesis>=6.116.0",
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.26.0 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1266.g6850d49c8d.dirty) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1266.g6850d49c8d.dirty) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.8.2->pandas==3.1.0.dev0+1266.g6850d49c8d.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1266.g6850d49c8d.dirty-cp311-cp311-linux_x86_64.whl size=15592440 sha256=51170d16e83f99859009aa701f9afa3206709a7711bdcf1dcc833d659b52570e\n  Stored in directory: /tmp/pip-ephem-wheel-cache-cdxme03m/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1266.g6850d49c8d.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+            "build_requires": [
+              "meson-python>=0.19.0,<1",
+              "meson>=1.2.3,<2",
+              "wheel",
+              "Cython>3.1.0,<4.0.0a0",
+              "versioneer[toml]"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "matplotlib": "3.11.0",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.48.0",
+              "meson-python": "0.20.0",
+              "meson": "1.11.2",
+              "wheel": "0.47.0",
+              "cython": "3.2.8",
+              "versioneer": "0.29"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "hypothesis>=6.116.0",
+              "pytest>=8.3.4",
+              "pytest-xdist>=3.6.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.26.0 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1267.g263e401f36) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1267.g263e401f36) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.8.2->pandas==3.1.0.dev0+1267.g263e401f36) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1267.g263e401f36-cp311-cp311-linux_x86_64.whl size=15592339 sha256=9615b6a0b6ca6835e8b88af15fd6831b8745f7a66668fbaf75f7ed0cde1fc7a9\n  Stored in directory: /tmp/pip-ephem-wheel-cache-72ejwg_4/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1267.g263e401f36\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 4,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 4,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 3,
+        "verdict": "flipped",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "flipped",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "IEEE FP exception: invalid"
+              ]
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]": {
+                "__numagent_repeated__": [
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ]
+                ]
+              },
+              "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]": {
+                "__numagent_repeated__": [
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ]
+                ]
+              }
+            },
+            "fixed_values": {
+              "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]": {
+                "__numagent_repeated__": [
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  },
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  },
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  },
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  }
+                ]
+              },
+              "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]": {
+                "__numagent_repeated__": [
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ]
+                ]
+              }
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]": "overflow in timedelta operation",
+              "ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)": "__error__: OutOfBoundsTimedelta: overflow in timedelta operation",
+              "expected::ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)": "NaT",
+              "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "expected::half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]": "overflow in timedelta operation",
+              "ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)": "NaT",
+              "expected::ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)": "NaT",
+              "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          },
+          {
+            "label": "td64_reported_semantics_pandas_probe",
+            "outcome": "unpaired",
+            "buggy": null,
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": null,
+            "fixed_status": "ok",
+            "values_differ": null,
+            "buggy_values": null,
+            "fixed_values": {
+              "df_over.sum_axis0_skipnaTrue": {
+                "kind": "exception",
+                "exc_type": "OutOfBoundsTimedelta",
+                "exc_msg": "overflow in timedelta operation",
+                "warnings": []
+              },
+              "df_over.sum_axis0_skipnaFalse": {
+                "kind": "exception",
+                "exc_type": "OutOfBoundsTimedelta",
+                "exc_msg": "overflow in timedelta operation",
+                "warnings": []
+              },
+              "df_over.sum_axis1_skipnaTrue": {
+                "kind": "exception",
+                "exc_type": "OutOfBoundsTimedelta",
+                "exc_msg": "overflow in timedelta operation",
+                "warnings": []
+              },
+              "df_over.sum_axis1_skipnaFalse": {
+                "kind": "exception",
+                "exc_type": "OutOfBoundsTimedelta",
+                "exc_msg": "overflow in timedelta operation",
+                "warnings": []
+              },
+              "ser_nat.sum_skipnaFalse": {
+                "kind": "value",
+                "dtype": "None",
+                "isna": true,
+                "value": "NaT",
+                "warnings": []
+              },
+              "df_nat.sum_axis0_skipnaFalse": {
+                "kind": "value",
+                "dtype": "timedelta64[ns]",
+                "all_na": true,
+                "values_as_str": [
+                  "NaT",
+                  "NaT",
+                  "NaT"
+                ],
+                "warnings": []
+              },
+              "df_nat.sum_axis1_skipnaFalse": {
+                "kind": "value",
+                "dtype": "timedelta64[ns]",
+                "all_na": true,
+                "values_as_str": [
+                  "NaT",
+                  "NaT",
+                  "NaT"
+                ],
+                "warnings": []
+              }
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 3,
+        "n_judged": 3,
+        "n_reproduced": 1,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 0,
+        "n_contested": 1,
+        "unobserved": [],
+        "verdict": "partial",
+        "examples": [
+          {
+            "input": "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]",
+            "expected_output": "raises pd.errors.OutOfBoundsTimedelta with match=\"overflow in timedelta operation\"",
+            "expected_value": "overflow in timedelta operation",
+            "expected_from": "evaluated",
+            "buggy_output_reported": "DataFrame.sum silently returns an int64-max-saturated result with only a RuntimeWarning (no exception raised)",
+            "outcome": "still_wrong",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]",
+              "observed": {
+                "__numagent_repeated__": [
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ]
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": false,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]",
+              "observed": {
+                "__numagent_repeated__": [
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  },
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  },
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  },
+                  {
+                    "raised": "OutOfBoundsTimedelta",
+                    "message": "overflow in timedelta operation",
+                    "origin": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/core/nanops.py",
+                    "in_repository": false
+                  }
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": false
+            }
+          },
+          {
+            "input": "ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)",
+            "expected_output": "pd.NaT",
+            "expected_value": "NaT",
+            "expected_from": "evaluated",
+            "buggy_output_reported": "falsely raised OutOfBoundsTimedelta (NaT sentinels accumulate past int64 bounds -> false overflow); not identical to pd.NaT",
+            "outcome": "reproduced",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)",
+              "observed": "__error__: OutOfBoundsTimedelta: overflow in timedelta operation",
+              "evaluation_error": "OutOfBoundsTimedelta: overflow in timedelta operation",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False)",
+              "observed": "NaT",
+              "evaluation_error": "",
+              "matches_expected": true
+            }
+          },
+          {
+            "input": "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]",
+            "expected_output": "result.dtype == \"m8[ns]\" and result.isna().all()",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "mistaken for overflow (false raise) rather than returning NaT",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]",
+              "observed": {
+                "__numagent_repeated__": [
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ]
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]",
+              "observed": {
+                "__numagent_repeated__": [
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ],
+                  [
+                    "NaT",
+                    "NaT",
+                    "NaT"
+                  ]
+                ]
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 10,
+          "n_failed": 4,
+          "ran_test": true,
+          "failed_setup_or_build": [
+            "python -c \"import pandas as pd; import sys; print(pd.__version__); print(pd.__file__); print(sys.executable)\""
+          ]
+        },
+        "fixed": {
+          "n_commands": 2,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "On buggy commit 6850d49c8de29df8f048f7b90fcf897464fff0f4 with the PR's test files added and no nanops.py fix applied, running the test_command shows all three selected tests FAILING (overflow case does not raise / all-NaT cases wrongly raise); they would PASS once the fix in 263e401f3 is applied."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata",
+          "cython>=3.1.0",
+          "meson>=1.2.3",
+          "meson-python>=0.19.0",
+          "pytest>=8.3.4",
+          "pytest-xdist>=3.6.1",
+          "numpy>=2.0.0",
+          "hypothesis>=6.116.0"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-07-11T10:34:25-07:00",
+      "fixed_commit_date": "2026-07-11T11:24:53-07:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-07-11T11:24:53-07:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4.0.0a0",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.0",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.48.0",
+            "meson-python": "0.20.0",
+            "meson": "1.11.2",
+            "wheel": "0.47.0",
+            "cython": "3.2.8",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "hypothesis>=6.116.0",
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.26.0 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1266.g6850d49c8d.dirty) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1266.g6850d49c8d.dirty) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/buggy/lib/python3.11/site-packages (from python-dateutil>=2.8.2->pandas==3.1.0.dev0+1266.g6850d49c8d.dirty) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1266.g6850d49c8d.dirty-cp311-cp311-linux_x86_64.whl size=15592440 sha256=51170d16e83f99859009aa701f9afa3206709a7711bdcf1dcc833d659b52570e\n  Stored in directory: /tmp/pip-ephem-wheel-cache-cdxme03m/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1266.g6850d49c8d.dirty\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/pandas/__init__.py",
+          "build_requires": [
+            "meson-python>=0.19.0,<1",
+            "meson>=1.2.3,<2",
+            "wheel",
+            "Cython>3.1.0,<4.0.0a0",
+            "versioneer[toml]"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "matplotlib": "3.11.0",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.48.0",
+            "meson-python": "0.20.0",
+            "meson": "1.11.2",
+            "wheel": "0.47.0",
+            "cython": "3.2.8",
+            "versioneer": "0.29"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "hypothesis>=6.116.0",
+            "pytest>=8.3.4",
+            "pytest-xdist>=3.6.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.26.0 in /usr/local/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1267.g263e401f36) (2.4.6)\nRequirement already satisfied: python-dateutil>=2.8.2 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from pandas==3.1.0.dev0+1267.g263e401f36) (2.9.0.post0)\nRequirement already satisfied: six>=1.5 in /workspace/.venvs/fixed/lib/python3.11/site-packages (from python-dateutil>=2.8.2->pandas==3.1.0.dev0+1267.g263e401f36) (1.17.0)\nBuilding wheels for collected packages: pandas\n  Building wheel for pandas (pyproject.toml): started\n  Building wheel for pandas (pyproject.toml): finished with status 'done'\n  Created wheel for pandas: filename=pandas-3.1.0.dev0+1267.g263e401f36-cp311-cp311-linux_x86_64.whl size=15592339 sha256=9615b6a0b6ca6835e8b88af15fd6831b8745f7a66668fbaf75f7ed0cde1fc7a9\n  Stored in directory: /tmp/pip-ephem-wheel-cache-72ejwg_4/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built pandas\nInstalling collected packages: pandas\nSuccessfully installed pandas-3.1.0.dev0+1267.g263e401f36\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 7,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the reported special-value timedelta64 reduction bug by contrasting the failing/passing behavior of the added overflow/NaT tests on buggy vs fixed pandas revisions.",
+          "milestones": [
+            "buggy_env_built [buggy] \u2014 Verify we can import and run the three targeted tests in the buggy revision environment. (5 steps, verify: steps_succeeded, test_ran, test_fails)",
+            "buggy_examples_check [buggy] \u2014 Demonstrate the reported special-value behavior directly from the PR examples on the buggy revision (RuntimeWarning saturation / false overflow raise vs NaT). (1 steps, verify: steps_succeeded, examples_reproduced)",
+            "fixed_env_built [fixed] \u2014 Verify the same targeted tests pass on the fixed revision environment. (3 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "fixed_examples_check [fixed] \u2014 Confirm the report examples evaluate to the expected safe behavior on the fixed revision. (1 steps, verify: steps_succeeded, examples_reproduced)",
+            "compare_and_confirm_reproduction [fixed] \u2014 Establish that buggy and fixed revisions differ for the selected reproduction tests and examples. (1 steps, verify: steps_succeeded, test_ran, test_passes, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python --version",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 0.14
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -m pip install -q --upgrade pip && python -m pip install -q \"pytest>=8.3.4\" \"numpy>=2.0.0\" \"cython>=3.1.0,<4.0.0a0\" \"meson>=1.2.3\" \"meson-python>=0.19.0\" \"pytz>=2020.1\" \"python-dateutil>=2.8.2\" \"hypothesis>=6.116.0\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 5.52
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -c \"import pandas as pd; import sys; print(pd.__version__); print(pd.__file__); print(sys.executable)\"",
+        "purpose": "setup",
+        "exit_code": 1,
+        "runtime_s": 0.3
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs pandas.tests.frame.test_reductions -k \"test_sum_timedelta64_overflow_raises or test_sum_timedelta64_all_nat_skipna_false\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 5.38
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs pandas.tests.series.test_reductions -k \"test_td64_sum_all_nat_skipna_false\" --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.21
+      },
+      {
+        "verification": {
+          "milestone": "buggy_env_built",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`python -c \"import pandas as pd; import sys; print(pd.__version__); print(pd.__fi` exited 1: <module>\n    import pandas._libs.pandas_parser  # isort: skip # type: ignore[reportUnusedImport]\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nModuleNotFoundError: No module named 'pandas._libs.pandas_parser'; `python -I -m pytest --pyargs pandas.tests.frame.test_reductions -k \"test_sum_tim` exited 1: t PYTHONWARNINGS=error to get a traceback and show which plugin is responsible. Additionally, set HYPOTHESIS_EXTEND_INITIALIZATION=1 to pinpoint the exact location.\n  notice_initialization_restarted(); `python -I -m pytest --pyargs pandas.tests.series.test_reductions -k \"test_td64_s` exited 1: t PYTHONWARNINGS=error to get a traceback and show which plugin is responsible. Additionally, set HYPOTHESIS_EXTEND_INITIALIZATION=1 to pinpoint the exact location.\n  notice_initialization_restarted()"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failed environment-test milestone with a direct numerical/probe-based reproduction that does not require importing pandas compiled extensions in the buggy revision.",
+          "milestones": [
+            "buggy_import_fixed_by_isolation_check [buggy] \u2014 Determine whether pandas can be imported in the buggy and fixed revisions and diagnose the specific missing compiled module causing the buggy test/import failure. (2 steps, verify: steps_succeeded)",
+            "probe_reproduction_without_pandas_import [buggy] \u2014 Reproduce the special-value timedelta64 behavior directly from the report\u2019s examples by evaluating only numerical/array operations where possible; if pandas import is impossible, confirm that the buggy revision cannot be evaluated and instead record which computed quantities match the expected excep (1 steps, verify: steps_succeeded, probe_ran)",
+            "probe_reproduction_compare_buggy_fixed [fixed] \u2014 Run the identical probe in the fixed revision and confirm whether pandas-dependent semantics are unreachable in buggy but the fixed revision can be evaluated; also confirm numpy-level semantics are consistent across revisions. (2 steps, verify: steps_succeeded, probe_ran, test_ran)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -c \"import pandas as pd\"",
+        "purpose": "debug",
+        "exit_code": 0,
+        "runtime_s": 0.5
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -c \"import site,sys,glob; import os; import pandas as pd; import pandas as _; import pathlib; print('pandas_file',pd.__file__); p=pathlib.Path(pd.__file__).parent/'_libs'; print('libs_dir',p); print(sorted([q.name for q in p.glob('pandas_parser*')]+[q.name for q in p.glob('*.so')][:10]));\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.48
+      },
+      {
+        "verification": {
+          "milestone": "buggy_import_fixed_by_isolation_check",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "td64_overflow_and_nat_semantics_probe",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(td64_overflow_and_nat_semantics_probe) \u2014 Evaluate the overflow and all-NaT accumulation semantics using numpy datetime64/int64 conversions from the report inputs to determine whether the overflow boundary/NaT behavior can be detected without pandas."
+      },
+      {
+        "verification": {
+          "milestone": "probe_reproduction_without_pandas_import",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(td64_overflow_and_nat_semantics_probe) \u2014 Evaluate the overflow and all-NaT accumulation semantics using numpy datetime64/int64 conversions from the report inputs to determine whether the overflow boundary/NaT behavior can be detected without pandas. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Establish a probe-based reproduction of the reported special-value timedelta64 overflow/NaT semantics on both buggy and fixed revisions without relying on the failing reproducer tests themselves, and show the two revisions differ on the key computed outcomes.",
+          "milestones": [
+            "probe_numpy_level_reproducer_without_pandas_import [buggy] \u2014 Create a pandas-free numerical probe (using numpy datetime64 arithmetic only) that reflects the overflow/NaT boundary behavior implied by the report inputs, and record intermediate quantities so later pandas-dependent checks can be interpreted. (2 steps, verify: steps_succeeded, probe_ran)",
+            "check_reported_examples_with_pandas_if_possible [buggy] \u2014 Reproduce the three reported example expressions using pandas reductions (only as a numerical evaluation harness), and show buggy vs fixed produce different outcomes (exception vs NaT vs saturation). (1 steps, verify: steps_succeeded, examples_reproduced, test_ran)",
+            "check_reported_examples_fixed_revision [fixed] \u2014 Run the same report examples on the fixed revision to confirm the corrected semantics (OutOfBoundsTimedelta vs NaT) and that the two revisions differ on key outputs. (1 steps, verify: steps_succeeded, examples_reproduced)",
+            "revisions_differ_on_special_values_semantics [fixed] \u2014 Confirm that the buggy and fixed revisions record different values/exceptions for the report examples corresponding to overflow/NaT handling. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -c \"import pandas as pd; print('pandas_import_ok', pd.__version__)\"",
+        "purpose": "debug",
+        "exit_code": 0,
+        "runtime_s": 0.49
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "td64_special_values_semantics_numpy_probe",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n  - the code looks like JavaScript/TypeScript.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(td64_special_values_semantics_numpy_probe) \u2014 Run a numpy-only probe implementing the three report examples as close as possible to pandas reduction behavior: compute sums in int64 nanoseconds with overflow checks and NaT propagation rules; record the computed raw int64 sums, overflow flags, and NaT-handling outcomes."
+      },
+      {
+        "verification": {
+          "milestone": "probe_numpy_level_reproducer_without_pandas_import",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(td64_special_values_semantics_numpy_probe) \u2014 Run a numpy-only probe implementing the three report examples as close as possible to pandas reduction behavior: compute sums in int64 nanoseconds with overflow checks and NaT propagation rules; record the computed raw int64 sums, overflow flags, and NaT-handling outcomes. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "probe_numpy_level_reproducer_without_pandas_import",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded",
+            "probe_ran"
+          ],
+          "attempts": 2,
+          "detail": [
+            "[buggy] run_numerical_probe(td64_special_values_semantics_numpy_probe) \u2014 Run a numpy-only probe implementing the three report examples as close as possible to pandas reduction behavior: compute sums in int64 nanoseconds with overflow checks and NaT propagation rules; record the computed raw int64 sums, overflow flags, and NaT-handling outcomes. did not execute",
+            "the milestone ran no probe"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "check_reported_examples_with_pandas_if_possible",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/3 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); 3 never evaluated \u2014 the preamble does not bind everything they need: half = np.iinfo(np.int64).max // 2; arr = np.array([half, half, half], dtype=\"m8[ns]\"); df = DataFrame({\"a\": arr, \"b\": arr, \"c\": arr}); df.sum(axis=axis, skipna=skipna) for axis in [0,1], skipna in [True,False]; ser = Series(np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\")); ser.sum(skipna=False); nat = np.array([\"NaT\", \"NaT\", \"NaT\"], dtype=\"m8[ns]\"); df = DataFrame({\"a\": nat, \"b\": nat, \"c\": nat}); df.sum(axis=axis, skipna=False) for axis in [0,1]"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Establish a pandas-based probe reproduction of the reported timedelta64 overflow/NaT semantics on both buggy and fixed revisions by evaluating concrete inputs and asserting that the computed outcomes (exception vs NaT vs warning/saturation) differ across revisions.",
+          "milestones": [
+            "probe_reproduce_special_values_pandas [buggy] \u2014 Using a numerical probe that directly runs the three reported reductions in-process (catching exceptions/warnings), record comparable outcomes for buggy and fixed revisions. (2 steps, verify: steps_succeeded)",
+            "probe_reproduce_special_values_pandas_fixed [fixed] \u2014 Run the exact same probe on the fixed revision and confirm its outcomes differ from buggy (exceptions vs values/NaT). (1 steps, verify: steps_succeeded)",
+            "diff_between_revisions_for_special_values [fixed] \u2014 Confirm that at least one of the recorded keys differs between buggy and fixed revisions, establishing that the probe is sensitive to the reported semantics change. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -c \"import pandas as pd, numpy as np; print('pandas', pd.__version__); print('numpy', np.__version__)\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 0.49
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "td64_reported_semantics_pandas_probe",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "`probes` does not exist \u2014 the harness defines only probe(name, value), probe_iteration(**fields) and probe_exception(name, exception)."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - `probes` does not exist \u2014 the harness defines only probe(name, value), probe_iteration(**fields) and probe_exception(name, exception).\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(td64_reported_semantics_pandas_probe) \u2014 Run a probe that constructs the exact DataFrame/Series inputs from the report and computes df.sum / ser.sum for the specified axis/skipna settings, capturing either exception type/message or the resulting dtype/value-NaT-ness and whether a RuntimeWarning was emitted."
+      },
+      {
+        "verification": {
+          "milestone": "probe_reproduce_special_values_pandas",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(td64_reported_semantics_pandas_probe) \u2014 Run a probe that constructs the exact DataFrame/Series inputs from the report and computes df.sum / ser.sum for the specified axis/skipna settings, capturing either exception type/message or the resulting dtype/value-NaT-ness and whether a RuntimeWarning was emitted. did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "probe_reproduce_special_values_pandas",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 2,
+          "detail": [
+            "[buggy] run_numerical_probe(td64_reported_semantics_pandas_probe) \u2014 Run a probe that constructs the exact DataFrame/Series inputs from the report and computes df.sum / ser.sum for the specified axis/skipna settings, capturing either exception type/message or the resulting dtype/value-NaT-ness and whether a RuntimeWarning was emitted. did not execute"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "td64_reported_semantics_pandas_probe",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "probe_reproduce_special_values_pandas_fixed",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "echo 'Reusing recorded probe outputs td64_reported_semantics_pandas_probe for buggy vs fixed comparison.'",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.13
+      },
+      {
+        "verification": {
+          "milestone": "diff_between_revisions_for_special_values",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": false,
+              "detail": "no difference established (transition fail->missing, numeric inconclusive)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs pandas.tests.frame.test_reductions -k test_sum_timedelta64_overflow_raises -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 3.54
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs pandas.tests.frame.test_reductions -k test_sum_timedelta64_overflow_raises -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.4
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_sum_timedelta64_overflow_raises",
+          "command": "python -I -m pytest --pyargs pandas.tests.frame.test_reductions -k test_sum_timedelta64_overflow_raises -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "pandas",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_sum_timedelta64_overflow_raises",
+              "command": "python -I -m pytest --pyargs pandas.tests.frame.test_reductions -k test_sum_timedelta64_overflow_raises -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 7)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 7)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 3,
+            "recorded": 3,
+            "error": null,
+            "could_not_evaluate": 3
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 3,
+            "recorded": 3,
+            "error": null,
+            "could_not_evaluate": 2
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "IEEE FP exception: invalid"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "described_examples": {
+          "n_described": 2,
+          "buggy": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "flipped",
+        "examples_verdict": "partial",
+        "examples": "1/3"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but only 1/3 reported example(s) reproduce \u2014 1 still disagree on fixed"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 7,
+      "input_tokens": 19787,
+      "output_tokens": 7586,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.01344
+    }
+  }
+]

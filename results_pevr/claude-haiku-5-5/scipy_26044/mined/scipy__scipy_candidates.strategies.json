@@ -1,0 +1,105 @@
+{
+  "input": "pipeline_no_historic/scipy_26044/mined/scipy__scipy_26044.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 21287,
+    "output_tokens": 5936,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 26044,
+      "reference": "https://github.com/scipy/scipy/pull/26044",
+      "buggy_commit": "a804efa6ece58f62f5b4af667eec70234c160276",
+      "fixed_commit": "34d57a75ac3a7afa07266fb1e5b34cac19e9fd76",
+      "bug_type": "convergence",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 4890,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce scipy PR 26044: trust-exact evaluated the Hessian (building the subproblem) at every proposed point before acceptance, so a trial point with fun=nan or a Hessian ValueError for x<=0 either stalled the solver or raised. The fix evaluates only fun at the trial point, treats NaN as +inf, and builds the subproblem only after acceptance. Run the single new regression test on the buggy checkout (expected to fail or error) and on the fixed checkout (expected to pass).",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "pytest",
+            "meson-python",
+            "ninja",
+            "Cython",
+            "pybind11",
+            "pythran"
+          ],
+          "system_packages": [
+            "a C/C++ and Fortran compiler toolchain (gcc/gfortran or equivalent)",
+            "git"
+          ],
+          "build_commands": [
+            "git checkout a804efa6ece5 (buggy revision) and git submodule update --init if needed",
+            "pip install -r requirements/build.txt (or the build requirements listed in pyproject.toml)",
+            "pip install -e . --no-build-isolation (or python dev.py build) to compile the extension modules that scipy.optimize imports"
+          ],
+          "pinned_because": [
+            "Python 3.8.2 and numpy 1.18.1 are the reporter's environment from issue #12503 only; the evidence gives no documented constraint and no era ceiling for either package, so this plan does not pin them. Use a Python and numpy combination that the buggy checkout's pyproject.toml and build requirements accept, and state that choice in the run log.",
+            "scipy 1.4.1 is also reporter-only; the buggy commit is a development checkout and must be built from source at that commit, not installed from a released wheel.",
+            "The trust-exact code path (scipy/optimize/_trustregion_exact.py and _trustregion.py) is pure Python, but scipy.optimize cannot be imported without compiled extensions, so a full build is required."
+          ]
+        },
+        "test_command": "python -m pytest scipy/optimize/tests/test_trustregion.py -k test_trust_exact_rejects_nan_trial_point -v",
+        "reproducing_test": "scipy/optimize/tests/test_trustregion.py::test_trust_exact_rejects_nan_trial_point (added by the PR; the test class containing test_trust_exact_start_in_optimum)",
+        "success_criterion": "On the buggy revision a804efa6ece5, the test fails: either it raises ValueError from the hess callback at a trial point with x<=0 (the Hessian is evaluated before acceptance), or result.success is False or the iteration limit is hit without reaching x close to 1. On the fixed revision the test passes: result.success is True and result.x is within atol 1e-8 of [1].",
+        "numerical_probe": "Call minimize on fun(x)=x0-log(x0) with NaN for x<=0, method trust-exact, initial_trust_radius 10, maxiter 10, x0 [2.1]; instrument hess to record whether it is called at any point where fun returned NaN. The buggy code calls hess at proposed points before acceptance; the fixed code must not.",
+        "input_output_examples": [
+          {
+            "input": "Regression test test_trust_exact_rejects_nan_trial_point: trust-exact, x0 = 2.1, initial_trust_radius 10, maxiter 10, tol 1e-8",
+            "buggy_output": "not stated in the evidence (the issue says the run either makes no progress until the iteration limit or raises an error)",
+            "expected_output": "success is True and x is close to 1 with atol 1e-8"
+          }
+        ],
+        "risks": [
+          "Platform and toolchain: the evidence describes no architecture, sanitiser or thread-count dependence. The defect is a logic ordering issue in pure Python, so it should reproduce on any platform where scipy builds. If the checkout will not build on the local platform, the transition cannot be checked there.",
+          "Failure mode is not pinned by the evidence. On the buggy revision the test may fail by a raised ValueError (error) rather than an assertion failure. Both count as failing, but a grader expecting an AssertionError specifically would need to accept an error outcome.",
+          "Build dependency risk: the buggy checkout's build requirements may not install on newer Python or numpy releases. The unbounded era constraints mean the environment must be chosen from the checkout's own pins, not from the reporter's 3.8.2 and 1.18.1.",
+          "The stopping criterion and iteration count at which the original behaviour diverges are not given. The buggy outcome is therefore asserted only as failing, not as a specific value.",
+          "The initial state beyond x0=2.1 and initial_trust_radius=10 is not given; trust-exact's default internal settings are assumed unchanged between the buggy and fixed revisions.",
+          "Dtype and floating-point precision are not given; the test uses float64 by default through numpy arrays.",
+          "The test may also be affected by other changes in the same PR; confirm by diffing the buggy and fixed revisions of scipy/optimize/_trustregion_exact.py and _trustregion.py before attributing the transition to this fix alone."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "atol 1e-8 on x, per the test's assert_allclose",
+          "reference_source": "analytic minimiser of x - log(x), which is x = 1, as encoded in the test",
+          "why": "The objective x - log(x) has its unique minimum at x = 1, so the expected x is known analytically and the test's tolerance is an absolute tolerance on that value."
+        },
+        "fails_on_buggy": "On the buggy revision, trust-exact calls the Hessian at a proposed point before deciding acceptance. A proposal with x<=0 makes hess raise ValueError, which fails the test as an error. Alternatively, NaN from fun makes comparisons False, so the solver stalls and returns success False or x not near 1 when maxiter 10 is reached, which fails the assertions.",
+        "passes_on_fixed": "On the fixed revision, fun is evaluated at the trial point first, NaN is treated as +inf so the step is rejected and the radius shrinks, and hess is called only after acceptance. The solver therefore never calls hess at an out-of-domain point, converges to x near 1 within maxiter 10, and both assertions hold."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4090,
+        "output_tokens": 3178,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 17197,
+        "output_tokens": 2758,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

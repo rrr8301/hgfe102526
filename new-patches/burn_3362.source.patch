@@ -1,0 +1,517 @@
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index 74b9cf05bfd..90ba64bde9c 100644
+--- a/.github/workflows/test.yml
++++ b/.github/workflows/test.yml
+@@ -273,7 +273,7 @@ jobs:
+       - name: Generate lcov.info
+         if: matrix.rust == 'stable'
+         # /* is to exclude std library code coverage from analysis
+-        run: cargo xtask coverage generate --ignore "/*,xtask/*,examples/*"
++        run: cargo xtask coverage generate --ignore "/*,xtask/*,examples/*" --profile release
+       # --------------------------------------------------------------------------------
+       - name: Codecov upload lcov.info
+         if: matrix.rust == 'stable'
+@@ -344,23 +344,27 @@ jobs:
+       - name: Tests
+         run: cargo xtask test ${{ env.TEST_RELEASE_FLAG }} --ci github-runner
+ 
+-  macos-std-metal-tests:
+-    runs-on: blaze/macos-14
+-    needs: [prepare-checks, code-quality]
+-    timeout-minutes: 60
+-    # Keep the stragegy to be able to easily add new rust versions if required
+-    strategy:
+-      matrix:
+-        rust: [stable]
+-        include:
+-          - rust: stable
+-            toolchain: stable
+-    steps:
+-      - name: Setup Rust
+-        uses: tracel-ai/github-actions/setup-rust@v3
+-        with:
+-          rust-toolchain: ${{ matrix.toolchain }}
+-          cache-key: ${{ matrix.rust }}-macos
+-      # --------------------------------------------------------------------------------
+-      - name: Tests
+-        run: cargo xtask test ${{ env.TEST_RELEASE_FLAG }} --ci github-mac-runner
++# TODO: fix macos CI tests (M2 virtualization)
++  # macos-std-metal-tests:
++  #   runs-on: blaze/macos-14
++  #   needs: [prepare-checks, code-quality]
++  #   timeout-minutes: 60
++  #   # Keep the stragegy to be able to easily add new rust versions if required
++  #   strategy:
++  #     matrix:
++  #       rust: [stable]
++  #       include:
++  #         - rust: stable
++  #           toolchain: stable
++  #   steps:
++  #     - name: Setup Rust
++  #       uses: tracel-ai/github-actions/setup-rust@v3
++  #       with:
++  #         rust-toolchain: ${{ matrix.toolchain }}
++  #         cache-key: ${{ matrix.rust }}-macos
++  #     # --------------------------------------------------------------------------------
++  #     - name: Device check
++  #       run: system_profiler SPHardwareDataType
++  #     # --------------------------------------------------------------------------------
++  #     - name: Tests
++  #       run: cargo xtask test ${{ env.TEST_RELEASE_FLAG }} --ci github-mac-runner
+diff --git a/Cargo.lock b/Cargo.lock
+index f104a9db3b9..835f905293e 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -7518,9 +7518,9 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
+ 
+ [[package]]
+ name = "tracel-xtask"
+-version = "2.1.6"
++version = "2.1.7"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "422d67baf99078f08d2a67026b43b6f997b41a89ec926bf3ef31c584335cf08c"
++checksum = "8c787864b252f8416c973043877279b5d80ebda013c127a3ccd85789bec42448"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -7539,9 +7539,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "tracel-xtask-macros"
+-version = "2.1.6"
++version = "2.1.7"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "01f8ec2790c3e89e8f303c4fd78051722bcf860f5dc92b3a3c38ca7160cd2cec"
++checksum = "482636f5289136e0139c1b5dcf8a4e03de89b14395f2ec90e95b65a2133b2e8a"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+diff --git a/Cargo.toml b/Cargo.toml
+index 1280f2beff4..04ec232df08 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -167,7 +167,7 @@ cubecl-common = { git = "https://github.com/tracel-ai/cubecl", default-features
+ # cubecl-common = { version = "0.5.0", default-features = false }
+ 
+ ### For xtask crate ###
+-tracel-xtask = { version = "2.1.6" }
++tracel-xtask = { version = "2.1.7" }
+ 
+ [profile.dev]
+ debug = 0 # Speed up compilation time and not necessary.
+diff --git a/crates/burn-core/Cargo.toml b/crates/burn-core/Cargo.toml
+index c597ee4ffe2..b6b23fa39f5 100644
+--- a/crates/burn-core/Cargo.toml
++++ b/crates/burn-core/Cargo.toml
+@@ -59,18 +59,15 @@ experimental-named-tensor = ["burn-tensor/experimental-named-tensor"]
+ 
+ test-cuda = [
+     "burn-cuda/default",
+-    "test-memory-checks",
+ ] # To use cuda during testing, default uses ndarray.
+ test-rocm = [
+     "burn-rocm/default",
+-    "test-memory-checks",
+ ] # To use hip during testing, default uses ndarray.
+ test-tch = [
+     "burn-tch/default",
+ ] # To use tch during testing, default uses ndarray.
+ test-wgpu = [
+     "burn-wgpu/default",
+-    "test-memory-checks",
+ ] # To use wgpu during testing, default uses ndarray.
+ test-vulkan = [
+     "test-wgpu",
+@@ -81,6 +78,7 @@ test-metal = [
+     "burn-wgpu/metal",
+ ] # To use wgpu-spirv during testing, default uses ndarray.
+ 
++# Memory checks are disabled by default
+ test-memory-checks = ["burn-fusion/memory-checks"]
+ 
+ [dependencies]
+diff --git a/crates/burn-cubecl-fusion/src/matmul/optimization.rs b/crates/burn-cubecl-fusion/src/matmul/optimization.rs
+index b076e419a55..7d90cb2352f 100644
+--- a/crates/burn-cubecl-fusion/src/matmul/optimization.rs
++++ b/crates/burn-cubecl-fusion/src/matmul/optimization.rs
+@@ -137,7 +137,7 @@ impl<R: Runtime> MatmulOptimization<R> {
+         fused_matmul_autotune::<R, BT>(self, context);
+ 
+         #[cfg(not(feature = "autotune"))]
+-        if self.execute_standard_fused::<BT>(context).is_err() {
++        if self.execute_fused::<BT, Simple>(context).is_err() {
+             self.execute_fallback::<BT>(context);
+         }
+     }
+diff --git a/crates/burn-cubecl-fusion/src/shared/trace/base.rs b/crates/burn-cubecl-fusion/src/shared/trace/base.rs
+index 842640bc760..06c61b75764 100644
+--- a/crates/burn-cubecl-fusion/src/shared/trace/base.rs
++++ b/crates/burn-cubecl-fusion/src/shared/trace/base.rs
+@@ -201,7 +201,7 @@ impl FuseTrace {
+         for input in handle_inputs {
+             context
+                 .handles
+-                .register_handle(input.global_id, input.handle);
++                .register_handle(input.global_id, input.handle_rollback());
+         }
+         for output in handle_outputs {
+             if let HandleOutput::Owned {
+diff --git a/crates/burn-cubecl-fusion/src/shared/trace/input.rs b/crates/burn-cubecl-fusion/src/shared/trace/input.rs
+index a2a08ad51dc..2083d969e6d 100644
+--- a/crates/burn-cubecl-fusion/src/shared/trace/input.rs
++++ b/crates/burn-cubecl-fusion/src/shared/trace/input.rs
+@@ -27,7 +27,7 @@ impl<'a, R: Runtime> InputPlanner<'a, R> {
+     pub fn run(self, context: &mut Context<'_, CubeFusionHandle<R>>, plan: &mut LaunchPlan<'a, R>) {
+         for (pos, (tensor_relative, precision)) in self.resources.inputs.iter().enumerate() {
+             let mut tensor_global = context.tensors.get(&tensor_relative.id).unwrap().clone();
+-            let mut handle = context
++            let handle = context
+                 .handles
+                 .get_handle(&tensor_global.id, &TensorStatus::ReadOnly);
+ 
+@@ -37,23 +37,23 @@ impl<'a, R: Runtime> InputPlanner<'a, R> {
+ 
+             self.analyze(plan, pos, tensor_relative, &handle);
+ 
++            let mut new_strides = handle.strides.clone();
++
+             if tensor_global.shape.len() < plan.rank {
+                 let num_elem: usize = tensor_global.shape.iter().product();
+                 for _ in 0..(plan.rank - tensor_global.shape.len()) {
+                     tensor_global.shape.insert(0, 1);
+-                    handle.strides.insert(0, num_elem);
++                    new_strides.insert(0, num_elem);
+                 }
+             }
+ 
+-            plan.handle_inputs.push(HandleInput {
+-                precision: *precision,
++            plan.handle_inputs.push(HandleInput::new(
++                &tensor_global,
++                tensor_relative,
++                *precision,
+                 handle,
+-                relative_id: tensor_relative.id,
+-                global_id: tensor_global.id,
+-                global_shape: tensor_global.shape.clone(),
+-                vectorization: 1,
+-                broadcated: false,
+-            });
++                new_strides,
++            ));
+             plan.global_inputs.push(tensor_global);
+         }
+     }
+diff --git a/crates/burn-cubecl-fusion/src/shared/trace/plan.rs b/crates/burn-cubecl-fusion/src/shared/trace/plan.rs
+index c6bb4420a23..1444222ce0f 100644
+--- a/crates/burn-cubecl-fusion/src/shared/trace/plan.rs
++++ b/crates/burn-cubecl-fusion/src/shared/trace/plan.rs
+@@ -150,6 +150,36 @@ pub struct HandleInput<R: Runtime> {
+     pub global_shape: Vec<usize>,
+     pub vectorization: u8,
+     pub broadcated: bool,
++    // Strides can be modified during plan execution, but need to be restored on rollback
++    pub orig_strides: Vec<usize>,
++}
++
++impl<R: Runtime> HandleInput<R> {
++    pub fn new(
++        tensor_global: &TensorIr,
++        tensor_relative: &TensorIr,
++        precision: FusePrecision,
++        mut handle: CubeFusionHandle<R>,
++        mut strides: Vec<usize>,
++    ) -> Self {
++        // For rollback
++        core::mem::swap(&mut handle.strides, &mut strides);
++        Self {
++            precision,
++            handle,
++            relative_id: tensor_relative.id,
++            global_id: tensor_global.id,
++            global_shape: tensor_global.shape.clone(),
++            vectorization: 1,
++            broadcated: false,
++            orig_strides: strides,
++        }
++    }
++
++    pub fn handle_rollback(mut self) -> CubeFusionHandle<R> {
++        core::mem::swap(&mut self.handle.strides, &mut self.orig_strides);
++        self.handle
++    }
+ }
+ 
+ #[derive(Debug)]
+diff --git a/crates/burn-cubecl/Cargo.toml b/crates/burn-cubecl/Cargo.toml
+index 09b97954f7c..eb0e1d07fbd 100644
+--- a/crates/burn-cubecl/Cargo.toml
++++ b/crates/burn-cubecl/Cargo.toml
+@@ -33,7 +33,7 @@ doc = ["default"]
+ export_tests = [
+     # Too expensive and flaky for the CI.
+     # "memory-checks", 
+-    "autotune-checks",
++    # "autotune-checks",
+     "burn-tensor-testgen",
+     "serial_test",
+     "burn-autodiff/export_tests",
+diff --git a/xtask/src/commands/test.rs b/xtask/src/commands/test.rs
+index 61a15a5aa22..c2c9de9a25d 100644
+--- a/xtask/src/commands/test.rs
++++ b/xtask/src/commands/test.rs
+@@ -1,7 +1,16 @@
+-use tracel_xtask::prelude::{clap::ValueEnum, *};
++use tracel_xtask::{
++    prelude::{clap::ValueEnum, *},
++    utils::{
++        process::{ExitSignal, ProcessExitError},
++        workspace::WorkspaceMember,
++    },
++};
+ 
+ use crate::NO_STD_CRATES;
+ 
++#[cfg(unix)]
++use std::os::unix::process::ExitStatusExt;
++
+ #[macros::extend_command_args(TestCmdArgs, Target, TestSubCommand)]
+ pub struct BurnTestCmdArgs {
+     /// Test in CI mode which excludes unsupported crates.
+@@ -19,6 +28,42 @@ pub enum CiTestType {
+     GcpWgpuRunner,
+ }
+ 
++fn handle_wgpu_test(member: &str, args: &TestCmdArgs) -> anyhow::Result<()> {
++    #[cfg(unix)]
++    let filter_err = |e: &&ProcessExitError| {
++        e.status.signal() == Some(11) || matches!(e.signal, Some(ExitSignal { code: 11, .. }))
++    };
++    #[cfg(not(unix))]
++    let filter_err = |e: &&ProcessExitError| matches!(e.signal, Some(ExitSignal { code: 11, .. }));
++
++    let member = WorkspaceMember {
++        name: member.into(),
++        path: "".into(), // unused
++    };
++
++    if let Err(err) = base_commands::test::run_unit_test(&member, args) {
++        let should_ignore = err
++            .downcast_ref::<ProcessExitError>()
++            .filter(filter_err)
++            .map(|e| {
++                e.message.contains("burn-wgpu")
++                    || e.message.contains("burn-router")
++                    || e.message.contains("burn-vision")
++            })
++            .unwrap_or(false);
++
++        if should_ignore {
++            // Ignore intermittent sucessful failures
++            // https://github.com/gfx-rs/wgpu/issues/2949
++            // https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/4391
++            eprintln!("⚠️ Ignored SIGSEGV in wgpu test");
++        } else {
++            return Err(err);
++        }
++    }
++    Ok(())
++}
++
+ pub(crate) fn handle_command(
+     mut args: BurnTestCmdArgs,
+     env: Environment,
+@@ -33,7 +78,7 @@ pub(crate) fn handle_command(
+                 }
+                 helpers::custom_crates_tests(
+                     NO_STD_CRATES.to_vec(),
+-                    test_args,
++                    handle_test_args(&test_args, args.release),
+                     None,
+                     None,
+                     "no-std",
+@@ -61,6 +106,12 @@ pub(crate) fn handle_command(
+                     {
+                         args.exclude.extend(vec!["burn-remote".to_string()]);
+                     };
++
++                    base_commands::test::handle_command(
++                        args.clone().try_into().unwrap(),
++                        env,
++                        context,
++                    )?;
+                 }
+                 CiTestType::GithubMacRunner => {
+                     args.target = Target::AllPackages;
+@@ -68,29 +119,50 @@ pub(crate) fn handle_command(
+                     args.features
+                         .get_or_insert_with(Vec::new)
+                         .push("metal".to_string());
++
++                    base_commands::test::handle_command(
++                        args.clone().try_into().unwrap(),
++                        env,
++                        context,
++                    )?;
+                 }
+                 CiTestType::GcpCudaRunner => {
+                     args.target = Target::AllPackages;
+                     args.only.push("burn-cuda".to_string());
++
++                    base_commands::test::handle_command(
++                        args.clone().try_into().unwrap(),
++                        env,
++                        context,
++                    )?;
+                 }
+                 CiTestType::GcpVulkanRunner => {
+-                    args.target = Target::AllPackages;
+-                    args.only.push("burn-wgpu".to_string());
+-                    args.features
++                    let mut args_vulkan = args.clone();
++                    args_vulkan
++                        .features
+                         .get_or_insert_with(Vec::new)
+                         .push("vulkan".to_string());
++
++                    let mut args_vulkan = args_vulkan.clone().try_into().unwrap();
++                    handle_wgpu_test("burn-wgpu", &args_vulkan)?;
++
++                    args_vulkan.features = Some(vec!["test-vulkan".into()]);
++                    handle_wgpu_test("burn-core", &args_vulkan)?;
++                    handle_wgpu_test("burn-vision", &args_vulkan)?;
+                 }
+                 CiTestType::GcpWgpuRunner => {
+                     args.target = Target::AllPackages;
+                     // "burn-router" uses "burn-wgpu" for the tests.
+-                    args.only
+-                        .extend(vec!["burn-wgpu".to_string(), "burn-router".to_string()]);
++                    let mut args_wgpu = args.clone().try_into().unwrap();
++                    handle_wgpu_test("burn-wgpu", &args_wgpu)?;
++                    handle_wgpu_test("burn-router", &args_wgpu)?;
++
++                    args_wgpu.features = Some(vec!["test-wgpu".into()]);
++                    handle_wgpu_test("burn-core", &args_wgpu)?;
++                    handle_wgpu_test("burn-vision", &args_wgpu)?;
+                 }
+             }
+ 
+-            // test workspace
+-            base_commands::test::handle_command(args.clone().try_into().unwrap(), env, context)?;
+-
+             // 2) Specific additional commands to test specific features
+             // ---------------------------------------------------------
+             match args.ci {
+@@ -98,7 +170,7 @@ pub(crate) fn handle_command(
+                     // burn-dataset
+                     helpers::custom_crates_tests(
+                         vec!["burn-dataset"],
+-                        vec!["--all-features"],
++                        handle_test_args(&["--all-features"], args.release),
+                         None,
+                         None,
+                         "std all features",
+@@ -107,7 +179,10 @@ pub(crate) fn handle_command(
+                     // burn-core
+                     helpers::custom_crates_tests(
+                         vec!["burn-core"],
+-                        vec!["--features", "test-tch,record-item-custom-serde"],
++                        handle_test_args(
++                            &["--features", "test-tch,record-item-custom-serde"],
++                            args.release,
++                        ),
+                         None,
+                         None,
+                         "std with features: test-tch,record-item-custom-serde",
+@@ -116,50 +191,19 @@ pub(crate) fn handle_command(
+                     // burn-vision
+                     helpers::custom_crates_tests(
+                         vec!["burn-vision"],
+-                        vec!["--features", "test-cpu"],
++                        handle_test_args(&["--features", "test-cpu"], args.release),
+                         None,
+                         None,
+                         "std cpu",
+                     )?;
+                 }
+                 CiTestType::GcpCudaRunner => (),
+-                CiTestType::GcpVulkanRunner => {
+-                    helpers::custom_crates_tests(
+-                        vec!["burn-core"],
+-                        vec!["--features", "test-vulkan"],
+-                        None,
+-                        None,
+-                        "std vulkan",
+-                    )?;
+-                    helpers::custom_crates_tests(
+-                        vec!["burn-vision"],
+-                        vec!["--features", "test-vulkan"],
+-                        None,
+-                        None,
+-                        "std vulkan",
+-                    )?;
+-                }
+-                CiTestType::GcpWgpuRunner => {
+-                    helpers::custom_crates_tests(
+-                        vec!["burn-core"],
+-                        vec!["--features", "test-wgpu"],
+-                        None,
+-                        None,
+-                        "std wgpu",
+-                    )?;
+-                    helpers::custom_crates_tests(
+-                        vec!["burn-vision"],
+-                        vec!["--features", "test-wgpu"],
+-                        None,
+-                        None,
+-                        "std wgpu",
+-                    )?;
+-                }
++                CiTestType::GcpVulkanRunner | CiTestType::GcpWgpuRunner => (), // handled in tests above
+                 CiTestType::GithubMacRunner => {
+                     // burn-candle
+                     helpers::custom_crates_tests(
+                         vec!["burn-candle"],
+-                        vec!["--features", "accelerate"],
++                        handle_test_args(&["--features", "accelerate"], args.release),
+                         None,
+                         None,
+                         "std accelerate",
+@@ -167,21 +211,21 @@ pub(crate) fn handle_command(
+                     // burn-ndarray
+                     helpers::custom_crates_tests(
+                         vec!["burn-ndarray"],
+-                        vec!["--features", "blas-accelerate"],
++                        handle_test_args(&["--features", "blas-accelerate"], args.release),
+                         None,
+                         None,
+                         "std blas-accelerate",
+                     )?;
+                     helpers::custom_crates_tests(
+                         vec!["burn-core"],
+-                        vec!["--features", "test-metal"],
++                        handle_test_args(&["--features", "test-metal"], args.release),
+                         None,
+                         None,
+                         "std metal",
+                     )?;
+                     helpers::custom_crates_tests(
+                         vec!["burn-vision"],
+-                        vec!["--features", "test-metal"],
++                        handle_test_args(&["--features", "test-metal"], args.release),
+                         None,
+                         None,
+                         "std metal",
+@@ -216,3 +260,11 @@ pub(crate) fn handle_command(
+             }),
+     }
+ }
++
++fn handle_test_args<'a>(args: &'a [&'a str], release: bool) -> Vec<&'a str> {
++    let mut args = args.to_vec();
++    if release {
++        args.push("--release");
++    }
++    args
++}

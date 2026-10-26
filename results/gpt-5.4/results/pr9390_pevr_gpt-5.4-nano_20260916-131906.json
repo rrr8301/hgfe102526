@@ -1,0 +1,1426 @@
+[
+  {
+    "slug": "statsmodels_9390",
+    "bug_type": "correctness",
+    "image": "python:3.9",
+    "status": "REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 1/2 reported example(s) show the reported difference between the revisions; no probe is pathological, but the two revisions record different values",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "diverged",
+    "examples_verdict": "diverged",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import numpy as np\nimport statsmodels.api as sm\nfrom statsmodels.tsa.ardl import ARDL\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)\", \"uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)\", [], \"uecmfit.resid equals ardlfit.resid; no transformation is applied to residuals when deriving the UECM from the ARDL\"], [\"test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)\", \"test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)\", [], \"assert_allclose(uecm_res.resid, ardl_res.resid) passes\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "uecm_ardl_resid_max_abs_diff_no_dane": "import numpy as np\nimport statsmodels.api as sm\nfrom statsmodels.tsa.ardl.model import ARDL\nfrom statsmodels.tsa.ardl import UECM\n\n# Retrieve dane-like data without importing statsmodels.datasets.dane\n# Prefer loader-based access if available; fall back to documented path.\nimport statsmodels.datasets.loaders as loaders\n\n# Try common loader names/attributes\nX = None\nendog = None\n\nfor name in ['dane', 'Dane', 'DANE']:\n    if hasattr(loaders, name):\n        mod = getattr(loaders, name)\n        try:\n            ds = mod.load()\n        except TypeError:\n            ds = mod\n        break\nelse:\n    # Try get_dataset_args or generic loader\n    try:\n        ds = loaders.load_dane()\n    except Exception:\n        ds = None\n\nif ds is None:\n    # Last resort: use sm.datasets with a dynamic import that doesn't require 'dane' attribute\n    # This still avoids 'from statsmodels.datasets import dane'.\n    import importlib\n    try:\n        m = importlib.import_module('statsmodels.datasets.dane')\n        ds = m.load_pandas()\n    except Exception:\n        raise\n\n# ds may be a Bunch-like object with .data as DataFrame\ntry:\n    data = ds.data\nexcept AttributeError:\n    data = ds\n\n# Ensure columns exist\ncols = data.columns if hasattr(data,'columns') else None\nif cols is None:\n    raise RuntimeError('Dataset did not provide tabular data with columns')\n\nlrm = data['lrm']\nZ = data[['lry','ibo','ide']]\n\nardl = ARDL(lrm, 3, Z, {'lry':1,'ibo':3,'ide':2})\nuecm = UECM.from_ardl(ardl)\n\nuecm_res = uecm.fit()\nardl_res = ardl.fit()\n\nresid_diff = uecm_res.resid - ardl_res.resid\nmax_abs_diff = float(np.max(np.abs(resid_diff)))\n\n# Record a couple of additional sanity stats\nfinite_ratio = float(np.isfinite(uecm_res.resid).mean() * np.isfinite(ardl_res.resid).mean())\nprint({'max_abs_diff': max_abs_diff, 'finite_ratio': finite_ratio})\nprobe({'max_abs_diff': max_abs_diff, 'finite_ratio': finite_ratio})\n",
+        "described_examples": "import numpy as np\nimport statsmodels.api as sm\nimport statsmodels.tsa.api as tsa\n\n# Probe 1: uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)\n# The report references an ARDL/UECM construction from an `ardl` object.\n# Since the scenario uses exact code, we recreate a minimal ARDL instance\n# and then compare residuals.\n\nname1 = \"uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)\"\ntry:\n    endog = np.arange(1.0, 21.0)\n    exog = np.column_stack([np.arange(1.0, 21.0), np.arange(2.0, 22.0), np.arange(3.0, 23.0)])\n    # ARDL(p, q) where q is distributed across 3 exog with lags [1,3,2]\n    ardl = sm.tsa.ARDL(endog, lags=3, exog=exog, order={0: 1, 1: 3, 2: 2})\n    ardlfit = ardl.fit()\n    uecm = sm.tsa.UECM.from_ardl(ardl)\n    uecmfit = uecm.fit()\n    probe(name1, (np.asarray(uecmfit.resid), np.asarray(ardlfit.resid)))\nexcept Exception as e:\n    probe_exception(name1, e)\n\n# Probe 2: test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)\nname2 = \"test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)\"\ntry:\n    # Use the repository's bundled dataset if available; otherwise, fall back to a\n    # deterministic synthetic dataset matching the needed columns.\n    try:\n        # statsmodels provides a dane dataset via its sandbox in some versions\n        from statsmodels.datasets import dane\n        dane_data = dane.load_pandas().data\n    except Exception:\n        # Synthetic data with the same column names and deterministic values\n        n = 120\n        dane_data = {}\n        t = np.arange(n, dtype=float)\n        dane_data['lrm'] = np.log1p(t + 10)\n        dane_data['lry'] = np.log1p(t + 1)\n        dane_data['ibo'] = np.log1p(t + 2)\n        dane_data['ide'] = np.log1p(t + 3)\n        import pandas as pd\n        dane_data = pd.DataFrame(dane_data)\n\n    ardl_res = sm.tsa.ARDL(\n        dane_data['lrm'],\n        3,\n        dane_data[['lry', 'ibo', 'ide']],\n        {'lry': 1, 'ibo': 3, 'ide': 2}\n    ).fit()\n\n    uecm_res = sm.tsa.UECM.from_ardl(\n        sm.tsa.ARDL(\n            dane_data['lrm'],\n            3,\n            dane_data[['lry', 'ibo', 'ide']],\n            {'lry': 1, 'ibo': 3, 'ide': 2}\n        )\n    ).fit()\n\n    # Compare exactly as described; store the boolean result of allclose\n    ok = np.allclose(np.asarray(uecm_res.resid), np.asarray(ardl_res.resid))\n    probe(name2, ok)\nexcept Exception as e:\n    probe_exception(name2, e)"
+      },
+      "fixed": {
+        "uecm_ardl_resid_max_abs_diff_no_dane": "import numpy as np\nimport statsmodels.api as sm\nfrom statsmodels.tsa.ardl.model import ARDL\nfrom statsmodels.tsa.ardl import UECM\n\nimport statsmodels.datasets.loaders as loaders\n\nX = None\nendog = None\n\nfor name in ['dane', 'Dane', 'DANE']:\n    if hasattr(loaders, name):\n        mod = getattr(loaders, name)\n        try:\n            ds = mod.load()\n        except TypeError:\n            ds = mod\n        break\nelse:\n    try:\n        ds = loaders.load_dane()\n    except Exception:\n        ds = None\n\nif ds is None:\n    import importlib\n    try:\n        m = importlib.import_module('statsmodels.datasets.dane')\n        ds = m.load_pandas()\n    except Exception:\n        raise\n\ntry:\n    data = ds.data\nexcept AttributeError:\n    data = ds\n\ncols = data.columns if hasattr(data,'columns') else None\nif cols is None:\n    raise RuntimeError('Dataset did not provide tabular data with columns')\n\nlrm = data['lrm']\nZ = data[['lry','ibo','ide']]\n\nardl = ARDL(lrm, 3, Z, {'lry':1,'ibo':3,'ide':2})\nuecm = UECM.from_ardl(ardl)\n\nuecm_res = uecm.fit()\nardl_res = ardl.fit()\n\nresid_diff = uecm_res.resid - ardl_res.resid\nmax_abs_diff = float(np.max(np.abs(resid_diff)))\n\nfinite_ratio = float(np.isfinite(uecm_res.resid).mean() * np.isfinite(ardl_res.resid).mean())\nprint({'max_abs_diff': max_abs_diff, 'finite_ratio': finite_ratio})\nprobe({'max_abs_diff': max_abs_diff, 'finite_ratio': finite_ratio})\n",
+        "reported_examples": "import numpy as np\nimport statsmodels.api as sm\nfrom statsmodels.tsa.ardl import ARDL\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)\", \"uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)\", [], \"uecmfit.resid equals ardlfit.resid; no transformation is applied to residuals when deriving the UECM from the ARDL\"], [\"test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)\", \"test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)\", [], \"assert_allclose(uecm_res.resid, ardl_res.resid) passes\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nimport statsmodels.api as sm\nimport statsmodels.tsa.api as tsa\n\n# Probe 1: uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)\n# The report references an ARDL/UECM construction from an `ardl` object.\n# Since the scenario uses exact code, we recreate a minimal ARDL instance\n# and then compare residuals.\n\nname1 = \"uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)\"\ntry:\n    endog = np.arange(1.0, 21.0)\n    exog = np.column_stack([np.arange(1.0, 21.0), np.arange(2.0, 22.0), np.arange(3.0, 23.0)])\n    # ARDL(p, q) where q is distributed across 3 exog with lags [1,3,2]\n    ardl = sm.tsa.ARDL(endog, lags=3, exog=exog, order={0: 1, 1: 3, 2: 2})\n    ardlfit = ardl.fit()\n    uecm = sm.tsa.UECM.from_ardl(ardl)\n    uecmfit = uecm.fit()\n    probe(name1, (np.asarray(uecmfit.resid), np.asarray(ardlfit.resid)))\nexcept Exception as e:\n    probe_exception(name1, e)\n\n# Probe 2: test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)\nname2 = \"test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)\"\ntry:\n    # Use the repository's bundled dataset if available; otherwise, fall back to a\n    # deterministic synthetic dataset matching the needed columns.\n    try:\n        # statsmodels provides a dane dataset via its sandbox in some versions\n        from statsmodels.datasets import dane\n        dane_data = dane.load_pandas().data\n    except Exception:\n        # Synthetic data with the same column names and deterministic values\n        n = 120\n        dane_data = {}\n        t = np.arange(n, dtype=float)\n        dane_data['lrm'] = np.log1p(t + 10)\n        dane_data['lry'] = np.log1p(t + 1)\n        dane_data['ibo'] = np.log1p(t + 2)\n        dane_data['ide'] = np.log1p(t + 3)\n        import pandas as pd\n        dane_data = pd.DataFrame(dane_data)\n\n    ardl_res = sm.tsa.ARDL(\n        dane_data['lrm'],\n        3,\n        dane_data[['lry', 'ibo', 'ide']],\n        {'lry': 1, 'ibo': 3, 'ide': 2}\n    ).fit()\n\n    uecm_res = sm.tsa.UECM.from_ardl(\n        sm.tsa.ARDL(\n            dane_data['lrm'],\n            3,\n            dane_data[['lry', 'ibo', 'ide']],\n            {'lry': 1, 'ibo': 3, 'ide': 2}\n        )\n    ).fit()\n\n    # Compare exactly as described; store the boolean result of allclose\n    ok = np.allclose(np.asarray(uecm_res.resid), np.asarray(ardl_res.resid))\n    probe(name2, ok)\nexcept Exception as e:\n    probe_exception(name2, e)"
+      }
+    },
+    "report": {
+      "status": "REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 1/2 reported example(s) show the reported difference between the revisions; no probe is pathological, but the two revisions record different values",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "diverged",
+      "examples_verdict": "diverged",
+      "success_criterion": "Running pytest statsmodels/tsa/ardl/tests/test_ardl.py::test_resids_ardl_uecm at buggy commit d0da572b FAILS with an assert_allclose AssertionError on uecm_res.resid vs ardl_res.resid; the same test passes at fixed commit 9575cf4d.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 1,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 1,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)": [
+                [
+                  3.000000000000001,
+                  4.000000000000001,
+                  5.000000000000001,
+                  6.0,
+                  7.000000000000001,
+                  8.0,
+                  9.0,
+                  10.0,
+                  11.0,
+                  12.0,
+                  13.0,
+                  14.0,
+                  15.0,
+                  16.0,
+                  17.0,
+                  18.0,
+                  19.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              ],
+              "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)": false
+            },
+            "fixed_values": {
+              "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)": [
+                [
+                  6.661338147750939e-16,
+                  6.661338147750939e-16,
+                  5.551115123125783e-16,
+                  4.440892098500626e-16,
+                  5.551115123125783e-16,
+                  4.440892098500626e-16,
+                  2.220446049250313e-16,
+                  3.3306690738754696e-16,
+                  2.220446049250313e-16,
+                  1.1102230246251565e-16,
+                  2.220446049250313e-16,
+                  2.220446049250313e-16,
+                  0.0,
+                  3.3306690738754696e-16,
+                  3.3306690738754696e-16,
+                  0.0,
+                  1.1102230246251565e-16
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              ],
+              "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)": false
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          },
+          {
+            "label": "uecm_ardl_resid_max_abs_diff_no_dane",
+            "outcome": "unusable",
+            "buggy": {
+              "present": null,
+              "reasons": [
+                "the probe itself could not run (ModuleNotFoundError: No module named 'statsmodels.datasets.loaders') \u2014 fix the probe, not the revision"
+              ]
+            },
+            "fixed": {
+              "present": null,
+              "reasons": [
+                "the probe itself could not run (ModuleNotFoundError: No module named 'statsmodels.datasets.loaders') \u2014 fix the probe, not the revision"
+              ]
+            },
+            "buggy_status": "probe_error",
+            "fixed_status": "probe_error",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          }
+        ],
+        "examples": [
+          {
+            "input": "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)",
+            "expected_output": "uecmfit.resid equals ardlfit.resid; no transformation is applied to residuals when deriving the UECM from the ARDL",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "uecmfit.resid = ARDL endogenous values (levels) minus UECM fitted values (differences); not equal to ardlfit.resid",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)",
+              "observed": [
+                [
+                  3.000000000000001,
+                  4.000000000000001,
+                  5.000000000000001,
+                  6.0,
+                  7.000000000000001,
+                  8.0,
+                  9.0,
+                  10.0,
+                  11.0,
+                  12.0,
+                  13.0,
+                  14.0,
+                  15.0,
+                  16.0,
+                  17.0,
+                  18.0,
+                  19.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)",
+              "observed": [
+                [
+                  6.661338147750939e-16,
+                  6.661338147750939e-16,
+                  5.551115123125783e-16,
+                  4.440892098500626e-16,
+                  5.551115123125783e-16,
+                  4.440892098500626e-16,
+                  2.220446049250313e-16,
+                  3.3306690738754696e-16,
+                  2.220446049250313e-16,
+                  1.1102230246251565e-16,
+                  2.220446049250313e-16,
+                  2.220446049250313e-16,
+                  0.0,
+                  3.3306690738754696e-16,
+                  3.3306690738754696e-16,
+                  0.0,
+                  1.1102230246251565e-16
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)",
+            "expected_output": "assert_allclose(uecm_res.resid, ardl_res.resid) passes",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "assert_allclose raises AssertionError: uecm_res.resid is not allclose to ardl_res.resid",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)",
+              "observed": false,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)",
+              "observed": false,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 4,
+            "n_failed": 3,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 2,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "cython>=3.0.10",
+            "numpy>=2.0.0",
+            "packaging>=21.3",
+            "pytest>=7.3.0",
+            "setuptools>=69.0.2"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2024-10-15T09:39:13+01:00",
+        "fixed_commit_date": "2024-10-15T17:00:02+01:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2024-10-15T17:00:02+01:00",
+        "build": {
+          "git": "present",
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.9/site-packages/statsmodels/__init__.py",
+            "build_requires": [
+              "setuptools>=69.0.2",
+              "cython>=3.0.10,<4",
+              "scipy>=1.13,<2",
+              "setuptools_scm[toml]>=8,<9"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.0.2",
+              "pandas": "2.2.3",
+              "matplotlib": "3.9.2",
+              "pyparsing": "3.2.0",
+              "setuptools": "75.1.0",
+              "cython": "3.0.11",
+              "scipy": "1.13.1",
+              "setuptools-scm": "8.1.0"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [],
+            "output": "--- end of build log ---\n>=1.4 in ./.venv/lib/python3.9/site-packages (from statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (2.2.3)\nRequirement already satisfied: scipy!=1.9.2,>=1.8 in ./.venv/lib/python3.9/site-packages (from statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (1.13.1)\nCollecting patsy>=0.5.6\n  Downloading patsy-1.0.3-py2.py3-none-any.whl (233 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 233.3/233.3 kB 15.8 MB/s eta 0:00:00\nRequirement already satisfied: numpy<3,>=1.22.3 in /usr/local/lib/python3.9/site-packages (from statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (2.0.2)\nRequirement already satisfied: python-dateutil>=2.8.2 in ./.venv/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (2.9.0.post0)\nRequirement already satisfied: pytz>=2020.1 in ./.venv/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (2026.3.post1)\nRequirement already satisfied: tzdata>=2022.7 in ./.venv/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (2026.4)\nRequirement already satisfied: six>=1.5 in ./.venv/lib/python3.9/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.0.dev466+gd0da572b0.d20260916-cp39-cp39-linux_x86_64.whl size=26127209 sha256=d4174b89785c33be37795b3fa86dee6b734becba53fec0278bfeb865695195b5\n  Stored in directory: /tmp/pip-ephem-wheel-cache-fhmkpl58/wheels/af/59/8d/0bbd819162f7fc2bc4949215064695a6020b025da2e0f21c03\nSuccessfully built statsmodels\nInstalling collected packages: patsy, statsmodels\nSuccessfully installed patsy-1.0.3 statsmodels-0.15.0.dev466+gd0da572b0.d20260916\n\n[notice] A new release of pip is available: 23.0.1 -> 26.0.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.9/site-packages/statsmodels/__init__.py",
+            "build_requires": [
+              "setuptools>=69.0.2",
+              "cython>=3.0.10,<4",
+              "scipy>=1.13,<2",
+              "setuptools_scm[toml]>=8,<9"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.0.2",
+              "pandas": "2.2.3",
+              "matplotlib": "3.9.2",
+              "pyparsing": "3.2.0",
+              "setuptools": "75.1.0",
+              "cython": "3.0.11",
+              "scipy": "1.13.1",
+              "setuptools-scm": "8.1.0"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [],
+            "output": "--- end of build log ---\nstatsmodels==0.15.0.dev469+g9575cf4de) (2.0.2)\nRequirement already satisfied: pandas!=2.1.0,>=1.4 in ./.venv/lib/python3.9/site-packages (from statsmodels==0.15.0.dev469+g9575cf4de) (2.2.3)\nRequirement already satisfied: scipy!=1.9.2,>=1.8 in ./.venv/lib/python3.9/site-packages (from statsmodels==0.15.0.dev469+g9575cf4de) (1.13.1)\nCollecting patsy>=0.5.6\n  Downloading patsy-1.0.3-py2.py3-none-any.whl (233 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 233.3/233.3 kB 12.4 MB/s eta 0:00:00\nRequirement already satisfied: packaging>=21.3 in /usr/local/lib/python3.9/site-packages (from statsmodels==0.15.0.dev469+g9575cf4de) (26.3)\nRequirement already satisfied: pytz>=2020.1 in ./.venv/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev469+g9575cf4de) (2026.3.post1)\nRequirement already satisfied: python-dateutil>=2.8.2 in ./.venv/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev469+g9575cf4de) (2.9.0.post0)\nRequirement already satisfied: tzdata>=2022.7 in ./.venv/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev469+g9575cf4de) (2026.4)\nRequirement already satisfied: six>=1.5 in ./.venv/lib/python3.9/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev469+g9575cf4de) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.0.dev469+g9575cf4de-cp39-cp39-linux_x86_64.whl size=26126972 sha256=3950ad0c36618126f440b58328b689b065d9193cf2c3fd0671609726079eb18c\n  Stored in directory: /tmp/pip-ephem-wheel-cache-0c2dq8b8/wheels/c8/8c/63/2a046f36555c1481521e72b76d461fc0c95a7d1e5f91387f47\nSuccessfully built statsmodels\nInstalling collected packages: patsy, statsmodels\nSuccessfully installed patsy-1.0.3 statsmodels-0.15.0.dev469+g9575cf4de\n\n[notice] A new release of pip is available: 23.0.1 -> 26.0.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 1,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 1,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 3,
+        "verdict": "diverged",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)": [
+                [
+                  3.000000000000001,
+                  4.000000000000001,
+                  5.000000000000001,
+                  6.0,
+                  7.000000000000001,
+                  8.0,
+                  9.0,
+                  10.0,
+                  11.0,
+                  12.0,
+                  13.0,
+                  14.0,
+                  15.0,
+                  16.0,
+                  17.0,
+                  18.0,
+                  19.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              ],
+              "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)": false
+            },
+            "fixed_values": {
+              "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)": [
+                [
+                  6.661338147750939e-16,
+                  6.661338147750939e-16,
+                  5.551115123125783e-16,
+                  4.440892098500626e-16,
+                  5.551115123125783e-16,
+                  4.440892098500626e-16,
+                  2.220446049250313e-16,
+                  3.3306690738754696e-16,
+                  2.220446049250313e-16,
+                  1.1102230246251565e-16,
+                  2.220446049250313e-16,
+                  2.220446049250313e-16,
+                  0.0,
+                  3.3306690738754696e-16,
+                  3.3306690738754696e-16,
+                  0.0,
+                  1.1102230246251565e-16
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              ],
+              "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)": false
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            },
+            "fixed_values": {
+              "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)": "__error__: SyntaxError: invalid syntax (<string>, line 1)"
+            }
+          },
+          {
+            "label": "uecm_ardl_resid_max_abs_diff_no_dane",
+            "outcome": "unusable",
+            "buggy": {
+              "present": null,
+              "reasons": [
+                "the probe itself could not run (ModuleNotFoundError: No module named 'statsmodels.datasets.loaders') \u2014 fix the probe, not the revision"
+              ]
+            },
+            "fixed": {
+              "present": null,
+              "reasons": [
+                "the probe itself could not run (ModuleNotFoundError: No module named 'statsmodels.datasets.loaders') \u2014 fix the probe, not the revision"
+              ]
+            },
+            "buggy_status": "probe_error",
+            "fixed_status": "probe_error",
+            "values_differ": null,
+            "buggy_values": {},
+            "fixed_values": {}
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 2,
+        "n_judged": 2,
+        "n_reproduced": 1,
+        "evaluable": true,
+        "n_diverged": 1,
+        "n_unobserved": 0,
+        "n_contested": 0,
+        "unobserved": [],
+        "verdict": "diverged",
+        "examples": [
+          {
+            "input": "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)",
+            "expected_output": "uecmfit.resid equals ardlfit.resid; no transformation is applied to residuals when deriving the UECM from the ARDL",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "uecmfit.resid = ARDL endogenous values (levels) minus UECM fitted values (differences); not equal to ardlfit.resid",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)",
+              "observed": [
+                [
+                  3.000000000000001,
+                  4.000000000000001,
+                  5.000000000000001,
+                  6.0,
+                  7.000000000000001,
+                  8.0,
+                  9.0,
+                  10.0,
+                  11.0,
+                  12.0,
+                  13.0,
+                  14.0,
+                  15.0,
+                  16.0,
+                  17.0,
+                  18.0,
+                  19.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "uecm = sm.tsa.UECM.from_ardl(ardl); uecmfit.resid and ardlfit.resid (issue #9323 code sample)",
+              "observed": [
+                [
+                  6.661338147750939e-16,
+                  6.661338147750939e-16,
+                  5.551115123125783e-16,
+                  4.440892098500626e-16,
+                  5.551115123125783e-16,
+                  4.440892098500626e-16,
+                  2.220446049250313e-16,
+                  3.3306690738754696e-16,
+                  2.220446049250313e-16,
+                  1.1102230246251565e-16,
+                  2.220446049250313e-16,
+                  2.220446049250313e-16,
+                  0.0,
+                  3.3306690738754696e-16,
+                  3.3306690738754696e-16,
+                  0.0,
+                  1.1102230246251565e-16
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  -1.7763568394002505e-15,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)",
+            "expected_output": "assert_allclose(uecm_res.resid, ardl_res.resid) passes",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "assert_allclose raises AssertionError: uecm_res.resid is not allclose to ardl_res.resid",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)",
+              "observed": false,
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "test_resids_ardl_uecm: ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) with matching UECM.from_ardl(...).fit(); assert_allclose(uecm_res.resid, ardl_res.resid)",
+              "observed": false,
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 4,
+          "n_failed": 3,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 2,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "Running pytest statsmodels/tsa/ardl/tests/test_ardl.py::test_resids_ardl_uecm at buggy commit d0da572b FAILS with an assert_allclose AssertionError on uecm_res.resid vs ardl_res.resid; the same test passes at fixed commit 9575cf4d."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "cython>=3.0.10",
+          "numpy>=2.0.0",
+          "packaging>=21.3",
+          "pytest>=7.3.0",
+          "setuptools>=69.0.2"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2024-10-15T09:39:13+01:00",
+      "fixed_commit_date": "2024-10-15T17:00:02+01:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2024-10-15T17:00:02+01:00",
+      "build": {
+        "git": "present",
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.9/site-packages/statsmodels/__init__.py",
+          "build_requires": [
+            "setuptools>=69.0.2",
+            "cython>=3.0.10,<4",
+            "scipy>=1.13,<2",
+            "setuptools_scm[toml]>=8,<9"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.0.2",
+            "pandas": "2.2.3",
+            "matplotlib": "3.9.2",
+            "pyparsing": "3.2.0",
+            "setuptools": "75.1.0",
+            "cython": "3.0.11",
+            "scipy": "1.13.1",
+            "setuptools-scm": "8.1.0"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [],
+          "output": "--- end of build log ---\n>=1.4 in ./.venv/lib/python3.9/site-packages (from statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (2.2.3)\nRequirement already satisfied: scipy!=1.9.2,>=1.8 in ./.venv/lib/python3.9/site-packages (from statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (1.13.1)\nCollecting patsy>=0.5.6\n  Downloading patsy-1.0.3-py2.py3-none-any.whl (233 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 233.3/233.3 kB 15.8 MB/s eta 0:00:00\nRequirement already satisfied: numpy<3,>=1.22.3 in /usr/local/lib/python3.9/site-packages (from statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (2.0.2)\nRequirement already satisfied: python-dateutil>=2.8.2 in ./.venv/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (2.9.0.post0)\nRequirement already satisfied: pytz>=2020.1 in ./.venv/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (2026.3.post1)\nRequirement already satisfied: tzdata>=2022.7 in ./.venv/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (2026.4)\nRequirement already satisfied: six>=1.5 in ./.venv/lib/python3.9/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev466+gd0da572b0.d20260916) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.0.dev466+gd0da572b0.d20260916-cp39-cp39-linux_x86_64.whl size=26127209 sha256=d4174b89785c33be37795b3fa86dee6b734becba53fec0278bfeb865695195b5\n  Stored in directory: /tmp/pip-ephem-wheel-cache-fhmkpl58/wheels/af/59/8d/0bbd819162f7fc2bc4949215064695a6020b025da2e0f21c03\nSuccessfully built statsmodels\nInstalling collected packages: patsy, statsmodels\nSuccessfully installed patsy-1.0.3 statsmodels-0.15.0.dev466+gd0da572b0.d20260916\n\n[notice] A new release of pip is available: 23.0.1 -> 26.0.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.9/site-packages/statsmodels/__init__.py",
+          "build_requires": [
+            "setuptools>=69.0.2",
+            "cython>=3.0.10,<4",
+            "scipy>=1.13,<2",
+            "setuptools_scm[toml]>=8,<9"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.0.2",
+            "pandas": "2.2.3",
+            "matplotlib": "3.9.2",
+            "pyparsing": "3.2.0",
+            "setuptools": "75.1.0",
+            "cython": "3.0.11",
+            "scipy": "1.13.1",
+            "setuptools-scm": "8.1.0"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [],
+          "output": "--- end of build log ---\nstatsmodels==0.15.0.dev469+g9575cf4de) (2.0.2)\nRequirement already satisfied: pandas!=2.1.0,>=1.4 in ./.venv/lib/python3.9/site-packages (from statsmodels==0.15.0.dev469+g9575cf4de) (2.2.3)\nRequirement already satisfied: scipy!=1.9.2,>=1.8 in ./.venv/lib/python3.9/site-packages (from statsmodels==0.15.0.dev469+g9575cf4de) (1.13.1)\nCollecting patsy>=0.5.6\n  Downloading patsy-1.0.3-py2.py3-none-any.whl (233 kB)\n     \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 233.3/233.3 kB 12.4 MB/s eta 0:00:00\nRequirement already satisfied: packaging>=21.3 in /usr/local/lib/python3.9/site-packages (from statsmodels==0.15.0.dev469+g9575cf4de) (26.3)\nRequirement already satisfied: pytz>=2020.1 in ./.venv/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev469+g9575cf4de) (2026.3.post1)\nRequirement already satisfied: python-dateutil>=2.8.2 in ./.venv/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev469+g9575cf4de) (2.9.0.post0)\nRequirement already satisfied: tzdata>=2022.7 in ./.venv/lib/python3.9/site-packages (from pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev469+g9575cf4de) (2026.4)\nRequirement already satisfied: six>=1.5 in ./.venv/lib/python3.9/site-packages (from python-dateutil>=2.8.2->pandas!=2.1.0,>=1.4->statsmodels==0.15.0.dev469+g9575cf4de) (1.17.0)\nBuilding wheels for collected packages: statsmodels\n  Building wheel for statsmodels (pyproject.toml): started\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): still running...\n  Building wheel for statsmodels (pyproject.toml): finished with status 'done'\n  Created wheel for statsmodels: filename=statsmodels-0.15.0.dev469+g9575cf4de-cp39-cp39-linux_x86_64.whl size=26126972 sha256=3950ad0c36618126f440b58328b689b065d9193cf2c3fd0671609726079eb18c\n  Stored in directory: /tmp/pip-ephem-wheel-cache-0c2dq8b8/wheels/c8/8c/63/2a046f36555c1481521e72b76d461fc0c95a7d1e5f91387f47\nSuccessfully built statsmodels\nInstalling collected packages: patsy, statsmodels\nSuccessfully installed patsy-1.0.3 statsmodels-0.15.0.dev469+g9575cf4de\n\n[notice] A new release of pip is available: 23.0.1 -> 26.0.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 7,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the ARDL/UECM residual correctness bug on the buggy statsmodels revision and confirm the fix makes residuals match across both representations.",
+          "milestones": [
+            "buggy_test_fails [buggy] \u2014 Verify the targeted residual test fails on the buggy revision. (1 steps, verify: steps_succeeded, test_ran, test_fails)",
+            "buggy_observable_via_probe_and_examples [buggy] \u2014 Show the residual mismatch numerically on buggy (and also evaluate the report\u2019s own examples on buggy). (3 steps, verify: steps_succeeded, test_ran, probe_ran, probe_shows_defect)",
+            "fixed_test_passes [fixed] \u2014 Verify the targeted residual test passes on the fixed revision. (1 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "fixed_observable_via_probe_and_examples [fixed] \u2014 Show residual equality numerically on fixed and evaluate report examples on fixed. (3 steps, verify: steps_succeeded, probe_ran, probe_clean)",
+            "revisions_differ [fixed] \u2014 Confirm that buggy vs fixed behavior differs for the targeted residual computation and test outcome. (1 steps, verify: revisions_differ, probe_ran, test_ran)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_resids_ardl_uecm --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 5.78
+      },
+      {
+        "verification": {
+          "milestone": "buggy_test_fails",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.t` exited 1: Copy on Write disabled"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the ARDL/UECM residual mismatch defect on the buggy revision, show numerical evidence, and confirm the fix yields matching residuals (including the report\u2019s own examples).",
+          "milestones": [
+            "buggy_observable_via_probe_and_examples [buggy] \u2014 On the buggy revision, the UECM residuals do not match the equivalent ARDL residuals, and the issue/report examples reproduce the described buggy behavior. (2 steps, verify: steps_succeeded, test_ran, probe_ran, probe_shows_defect, examples_reproduced)",
+            "fixed_test_passes [fixed] \u2014 On the fixed revision, the targeted residual correctness test passes. (1 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "fixed_observable_via_probe_and_examples [fixed] \u2014 On the fixed revision, UECM residuals match ARDL residuals (numerically) and the report\u2019s own examples evaluate to the expected non-buggy behavior. (2 steps, verify: steps_succeeded, probe_ran, probe_clean, examples_reproduced)",
+            "revisions_differ [fixed] \u2014 Confirm that buggy vs fixed differ for the residual correctness problem (test outcome and/or numerical residual mismatch). (1 steps, verify: steps_succeeded, probe_ran, test_ran, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "ardl_uecm_resid_match_probe",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(ardl_uecm_resid_match_probe) \u2014 Run a numerical probe computing ARDL vs UECM residuals for the specific dane_data specification used in the report, capturing the maximum absolute difference."
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_error",
+        "pathology": null,
+        "reasons": [
+          "the probe itself could not run (ImportError: cannot import name 'dane' from 'statsmodels.datasets' (/workspace/buggy/.venv/lib/python3.9/site-packages/statsmodels/datasets/__init__.py)) \u2014 fix the probe, not the revision"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_observable_via_probe_and_examples",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(ardl_uecm_resid_match_probe) \u2014 Run a numerical probe computing ARDL vs UECM residuals for the specific dane_data specification used in the report, capturing the maximum absolute difference. did not execute"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "0/2 mined example(s) reproduced (verdict not_observed, 0 still wrong on fixed); the example probe did not run at all on buggy (probe_error): Traceback (most recent call last):"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Establish residual-mismatch evidence for UECM vs ARDL on buggy and confirm the fixed revision matches, using direct probes and report-derived examples (bypassing failing report dataset import).",
+          "milestones": [
+            "buggy_probe_resid_mismatch_direct [buggy] \u2014 On the buggy revision, compute UECM vs ARDL residuals for the report/test design and show a nonzero maximum absolute difference. (1 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "fixed_probe_resid_match_direct [fixed] \u2014 On the fixed revision, compute the same max absolute residual difference and confirm it is near zero. (1 steps, verify: steps_succeeded, probe_ran, probe_clean)",
+            "report_examples_via_python_probes_without_dataset_import [buggy] \u2014 Reproduce the report\u2019s own two examples on both revisions by executing equivalent ARDL/UECM construction and residual comparison directly; avoid the failing statsmodels.datasets.dane import path by using the same available loader used by statsmodels in this environment. (2 steps, verify: steps_succeeded, probe_ran)",
+            "report_examples_via_python_probes_without_dataset_import_fixed [fixed] \u2014 Confirm the report/example #1 and #2 residual behavior matches on fixed (max_abs_diff near zero). (2 steps, verify: steps_succeeded, probe_ran, probe_clean)",
+            "revisions_differ_residuals [fixed] \u2014 Confirm buggy vs fixed residual computation differ for the residual-mismatch metric. (1 steps, verify: steps_succeeded, test_ran, test_passes, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "uecm_ardl_resid_max_abs_diff",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(uecm_ardl_resid_max_abs_diff) \u2014 Run a direct numerical probe that constructs ARDL and UECM from the ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) dataset loaded via statsmodels.datasets.dane, fits both models, and records max_abs_diff between uecm.fit().resid and ardl.fit().resid."
+      },
+      {
+        "verification": {
+          "milestone": "buggy_probe_resid_mismatch_direct",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(uecm_ardl_resid_max_abs_diff) \u2014 Run a direct numerical probe that constructs ARDL and UECM from the ARDL(dane_data.lrm, 3, dane_data[['lry','ibo','ide']], {'lry':1,'ibo':3,'ide':2}) dataset loaded via statsmodels.datasets.dane, fits both models, and records max_abs_diff between uecm.fit().resid and ardl.fit().resid. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Re-establish residual-mismatch evidence for UECM vs ARDL by bypassing the failing statsmodels.datasets.dane import and verifying the fixed revision matches via direct probes/examples.",
+          "milestones": [
+            "buggy_direct_resid_probe_without_dane [buggy] \u2014 On the buggy revision, compute a max-absolute residual difference between UECM and ARDL using a dane-compatible loader approach that works in this container (no statsmodels.datasets.dane import), and ensure the probe records at least one finite value showing a nonzero mismatch. (2 steps, verify: steps_succeeded, probe_ran, probe_shows_defect)",
+            "fixed_direct_resid_probe_matches [fixed] \u2014 On the fixed revision, compute the same max-absolute residual difference as the buggy probe and confirm it is near zero while remaining finite. (1 steps, verify: steps_succeeded, probe_ran, probe_clean)",
+            "compare_revisions_resid_mismatch [fixed] \u2014 Confirm that buggy and fixed revisions produce different residual-mismatch metrics (max_abs_diff), demonstrating the defect is fixed. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -c \"import statsmodels; import statsmodels.datasets as ds; import pkgutil, inspect; print('datasets submodules:', [m.name for m in pkgutil.iter_modules(ds.__path__) if 'dane' in m.name.lower()]); print('has loaders:', hasattr(ds,'loaders')); import statsmodels.datasets.loaders as l; print('loader attrs containing dane:', [a for a in dir(l) if 'dane' in a.lower()])\"",
+        "purpose": "inspect",
+        "exit_code": 1,
+        "runtime_s": 2.02
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "uecm_ardl_resid_max_abs_diff_no_dane",
+        "language": "python",
+        "status": "probe_error",
+        "pathology": null,
+        "reasons": [
+          "the probe itself could not run (ModuleNotFoundError: No module named 'statsmodels.datasets.loaders') \u2014 fix the probe, not the revision"
+        ],
+        "expected": [
+          0.0
+        ],
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_direct_resid_probe_without_dane",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`python -I -c \"import statsmodels; import statsmodels.datasets as ds; import pkgu` exited 1: Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nModuleNotFoundError: No module named 'statsmodels.datasets.loaders'; probe 'uecm_ardl_resid_max_abs_diff_no_dane' did not complete: probe_error"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "1 of 1 probe(s) did not complete: 'uecm_ardl_resid_max_abs_diff_no_dane' (probe_error): the probe itself could not run (ModuleNotFoundError: No module named 'statsmodels.datasets.loaders') \u2014 fix the probe, not the revision | ModuleNotFoundError: No module named 'statsmodels.datasets.loaders'"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "no probe could be judged on buggy: 'uecm_ardl_resid_max_abs_diff_no_dane' (probe_error): the probe itself could not run (ModuleNotFoundError: No module named 'statsmodels.datasets.loaders') \u2014 fix the probe, not the revision | ModuleNotFoundError: No module named 'statsmodels.datasets.loaders'"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "buggy_direct_resid_probe_without_dane",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded",
+            "probe_ran",
+            "probe_shows_defect"
+          ],
+          "attempts": 2,
+          "detail": [
+            "`python -I -c \"import statsmodels; import statsmodels.datasets as ds; import pkgu` exited 1: Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nModuleNotFoundError: No module named 'statsmodels.datasets.loaders'; probe 'uecm_ardl_resid_max_abs_diff_no_dane' did not complete: probe_error",
+            "1 of 1 probe(s) did not complete: 'uecm_ardl_resid_max_abs_diff_no_dane' (probe_error): the probe itself could not run (ModuleNotFoundError: No module named 'statsmodels.datasets.loaders') \u2014 fix the probe, not the revision | ModuleNotFoundError: No module named 'statsmodels.datasets.loaders'"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "uecm_ardl_resid_max_abs_diff_no_dane",
+        "language": "python",
+        "status": "probe_error",
+        "pathology": null,
+        "reasons": [
+          "the probe itself could not run (ModuleNotFoundError: No module named 'statsmodels.datasets.loaders') \u2014 fix the probe, not the revision"
+        ],
+        "expected": [
+          0.0
+        ],
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "fixed_direct_resid_probe_matches",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "probe 'uecm_ardl_resid_max_abs_diff_no_dane' did not complete: probe_error"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "1 of 1 probe(s) did not complete: 'uecm_ardl_resid_max_abs_diff_no_dane' (probe_error): the probe itself could not run (ModuleNotFoundError: No module named 'statsmodels.datasets.loaders') \u2014 fix the probe, not the revision | ModuleNotFoundError: No module named 'statsmodels.datasets.loaders'"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "probe 'uecm_ardl_resid_max_abs_diff_no_dane' is not clean on fixed: the probe itself could not run (ModuleNotFoundError: No module named 'statsmodels.datasets.loaders') \u2014 fix the probe, not the revision"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_against_autoreg_predict_start_end -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 6.58
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_against_autoreg_predict_start_end -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 6.13
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_resids_ardl_uecm -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 4.18
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_resids_ardl_uecm -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 3.98
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_resids_ardl_uecm",
+          "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_resids_ardl_uecm -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "statsmodels",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_against_autoreg_predict_start_end",
+              "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_against_autoreg_predict_start_end -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "pass",
+              "fixed": "pass"
+            },
+            {
+              "case": "test_resids_ardl_uecm",
+              "command": "python -I -m pytest --pyargs statsmodels.tsa.ardl.tests.test_ardl -k test_resids_ardl_uecm -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 11)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 11)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_error",
+        "pathology": null,
+        "reasons": [
+          "the probe itself could not run (ImportError: cannot import name 'dataset' from 'statsmodels.datasets' (/workspace/buggy/.venv/lib/python3.9/site-packages/statsmodels/datasets/__init__.py)) \u2014 fix the probe, not the revision"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_error",
+        "pathology": null,
+        "reasons": [
+          "the probe itself could not run (ImportError: cannot import name 'dataset' from 'statsmodels.datasets' (/workspace/fixed/.venv/lib/python3.9/site-packages/statsmodels/datasets/__init__.py)) \u2014 fix the probe, not the revision"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 2,
+            "recorded": 2,
+            "error": null,
+            "could_not_evaluate": 2
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 2,
+            "recorded": 2,
+            "error": null,
+            "could_not_evaluate": 2
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          3.000000000000001,
+          4.000000000000001,
+          5.000000000000001,
+          6.0,
+          7.000000000000001,
+          8.0,
+          9.0,
+          10.0,
+          11.0,
+          12.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          6.661338147750939e-16,
+          6.661338147750939e-16,
+          5.551115123125783e-16,
+          4.440892098500626e-16,
+          5.551115123125783e-16,
+          4.440892098500626e-16,
+          2.220446049250313e-16,
+          3.3306690738754696e-16,
+          2.220446049250313e-16,
+          1.1102230246251565e-16
+        ]
+      },
+      {
+        "described_examples": {
+          "n_described": 2,
+          "buggy": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "diverged",
+        "examples_verdict": "diverged",
+        "examples": "1/2"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 1/2 reported example(s) show the reported difference between the revisions; no probe is pathological, but the two revisions record different values"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 7,
+      "input_tokens": 17127,
+      "output_tokens": 8184,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.013655
+    }
+  }
+]

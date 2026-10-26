@@ -1,0 +1,368 @@
+{
+  "repo": "jax-ml/jax",
+  "pr_number": 24074,
+  "reference": "https://github.com/jax-ml/jax/pull/24074",
+  "buggy_commit": "437d7d88b992c9f511a3019823104d176e84064f",
+  "fixed_commit": "5b839ff3c63cd5d1372671220c3befd0e1c49d21",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": "3.12.6 | packaged by conda-forge",
+    "dependencies": [
+      {
+        "name": "jax",
+        "constraint": "0.4.34.dev20241002+e212c7733",
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "System info (python version, jaxlib version, accelerator, etc.): jax: 0.4.34.dev20241002+e212c7733"
+      },
+      {
+        "name": "jaxlib",
+        "constraint": "0.4.33",
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "System info (python version, jaxlib version, accelerator, etc.): jaxlib: 0.4.33"
+      },
+      {
+        "name": "numpy",
+        "constraint": "2.1.1",
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "System info (python version, jaxlib version, accelerator, etc.): numpy: 2.1.1"
+      }
+    ],
+    "installation_commands": [],
+    "build_commands": [],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "explicit: jax 0.4.34.dev20241002+e212c7733  [numerically relevant]",
+      "explicit: jaxlib 0.4.33  [numerically relevant]",
+      "explicit: numpy 2.1.1  [numerically relevant]"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "jax",
+        "documented_constraint": "0.4.34.dev20241002+e212c7733",
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "explicit",
+        "source": "System info (python version, jaxlib version, accelerator, etc.): jax: 0.4.34.dev20241002+e212c7733"
+      },
+      {
+        "package": "jaxlib",
+        "documented_constraint": "0.4.33",
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "explicit",
+        "source": "System info (python version, jaxlib version, accelerator, etc.): jaxlib: 0.4.33"
+      },
+      {
+        "package": "numpy",
+        "documented_constraint": "2.1.1",
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "explicit",
+        "source": "System info (python version, jaxlib version, accelerator, etc.): numpy: 2.1.1"
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "jax._src.numpy.polynomial.polyfit",
+    "observed_behavior": "When `polyfit` is called with multiple right-hand sides (`y` with multiple columns / multiple `rhs`), the `cov=True` covariance output is not returned as one covariance matrix per `rhs`; instead it effectively uses only the first residual from `resids`, so only the first coefficients get a covariance matrix. The issue also describes the `C` return (when `cov=True, full=False`) as always having shape `(n, n, 1)` regardless of the shape of `y`.",
+    "expected_behavior": "Return one covariance matrix per `rhs` in `polyfit` (i.e., covariance should be computed for each set of coefficients corresponding to each `rhs`).",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "Calling `jax._src.numpy.polynomial.polyfit` with multiple right-hand sides (`y` has multiple columns / multiple `rhs`).",
+      "Specifically, when `resids` contains multiple residual values/rows (i.e., multiple `rhs`), using only the first residual from `resids` leads to covariance being computed only for the first set of coefficients."
+    ],
+    "input_output_examples": [],
+    "oracle_clues": [
+      "BUG: return one covariance matrix per `rhs` in `polyfit`.",
+      "Taking the first residual from `resids` means only the first set of coefficients would get a covariance matrix.",
+      "Issue statement: for `jax.numpy.polyfit` when `cov=True, full=False` the `C` return is always `(n, n, 1)`, regardless of the shape of `y`.",
+      "Fix description shows the intended behavior change around residual scaling/broadcasting across `y_arr` sizes for multiple `rhs` (e.g., expanding `fac` rather than indexing `fac[0]`).",
+      "Tests were extended with `num_rhs=[1, 5]` to cover single vs multiple `rhs` cases for `polyfit`."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": null,
+    "precision": null,
+    "magnitude": null,
+    "tolerance": null,
+    "category_specific_evidence": [
+      "`jax.numpy.polyfit` with `cov=True` returns only one covariance matrix when `y` has multiple right-hand sides (multiple `rhs`).",
+      "From the issue example: with `x = np.arange(10).astype('float32')`, `num_rhs = 3`, and `y` shaped `(x.shape[0], num_rhs)`, `numpy.polyfit(x, y, 1, cov=True)[1]` returns an array with 3 covariance matrices (shape shown as `(3, 2, 2)` in the printed output).",
+      "In the same example, `jnp.polyfit(x, y, 1, cov=True)[1]` prints only 2 covariance matrices each with shape `(2, 1)` per printed slice, indicating that covariance output is not produced per `rhs` as expected; it \u201calways [is] `(n, n, 1)`, regardless of the shape of `y`.\u201d",
+      "The underlying code behavior described: \u201cTaking the first residual from `resids` means that only the first set of coefficients would get a covariance matrix.\u201d",
+      "The issue text states the unexpected return shape: \u201cThe `C` return for `jax.numpy.polyfit` when `cov=True, full=False` is always `(n, n, 1)`, regardless of the shape of `y`.\u201d",
+      "The fix description and diff show the numerical/broadcasting property needed for correctness: when multiple rhs are present, `fac` (from `resids / (len(x_arr) - order)`) must be expanded/broadcast so that the covariance has one matrix per `rhs` (implemented via `atleast_1d(fac)[np.newaxis, np.newaxis, :]`)."
+    ],
+    "reproduction_risks": [
+      "Reproduction depends on using `cov=True` with `full=False` and on `y` having multiple right-hand sides (`y` shaped `(M, num_rhs)` with `num_rhs>1`).",
+      "The mismatch is about covariance output shape/content per rhs, so using `num_rhs=1` (or `full=True`) will not exercise the failure mode shown in the issue.",
+      "The issue\u2019s example uses float32 (`x` is cast to `'float32'`); using other dtypes may change tolerances and exact values."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "issue",
+      "evidence_location": "issue:issue#24073"
+    },
+    {
+      "field": "environment.language_version",
+      "value": "3.12.6 | packaged by conda-forge",
+      "source": "issue",
+      "evidence_location": "issue:issue#24073"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "jax",
+      "source": "System info (python version, jaxlib version, accelerator, etc.): jax: 0.4.34.dev20241002+e212c7733",
+      "evidence_location": "issue:issue#24073"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "jaxlib",
+      "source": "System info (python version, jaxlib version, accelerator, etc.): jaxlib: 0.4.33",
+      "evidence_location": "issue:issue#24073"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "numpy",
+      "source": "System info (python version, jaxlib version, accelerator, etc.): numpy: 2.1.1",
+      "evidence_location": "issue:issue#24073"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "jax._src.numpy.polynomial.polyfit",
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "When `polyfit` is called with multiple right-hand sides (`y` with multiple columns / multiple `rhs`), the covariance output does not return one covariance matrix per `rhs`; instead it uses only the first residual from `resids`, so only the first set of coefficients gets a covariance matrix.",
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "Return one covariance matrix per `rhs` in `polyfit` (i.e., covariance should be computed for each set of coefficients corresponding to each `rhs`).",
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 2,
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 5,
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 6,
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "jax._src.numpy.polynomial.polyfit",
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "When `polyfit` is called with multiple right-hand sides (`y` with multiple columns / multiple `rhs`), the `cov=True` covariance output is not returned as one covariance matrix per `rhs`; instead it effectively uses only the first residual from `resids`, so only the first coefficients get a covariance matrix. The issue also describes the `C` return (when `cov=True, full=False`) as always having shape `(n, n, 1)` regardless of the shape of `y`.",
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "Return one covariance matrix per `rhs` in `polyfit` (i.e., covariance should be computed for each set of coefficients corresponding to each `rhs`).",
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 2,
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 5,
+      "source": "discussion",
+      "evidence_location": "discussion:tests/lax_numpy_test.py"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "issue:issue#24073",
+        "readme:README.md",
+        "readme:README.md",
+        "diff:jax/_src/numpy/polynomial.py:233-238",
+        "commit:commits",
+        "pr_body:PR#24074",
+        "issue:issue#24073",
+        "readme:README.md"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "discussion:tests/lax_numpy_test.py",
+        "diff:jax/_src/numpy/polynomial.py:233-238",
+        "pr_body:PR#24074",
+        "issue:issue#24073",
+        "commit:commits",
+        "issue:issue#24073",
+        "discussion:jax/_src/numpy/polynomial.py",
+        "discussion:jax/_src/numpy/polynomial.py"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "discussion:tests/lax_numpy_test.py",
+        "test_diff:tests/lax_numpy_test.py:968-988",
+        "diff:jax/_src/numpy/polynomial.py:266-308",
+        "pr_body:PR#24074",
+        "issue:issue#24073",
+        "commit:commits",
+        "issue:issue#24073",
+        "discussion:jax/_src/numpy/polynomial.py"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          }
+        ],
+        "present": [
+          "environment.dependencies",
+          "environment.language_version"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 0.8,
+        "required_total": 5,
+        "required_present": 4,
+        "required_missing": [
+          {
+            "path": "numerical_failure.input_output_examples",
+            "why": "a concrete (input, buggy output, expected output) triple IS the oracle; without one the generated test can only assert a property vague enough to hold on both revisions"
+          }
+        ],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "budget": {
+      "max_calls": 1,
+      "max_rung": "widened",
+      "spent": 1,
+      "log": [
+        {
+          "rung": "targeted",
+          "note": "failure: The first pass left these REQUIRED fields empty. Search the ",
+          "input_tokens": 3435,
+          "output_tokens": 415,
+          "cost_usd": 0.001206
+        }
+      ]
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 9279,
+    "output_tokens": 1622,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.003884,
+    "llm_calls": 4
+  },
+  "errors": {},
+  "expansions": [
+    {
+      "rung": "targeted",
+      "question": "failure",
+      "error": "",
+      "n_passages": 8,
+      "fields_added": [
+        "affected_api",
+        "confidence",
+        "expected_behavior",
+        "input_output_examples",
+        "manifestation",
+        "observed_behavior",
+        "oracle_clues",
+        "trigger_conditions"
+      ]
+    }
+  ]
+}

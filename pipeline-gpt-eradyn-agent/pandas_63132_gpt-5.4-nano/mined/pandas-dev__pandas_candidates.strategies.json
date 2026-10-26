@@ -1,0 +1,104 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_63132_gpt-5.4-nano/mined/pandas-dev__pandas_63132.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 9931,
+    "output_tokens": 2769,
+    "cost_usd": 0.005446,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 63132,
+      "reference": "https://github.com/pandas-dev/pandas/pull/63132",
+      "buggy_commit": "a7e0900cfb75d3b97ab522e20dc3f2b5807b75be",
+      "fixed_commit": "19ad2ecc2d522abee94886655e950da3bcdb77e4",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 7380,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas GH#60303 via the newly added Cython/groupby low-level test `test_cython_group_sum_overflow` (file `pandas/tests/groupby/test_libgroupby.py`). The buggy revision `a7e0900cfb75` produces NaN for float overflow in the Kahan compensation path; the fixed revision ensures non-finite compensation is handled so overflow yields +/-inf as expected.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy==1.26.4",
+            "pytest==8.3.3",
+            "pytz==2024.2",
+            "python-dateutil==2.9.0.post0",
+            "cython"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip setuptools wheel",
+            "pip install cython",
+            "pip install .",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy is numerically relevant and the evidence indicates issue #60303 uses NumPy 1.26.4.",
+            "pytest is pinned from issue #60303 (8.3.3) to match test runner behavior; it is not numerically relevant but helps reproduce the same execution environment.",
+            "pytz (2024.2) and python-dateutil (2.9.0.post0) are not numerically relevant but are included per the evidence to keep the environment consistent with the reported reproduction context.",
+            "Cython is required for building/installing from sources (even though issue evidence lists Cython: None, the project README indicates build-from-sources needs it; to actually run the Cython-backed `group_sum`, you must build extensions, so Cython must be present)."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/groupby/test_libgroupby.py -k test_cython_group_sum_overflow",
+        "reproducing_test": "pandas/tests/groupby/test_libgroupby.py::test_cython_group_sum_overflow",
+        "success_criterion": "On the buggy revision (`a7e0900cfb75`), `test_cython_group_sum_overflow` fails because `tm.assert_numpy_array_equal(actual, expected)` observes NaN where `expected` contains +inf/-inf (or, for the complex cases, mismatched infinities). On the fixed revision (the post-PR state from pandas-dev/pandas#63132), the same assertion passes for all parameterizations.",
+        "numerical_probe": "Trigger float64 overflow in the Cython `group_sum` Kahan compensation path by calling the low-level `group_sum(actual, counts, data, labels, None, is_datetimelike=False)` with `data = np.array([[values] for _ in range(3)])` and `labels = np.array([0,0,0], dtype=np.intp)`; this is specifically designed to overflow using `np.finfo(np.float64).max` and `.min` as a single-group, 3-element sum.",
+        "input_output_examples": [
+          {
+            "input": "s = pd.Series([1.797693e+308, 1.797693e+308, 1.797693e+308])\\ns.groupby([1, 1, 1]).sum()",
+            "buggy_output": "1   NaN\\ndtype: float64",
+            "expected_output": "1   inf\\ndtype: float64"
+          },
+          {
+            "input": "df = pd.DataFrame({\"col\": [1.797693e+308, 1.797693e+308, 1.797693e+308]}, index=pd.DatetimeIndex([pd.Timestamp(\"1970-01-01 00:00:00.000000000\"), pd.Timestamp(\"1970-01-01 00:00:00.000000001\"), pd.Timestamp(\"1970-01-01 00:00:00.000000002\")] ))\\ndf.resample('1min').agg(col=(\"col\", \"sum\"))",
+            "buggy_output": "col\\n1970-01-01\\tNaN",
+            "expected_output": "col\\n1970-01-01\\tinf"
+          }
+        ],
+        "risks": [
+          "This defect is exercised through pandas\u2019 compiled extension `pandas._libs.groupby.group_sum` (Cython). You must build/install pandas from the target revision(s) so the C/Cython extensions reflect the buggy vs fixed code.",
+          "If your platform/toolchain behaves differently for floating overflow/NaN propagation, the failure mode may differ; however the provided test forces the Kahan compensation overflow path and compares against +/-inf, so it should transition wherever the same code path exists.",
+          "The evidence notes complex-specific handling (`isfinite(compensation.real)`) in addition to float handling; if complex isn\u2019t exercised due to build configuration, the test should still fail on the float cases, but you may get different parameter-specific failures.",
+          "The evidence does not specify the exact compiler, architecture, or threading settings; if the fix was optimized behind specific build flags, reproduction might require default build flags similar to the pandas CI configuration."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "The added test asserts exact equality via `tm.assert_numpy_array_equal(actual, expected)` against precomputed arrays containing +/-inf (and specified complex infinities).",
+          "why": "The test expects overflow to produce infinities, not NaN; equality is structural for inf/NaN and complex inf components, so exact comparison is used."
+        },
+        "fails_on_buggy": "`test_cython_group_sum_overflow` fails because the float64 overflow parameterizations set `expected` to `[[np.inf]]` or `[[-np.inf]]`, but the buggy `group_sum` returns `[[np.nan]]` (due to Kahan compensation becoming non-finite/NaN and then propagating to the final result). The failing parameter is typically the first float64 `np.finfo(np.float64).max` case (and similarly for `.min`), with complex cases potentially also mismatching.",
+        "passes_on_fixed": "`test_cython_group_sum_overflow` passes because the fixed implementation detects non-finite compensation (using `isfinite` in C) and zeroes compensation when it becomes non-finite, preventing NaN propagation and yielding +/-inf for overflow (and the corresponding special handling for complex compensation.real)."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3353,
+        "output_tokens": 1311,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002309
+      },
+      "miner_usage": {
+        "input_tokens": 6578,
+        "output_tokens": 1458,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.003137,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

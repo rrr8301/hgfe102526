@@ -1,0 +1,104 @@
+{
+  "input": "pipeline-gpt-5.4-nano/statsmodels_10229_gpt-5.4-nano/mined/statsmodels__statsmodels_10229.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 11083,
+    "output_tokens": 3525,
+    "cost_usd": 0.006623,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10229,
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10229",
+      "buggy_commit": "522283ef64247f8d465b766684f01631c34b1561",
+      "fixed_commit": "a0e465d212006e3de3af37958444d1f3b2d85ccb",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 8700,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce statsmodels#10229 correctness bug in Probit loglike/score/hessian for extreme linear predictors using the repo\u2019s own failing tests `test_probit_loglikeobs_extreme_linpred` and `test_probit_extreme_observation_fit` under a specific Python+NumPy/SciPy/Statsmodels stack installed from scientific-python-nightly wheels, then verify the transition from failure (clipped/unstable logcdf and resulting NaN Hessian/spurious fit) to passing after the fix.",
+        "needs_build": false,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "scipy",
+            "statsmodels"
+          ],
+          "system_packages": [],
+          "build_commands": [],
+          "pinned_because": [
+            "No documented dependency constraints were provided for NumPy/SciPy/statsmodels (era table entries also absent). To maximize the chance of hitting the exact buggy behavior (clipped cdf/log-clip at extreme z and NaN Hessian regime), install statsmodels from the same nightly source suggested in the provided evidence: `-i https://pypi.anaconda.org/scientific-python-nightly-wheels/simple`."
+          ]
+        },
+        "test_command": "pytest statsmodels/discrete/tests/test_discrete.py::test_probit_loglikeobs_extreme_linpred statsmodels/discrete/tests/test_discrete.py::test_probit_extreme_observation_fit",
+        "reproducing_test": "statsmodels/discrete/tests/test_discrete.py::{test_probit_loglikeobs_extreme_linpred,test_probit_extreme_observation_fit}",
+        "success_criterion": "On the buggy revision (`522283ef6424`), the test(s) should fail: either (a) `np.all(np.isfinite(loglikeobs/score_obs/hessian))` fails due to NaNs from the unstable/clipped computation at extreme z, and/or (b) `assert_allclose(loglikeobs, stats.norm.logcdf(z), rtol=1e-14)` and subsequent score/factor assertions fail, and/or (c) the fit assertions fail because bfgs/newton return non-finite bse or wrong params/llf relative to a direct minimization reference. On the fixed revision, both tests pass: all computed quantities are finite and match the stable SciPy reference (logcdf/logpdf-based) within the specified tolerances, and fit converges with finite bse and params/llf matching the reference minimization.",
+        "numerical_probe": "The failure is triggered when the Probit linear predictor term `z = q*(X@params)` reaches very negative values: roughly `z < ~-8` causes `log(clip(cdf(z), eps, 1))` to become flat at `log(eps)` (wrong log-likelihood/score), and `z < ~-38` leads to `log(cdf(z))` underflow behavior producing NaNs in `model.hessian` (as described in the evidence). The tests force this regime with `z = linspace(-1e4,1e4)` and with a dataset containing an appended extreme misclassified point that makes `z.min() < -50`.",
+        "input_output_examples": [
+          {
+            "input": "params=[0.0,1.5] with rng seed 1, x ~ N(0,1) length 300, then append x=40.0 and y=0, X=[ones, x], y=(1.5*x+noise>0).astype(int).",
+            "buggy_output": "model.loglike(params) = -155.934",
+            "expected_output": "stats.norm.logcdf(z).sum() = -1924.904"
+          },
+          {
+            "input": "Same setup as above.",
+            "buggy_output": "model.score(params) = [-4.874, 7.393]",
+            "expected_output": "exact = [-64.891, -2393.273]"
+          },
+          {
+            "input": "Same setup as above.",
+            "buggy_output": "np.isnan(model.hessian(params)).any() == True",
+            "expected_output": null
+          },
+          {
+            "input": "Same setup as above; res=model.fit(method='bfgs', disp=0).",
+            "buggy_output": "res.params = [-0.036, 1.72], res.bse = [nan, nan], res.llf = -155.067",
+            "expected_output": "exact optimum: params [-0.129, 0.077], llf = -202.674"
+          }
+        ],
+        "risks": [
+          "No exact versions were provided for NumPy/SciPy/Python/statsmodels beyond using nightly wheels. The buggy behavior may depend on a particular numeric implementation (SciPy `logcdf/log_ndtr` internals, NumPy floating behavior, and statsmodels Probit implementation details), so without pinning versions the failure may be intermittent.",
+          "The environment assumes SciPy is available and provides `stats.norm.logcdf` and `stats.norm.logpdf` accurately in double precision; if SciPy is too old/new, the tolerances or exact failure mode may shift.",
+          "If the buggy revision already fixes the issue for a given dependency combination, the tests may pass even on the buggy commit (lack of transitions). If that happens, adjust by pinning NumPy/SciPy to the versions used in the PR CI/nightly environment, but that information is not present in the evidence.",
+          "The evidence describes NaNs in `model.hessian` below about z=-38; on some platforms/BLAS or with different float settings the NaN boundary may differ, but the test still forces z down to roughly -1e4 or below -50, so it should still trigger the bug."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "stats.norm.logcdf(z) (and logpdf for Mills ratio) used directly inside the tests as the reference oracle",
+          "why": "The provided test diff asserts extremely tight tolerances (e.g., rtol=1e-14 for loglikeobs vs logcdf and rtol=1e-12 for score vs Mills ratio), and checks finiteness + gradient/Hessian finite-difference agreement. The bug is a mathematical mismatch to these stable SciPy references."
+        },
+        "fails_on_buggy": "At minimum, `test_probit_loglikeobs_extreme_linpred` should fail because Probit computes loglikeobs using a clipped cdf (`log(clip(cdf, eps, 1))`) that becomes flat at log(eps) for very negative z, so `loglikeobs != stats.norm.logcdf(z)` and/or `score_obs`/`hessian` become non-finite. In the larger dataset test, the buggy implementation yields wrong `model.loglike`/`model.score`, `np.isnan(model.hessian(params)).any()` becomes True, and `fit(method='bfgs'/'newton')` fails the assertions about convergence, finite `bse`, and agreement with the direct minimization reference.",
+        "passes_on_fixed": "Both tests pass: Probit uses stable log-space computations (log_ndtr/logcdf and logpdf-logcdf for Mills ratio), ensuring all loglikeobs/score_obs/hessian values are finite for extreme z, and all asserted `assert_allclose` comparisons to SciPy reference and finite-difference derivatives succeed, with `fit` converging to the same parameters/llf as the reference minimization and producing finite standard errors."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 4213,
+        "output_tokens": 1501,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002719
+      },
+      "miner_usage": {
+        "input_tokens": 6870,
+        "output_tokens": 2024,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0039040000000000004,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

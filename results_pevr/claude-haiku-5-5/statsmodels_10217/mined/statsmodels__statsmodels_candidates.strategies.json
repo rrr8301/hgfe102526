@@ -1,0 +1,105 @@
+{
+  "input": "pipeline_no_historic/statsmodels_10217/mined/statsmodels__statsmodels_10217.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 14579,
+    "output_tokens": 6458,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "statsmodels/statsmodels",
+      "pr_number": 10217,
+      "reference": "https://github.com/statsmodels/statsmodels/pull/10217",
+      "buggy_commit": "92b4423ed77373eaf46cf63846e999c57be1a674",
+      "fixed_commit": "9cac821f4a7bfd6226590bc81a730aa7f6131cea",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 4885,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the Logit loglike/loglikeobs overflow at buggy commit 92b4423ed773 by building statsmodels from source, then run the developer's test test_logit_loglikeobs_extreme_linpred. On the buggy revision log(cdf(z)) overflows in exp for z near -1e4, raising a RuntimeWarning that the test turns into an error. On the fixed revision the logaddexp/log_expit-style computation returns finite values matching scipy.special.log_expit to rtol=1e-14 with no warnings.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy (unpinned; choose a current release compatible with the checkout's build requirements, since no era ceiling is documented)",
+            "scipy>=1.8 (chosen by me, not from the evidence: scipy.special.log_expit is needed by the test and, to my knowledge, was added in SciPy 1.8; the evidence gives no scipy constraint)",
+            "pandas (needed by statsmodels import; unpinned)",
+            "patsy (needed by statsmodels import; unpinned)",
+            "pytest",
+            "Cython (build dependency for statsmodels extensions; use the version listed in the checkout's pyproject.toml build-system requires)",
+            "setuptools and wheel (build dependencies)"
+          ],
+          "system_packages": [
+            "C compiler toolchain (gcc or clang) for building statsmodels Cython extensions"
+          ],
+          "build_commands": [
+            "git checkout 92b4423ed773",
+            "python -m pip install -U pip",
+            "python -m pip install numpy scipy pandas patsy pytest cython setuptools wheel",
+            "python -m pip install -e . --no-build-isolation  (or: python setup.py build_ext --inplace)"
+          ],
+          "pinned_because": [
+            "scipy>=1.8: chosen by me so that scipy.special.log_expit exists for the test's reference; this is an inferred requirement, not a documented constraint from the evidence",
+            "numpy: no documented constraint and no era table entry; left unpinned, so the strategy chooses a current release. The commit's mention of logaddexp TypeError for integer linpreds is an era-inferred hint only and is not relied upon as a pin"
+          ]
+        },
+        "test_command": "python -m pytest statsmodels/discrete/tests/test_discrete.py::test_logit_loglikeobs_extreme_linpred -q -p no:cacheprovider",
+        "reproducing_test": "statsmodels/discrete/tests/test_discrete.py::test_logit_loglikeobs_extreme_linpred",
+        "success_criterion": "On buggy 92b4423ed773 the test FAILS: under warnings.simplefilter('error') the call to model.loglikeobs(params) raises a RuntimeWarning (overflow encountered in exp) because log(cdf(z)) computes exp(1e4). On the fixed revision the test PASSES: loglikeobs and loglike are finite with no warnings, loglikeobs matches scipy.special.log_expit(z) at rtol=1e-14, and loglike matches loglikeobs.sum() at rtol=1e-14. The fixed revision is the PR #10217 merge commit, which was not supplied in the evidence; check it out and confirm it is the parent-to-fix transition before relying on it.",
+        "numerical_probe": "Run python -c with sm.Logit(np.ones(50,dtype=int), X) where X=[ones, linspace(-1e4,1e4,50)] and params [0,1] under warnings as errors, and print loglikeobs[:3]; on buggy this should raise RuntimeWarning, on fixed it should return about -1e4 for the first entries.",
+        "input_output_examples": [
+          {
+            "input": "Logit loglikeobs with |linpred| up to 1e4 (z = np.linspace(-1e4, 1e4, 50), y = ones int, params [0, 1])",
+            "buggy_output": "-inf entries with RuntimeWarning: overflow encountered in exp",
+            "expected_output": "finite values matching scipy.special.log_expit(z) with rtol=1e-14, no RuntimeWarnings"
+          }
+        ],
+        "risks": [
+          "The fixed revision commit hash is not in the evidence. The transition is only meaningful if the test is run on the actual pre- and post-fix commits; the PR merge commit must be identified from the PR page.",
+          "Build dependency: statsmodels has Cython extensions. If the build fails under a newer numpy or Cython than the checkout expects, the test cannot run at all, and that is not the defect. Use the versions in pyproject.toml build-system.requires if the build breaks.",
+          "The test relies on the numpy overflow RuntimeWarning, which numpy emits by default on all platforms (Linux, macOS, Windows). It is not architecture-, sanitiser- or threading-specific, so no special platform is required. This is a deliberate check, not an assumption.",
+          "The test uses sm, warnings, and assert_allclose. These must already be imported at the top of statsmodels/discrete/tests/test_discrete.py at the buggy commit; the diff does not add imports, so a missing import would be a test-harness error, not the defect.",
+          "scipy version: the >=1.8 requirement for log_expit is my own inference, not from the evidence. If an older scipy is used, the test fails on import, which is not the defect transition.",
+          "Complex-step tests (TestGradLogit) exercise the same loglike code path. The evidence notes np.logaddexp has no complex loop and that the real-valued cast drops the imaginary part. A fix that breaks complex inputs would fail existing Logit tests even though this regression test passes. Run -k Logit to check.",
+          "Numerical tolerance: the rtol=1e-14 comparison against log_expit is tight. The fixed formula must be evaluated stably in float64; a log1p(exp(...)) variant may differ at the last few ulps for moderate z, which would fail this assert even though the finiteness part passes.",
+          "Because numerical agreement with the reference is part of the pass criterion, a platform-specific libm exp/log difference could in principle move the last bits. Treat a failure at only the rtol=1e-14 assert as possibly platform-sensitive and report it rather than attributing it to the fix."
+        ],
+        "oracle": {
+          "kind": "relative",
+          "tolerance": "rtol=1e-14",
+          "reference_source": "scipy.special.log_expit",
+          "why": "The regression test asserts loglikeobs against log_expit(z) at rtol=1e-14, and loglike against loglikeobs.sum() at rtol=1e-14. For y=1 and q=1, the model log-likelihood equals log(cdf(z)) = log_expit(z) exactly in real arithmetic, so a relative comparison against the stable reference is the appropriate oracle."
+        },
+        "fails_on_buggy": "The first call to model.loglikeobs(params) under warnings.simplefilter('error') raises RuntimeWarning (overflow encountered in exp) because the buggy code computes cdf = 1/(1+exp(-z)) with z near -1e4, giving inf in exp and 0 in the cdf, then log(0) = -inf. The test fails at that point, before any assert, so the failure comes from the warning-as-error plus the -inf values.",
+        "passes_on_fixed": "The fixed code computes log-likelihood with a stable logaddexp or log_expit-style formula. loglikeobs and loglike are finite with no warnings, loglikeobs equals log_expit(z) to rtol=1e-14, and loglike equals loglikeobs.sum() to rtol=1e-14, so all asserts pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4430,
+        "output_tokens": 4157,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 10149,
+        "output_tokens": 2301,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

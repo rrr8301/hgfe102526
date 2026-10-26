@@ -1,0 +1,96 @@
+{
+  "input": "workspace/new-mine/PointCloudLibrary__pcl_candidates.json",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 2849,
+    "output_tokens": 2920,
+    "cache_read_tokens": 128,
+    "cache_write_tokens": 0,
+    "cost_usd": 0.00511,
+    "llm_calls": 1,
+    "peak_calls": 0,
+    "n_costed": 1,
+    "n_strategies": 1,
+    "cost_usd_per_strategy": 0.00511
+  },
+  "strategies": [
+    {
+      "reference": "https://github.com/PointCloudLibrary/pcl/pull/6461",
+      "repo": "PointCloudLibrary/pcl",
+      "pr_number": 6461,
+      "buggy_commit": "16f5942f46e1b9728282933128bcac651256c326",
+      "fixed_commit": "b2873a1f91f072544efbfe1bec7971d36d1953b1",
+      "is_numerical_bug": true,
+      "bug_type": "correctness",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "strategy": {
+        "summary": "At buggy commit 16f5942, pcl::ProgressiveMorphologicalFilter stores/returns max_window_size as int (getMaxWindowSize/setMaxWindowSize), so a fractional coordinate-space maximum such as 6.25f is truncated to 6. The PR adds a new gtest (ProgressiveMorphologicalFilter.FractionalMaximumWindowSize) that static_asserts the getter returns float and EXPECT_FLOAT_EQ(getMaxWindowSize(), 6.25f). Reproduce by adding only that test file plus its CMakeLists registration on top of the buggy headers, building the segmentation tests, and running the test: it must fail (compile-time static_assert failure at the buggy revision), and pass once max_window_size_ is float.",
+        "input_output_examples": [
+          {
+            "input": "filter.setMaxWindowSize(6.25f); filter.getMaxWindowSize()",
+            "buggy_output": "6 (int magnitude; the fractional part 0.25 is truncated because getMaxWindowSize/setMaxWindowSize use int)",
+            "expected_output": "6.25f (float magnitude, exactly preserved)",
+            "source": "test"
+          },
+          {
+            "input": "static_assert(std::is_same_v<decltype(filter.getMaxWindowSize()), float>);",
+            "buggy_output": "Compile-time static assertion failure: decltype(filter.getMaxWindowSize()) is int, not float",
+            "expected_output": "Compiles: decltype(filter.getMaxWindowSize()) is float",
+            "source": "test"
+          },
+          {
+            "input": "ProgressiveMorphologicalFilter: compare window_size = cell_size * (2 * base^iteration + 1) against a fractional coordinate-space maximum, e.g. 6.25 m",
+            "buggy_output": "Maximum stored as int (e.g. 6), truncating the fractional threshold and cutting off valid fractional maximum window dimensions",
+            "expected_output": "Maximum kept as float 6.25 in the same coordinate-space units as window_size, honoring the fractional threshold",
+            "source": "issue"
+          }
+        ],
+        "environment_setup": [
+          "Ubuntu 24.04-style Linux host (CI base image pointcloudlibrary/env:24.04); any CMake >= 3.10 and a C++17 compiler (clang-18 at /usr/bin/clang-18 per CI, GCC acceptable).",
+          "Install PCL build dependencies: Eigen3, Boost (system), FLANN, VTK/OpenNI optional; the test target only links pcl_gtest and pcl_segmentation, so minimal deps suffice.",
+          "Fetch available LLVM toolchain if clang-18 is absent, matching CI: bash -c \"$(wget -O - https://apt.llvm.org/llvm.sh)\".",
+          "pcl_gtest (bundled gtest) is provided by the repo; no external gtest package is required."
+        ],
+        "build_steps": [
+          "git checkout 16f5942f46e1b9728282933128bcac651256c326 (buggy revision).",
+          "Apply ONLY the test-side changes from PR #6461: create test/segmentation/test_progressive_morphological_filter.cpp (33 lines, gtest ProgressiveMorphologicalFilter.FractionalMaximumWindowSize) and add the PCL_ADD_TEST(progressive_morphological_filter test_progressive_morphological_filter FILES ... LINK_WITH pcl_gtest pcl_segmentation) block to test/segmentation/CMakeLists.txt. Do NOT touch either progressive_morphological_filter.h header.",
+          "mkdir build && cd build; cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_global_tests=ON -DBUILD_segmentation=ON -DBUILD_tools=OFF -DBUILD_examples=OFF (add -DCMAKE_CXX_COMPILER=/usr/bin/clang-18 -DCMAKE_C_COMPILER=/usr/bin/clang-18 for CI parity).",
+          "Build the new test executable: cmake --build . --target test_progressive_morphological_filter -j$(nproc) (or make test_progressive_morphological_filter)."
+        ],
+        "reproduction_steps": [
+          "Confirm the buggy header declares the maximum as int: grep -n 'max_window_size_' segmentation/include/pcl/segmentation/progressive_morphological_filter.h should show 'int max_window_size_{33};' and getMaxWindowSize()/setMaxWindowSize(int) signatures.",
+          "Add the PR test file and CMakeLists registration as described (test-only patch), leaving headers at the buggy revision.",
+          "Configure and build as above; observe that compilation of test_progressive_morphological_filter.cpp fails on the static_assert(std::is_same_v<decltype(filter.getMaxWindowSize()), float>) because the getter returns int at the buggy revision. Capture the compiler error as the failing observation.",
+          "To also observe the runtime numeric truncation, temporarily comment out only the static_assert in the local copy of the test (do not change the library), rebuild, and run the binary: setMaxWindowSize(6.25f) is converted to int 6, so EXPECT_FLOAT_EQ(filter.getMaxWindowSize(), 6.25f) reports 6 vs 6.25 and the test FAILS.",
+          "Verify no other test in the segmentation suite is affected, then record the failure output as the reproduction evidence."
+        ],
+        "test_command": "ctest -R progressive_morphological_filter --output-on-failure",
+        "test_selector": "ProgressiveMorphologicalFilter.FractionalMaximumWindowSize",
+        "expected_buggy_behavior": "At 16f5942 the test does not compile: static_assert(is_same_v<decltype(filter.getMaxWindowSize()), float>) fails because max_window_size_/getMaxWindowSize are int; if the static_assert is bypassed, setMaxWindowSize(6.25f) truncates to 6 and EXPECT_FLOAT_EQ(getMaxWindowSize(), 6.25f) fails with 6 vs 6.25. The ctest target progressive_morphological_filter thus reports failure.",
+        "expected_fixed_behavior": "With max_window_size_ changed to float (b2873a1) and getMaxWindowSize()/setMaxWindowSize(float), the static_assert holds and setMaxWindowSize(6.25f) preserves 6.25f, so EXPECT_FLOAT_EQ(filter.getMaxWindowSize(), 6.25f) passes and ctest -R progressive_morphological_filter reports all tests passed.",
+        "success_criterion": "On the buggy commit (with only the PR test file + CMakeLists registration applied), building/running ProgressiveMorphologicalFilter.FractionalMaximumWindowSize fails: compile error on the float static_assert, or (static_assert bypassed) EXPECT_FLOAT_EQ 6 vs 6.25 failure; the same test passes once the header is fixed.",
+        "risks_or_ambiguities": [
+          "The reproducing test file test/segmentation/test_progressive_morphological_filter.cpp is NEW in PR #6461 and therefore absent at the buggy commit; the test-only part of the diff must be applied manually before reproduction.",
+          "Because the test uses static_assert on the return type, the buggy failure is a COMPILE failure of the test target, not a runtime EXPECT failure; the runtime 6-vs-6.25 truncation is only observable if the static_assert is locally removed.",
+          "Exact buggy signatures of getMaxWindowSize/setMaxWindowSize (int vs float parameter) are inferred from the PR diff text ('int max_window_size_{33}' -> 'float max_window_size_{33.0f}'); verify in the header before running.",
+          "CMake option names for enabling tests (BUILD_global_tests) and the resulting ctest name for PCL_ADD_TEST(progressive_morphological_filter ...) are inferred; confirm with 'ctest -N | grep progressive_morphological_filter'.",
+          "CI evidence is the clang-tidy GitHub Actions workflow (Q4 confidence 0.4), not a build/test workflow; compiler/build flags are best-effort and other compilers should produce the same failure.",
+          "The ApproximateProgressiveMorphologicalFilter header is also modified by the PR but is intentionally kept int (grid-cell counts) and has no covering test here."
+        ],
+        "confidence": 0.7
+      },
+      "error": "",
+      "usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2849,
+        "output_tokens": 2920,
+        "cache_read_tokens": 128,
+        "cache_write_tokens": 0,
+        "cost_usd": 0.00511
+      }
+    }
+  ]
+}

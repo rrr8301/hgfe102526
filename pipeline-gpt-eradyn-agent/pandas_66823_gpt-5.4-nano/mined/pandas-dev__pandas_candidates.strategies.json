@@ -1,0 +1,98 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_66823_gpt-5.4-nano/mined/pandas-dev__pandas_66823.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 15332,
+    "output_tokens": 3771,
+    "cost_usd": 0.007781,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66823,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66823",
+      "buggy_commit": "5929ccb321ddae1d7570b95dd736b7c529e88774",
+      "fixed_commit": "0cccc8f2cebb20093e109179b593f87e43db393d",
+      "bug_type": "special_value",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 8577,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas GH#66823 (special_value) where `to_timedelta` float-branch mishandles `errors=\"coerce\"` for out-of-bounds datetime magnitudes, and where `pd.Timedelta(**kwargs)` mishandles non-finite floats via a bare `OverflowError`. Ensure the project test(s) for these regressions fail on buggy commit 5929ccb321dd and pass on the fixed revision from PR#66823.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "python-dateutil",
+            "pytz",
+            "cython"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install --upgrade pip",
+            "pip install -e . --no-build-isolation"
+          ],
+          "pinned_because": [
+            "No specific version pins are provided in the evidence. NumPy is the only numerically relevant dependency; to avoid missing the float-branch behavior, use a recent stable NumPy and the pandas build from source at the target commits."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/scalar/timedelta/test_constructors.py::test_construct_from_kwargs_inf pandas/tests/tools/test_to_timedelta.py::test_to_timedelta_float_array_coerce_out_of_bounds -q",
+        "reproducing_test": "Run the two added/modified tests that directly exercise the two failure modes described in PR#66823: (1) `Timedelta(**kwargs)` with `np.inf`/`-np.inf`, and (2) `to_timedelta` with float-dtype ndarray/Series/Float64 masked array for out-of-bounds magnitudes under `errors='coerce'`.",
+        "success_criterion": "On buggy revision `5929ccb321dd`, `test_construct_from_kwargs_inf` fails because `Timedelta(**{kwarg: np.inf})` raises a bare `OverflowError` (or otherwise not `OutOfBoundsTimedelta` with message matching \u201cCannot construct Timedelta\u201d). Also on the same buggy revision, `test_to_timedelta_float_array_coerce_out_of_bounds` fails because `to_timedelta(box(values), errors='coerce', unit=...)` returns `OutOfBoundsTimedelta` (or a non-NaT result) instead of the NaT-equivalent expected for `errors='coerce'`. On the fixed revision (the post-PR change in pandas), both tests pass: `Timedelta(**kwargs)` with `np.inf/-np.inf` raises `OutOfBoundsTimedelta` with matching message, and `to_timedelta` under `errors='coerce'` yields the same NaT-coerced results as the reference `to_timedelta(values, errors='coerce', ...)` for the list/object-equivalent path.",
+        "numerical_probe": "Use the exact special values and magnitudes encoded in the project tests: `val in [np.inf, -np.inf]` for kwargs constructor; and `values` such as `[1.5, 1e30]` with `unit='s'` (plus other parametrized cases in the test) to hit the float-branch out-of-bounds conversion.",
+        "input_output_examples": [
+          {
+            "input": "pd.Timedelta(days=np.inf)",
+            "buggy_output": "OverflowError: cannot convert float infinity to integer",
+            "expected_output": "OutOfBoundsTimedelta (message matches \u201cCannot construct Timedelta\u201d)"
+          },
+          {
+            "input": "pd.to_timedelta(np.array([1.5, 1e30]), unit=\"s\", errors=\"coerce\")",
+            "buggy_output": "OutOfBoundsTimedelta (coercion is not respected; float branch converts unconditionally without consulting errors)",
+            "expected_output": "NaT-equivalent for the out-of-bounds element (list/object path yields `[1.5s, NaT]`)"
+          }
+        ],
+        "risks": [
+          "Exact fixed revision commit hash is not provided in the evidence context; you must check out the revision produced by PR#66823 that includes the described behavior changes (float-branch must consult `errors`, and kwargs path must avoid bare `OverflowError`).",
+          "The float-branch bug may be sensitive to pandas\u2019 internal dtype handling and NumPy behavior. Using a too-old or too-new NumPy could change casting behavior and mask the regression; choose a reasonably current NumPy version and confirm the test failures match the oracle.",
+          "Special-value behavior beyond `np.inf/-np.inf` (e.g. `np.nan`) is not evidenced; avoid substituting other values.",
+          "If building in environments that use different compilers/flags, the C-extension behavior may vary; if the tests do not fail on the buggy revision, retry with a clean build and default compiler toolchain on the same platform/arch as CI (the evidence does not specify toolchain constraints)."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": "PR#66823 test additions/changes and described expected behavior: object/list path example yields `[1.5s, NaT]` under `errors='coerce'`; kwargs path should raise `OutOfBoundsTimedelta` with message \u201cCannot construct Timedelta\u201d.",
+          "why": "The provided evidence describes qualitative differences (wrong special-value handling and wrong exception type) rather than numeric tolerances. Assertions in the added tests check exception class/message and array equality against the baseline `to_timedelta(values, errors='coerce', ...)` result, so no tolerance-based oracle is required."
+        },
+        "fails_on_buggy": "The test `test_construct_from_kwargs_inf` asserts `with pytest.raises(OutOfBoundsTimedelta, match=\"Cannot construct Timedelta\"): Timedelta(**{kwarg: np.inf/-np.inf})`. On the buggy revision, the kwargs path uses `int()` on a non-finite float, causing a bare `OverflowError` instead, so the assertion fails due to wrong exception type/message. The test `test_to_timedelta_float_array_coerce_out_of_bounds` computes `expected = to_timedelta(values, errors='coerce', **kwargs)` and then compares to `result = to_timedelta(box(values), errors='coerce', **kwargs)`. On the buggy revision, the float-branch converts `OutOfBoundsDatetime` to `OutOfBoundsTimedelta` unconditionally without consulting `errors`, so the coerced `NaT`/expected result is not produced for the float-array/Series/Float64 inputs; the equality assertion fails. ",
+        "passes_on_fixed": "On the fixed revision, `Timedelta(**kwargs)` with `np.inf/-np.inf` raises `OutOfBoundsTimedelta` with message matching \u201cCannot construct Timedelta\u201d, and `to_timedelta` with float-dtype ndarray/Series/masked Float64 under `errors='coerce'` yields the same NaT-coerced result as the baseline list/object path (`expected`) for the parametrized out-of-bounds magnitudes; thus both tests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 4596,
+        "output_tokens": 1422,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002697
+      },
+      "miner_usage": {
+        "input_tokens": 10736,
+        "output_tokens": 2349,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.005084,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

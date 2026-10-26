@@ -1,0 +1,110 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/scipy_23121_claude-haiku-5-5/mined/scipy__scipy_23121.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 15871,
+    "output_tokens": 5335,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 23121,
+      "reference": "https://github.com/scipy/scipy/pull/23121",
+      "buggy_commit": "04b8f858c947dcffa27a3a510723d2340cd0e35c",
+      "fixed_commit": "8c0233d00af6c7b2803348d6f001d6f907cb8092",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 4168,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the periodic-boundary eigenvector defect in scipy.sparse.linalg.LaplacianNd (_ev1d) by building the buggy revision 04b8f858c947 from source and running the PR's modified test_eigenvectors. The buggy _ev1d returns duplicate periodic eigenvectors, so the new orthogonality and full-decomposition asserts fail; the fixed revision should pass. No version pins are documented, so versions are chosen and flagged as such.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.11",
+          "pip_packages": [
+            "numpy>=2.0",
+            "scipy-openblas-free-placeholder",
+            "pytest",
+            "hypothesis",
+            "pooch",
+            "meson-python",
+            "meson",
+            "ninja",
+            "cython",
+            "pybind11",
+            "pythran"
+          ],
+          "system_packages": [
+            "gfortran",
+            "libopenblas-dev or pkg-config-visible BLAS/LAPACK",
+            "git",
+            "a C/C++ compiler (gcc or clang)"
+          ],
+          "build_commands": [
+            "git clone https://github.com/scipy/scipy.git && cd scipy && git checkout 04b8f858c947 && git submodule update --init",
+            "python -m pip install -r requirements/build.txt numpy pytest",
+            "python -m pip install -e . --no-build-isolation",
+            "python -c \"import scipy, numpy; print(scipy.__version__, numpy.__version__)\""
+          ],
+          "pinned_because": [
+            "Python 3.11 and numpy>=2.0 are era-inferred choices; no documented constraint exists in the evidence, so they are a judgement call, not a requirement",
+            "scipy is built from the buggy commit because the defect is in the scipy source tree and only that build can exhibit it"
+          ]
+        },
+        "test_command": "python -m pytest scipy/sparse/linalg/tests/test_special_sparse_arrays.py -k 'test_eigenvectors' -v -p no:cacheprovider",
+        "reproducing_test": "scipy/sparse/linalg/tests/test_special_sparse_arrays.py::TestLaplacianNd::test_eigenvectors with bc='periodic' and grid_shape in [(6,), (2,3), (2,3,4)], plus the added orthogonality assert_allclose(eigenvectors @ eigenvectors.T, np.eye(n), atol=atol) and full decomposition assert_allclose(L, lap.toarray(), atol=atol) from the PR diff",
+        "success_criterion": "On the buggy revision 04b8f858c947 the test fails with an AssertionError from assert_allclose in the orthogonality or full-decomposition check, because periodic _ev1d produces duplicate columns so V V^T is not the identity and V diag(w) V^T does not equal lap.toarray(). On the fixed revision (the PR head with the sin/cos periodic formula) the same test passes for all parametrised grid shapes and bc values.",
+        "numerical_probe": "from scipy.sparse.linalg import LaplacianNd; import numpy as np; lap=LaplacianNd(grid_shape=(6,), boundary_conditions='periodic'); V=lap.eigenvectors(); w=lap.eigenvalues(); print(np.allclose(V@np.diag(w)@V.T, lap.toarray()), np.allclose(V@V.T, np.eye(6)))",
+        "input_output_examples": [
+          {
+            "input": "LaplacianNd(grid_shape=(6,), boundary_conditions=\"periodic\"); lap.eigenvectors() @ np.diag(lap.eigenvalues()) @ lap.eigenvectors().T",
+            "buggy_output": "does not equal lap.toarray(); np.allclose returns False and the assertion raises AssertionError",
+            "expected_output": "equals lap.toarray() within atol; eigenvectors are orthonormal so V @ V.T equals np.eye(6)"
+          }
+        ],
+        "risks": [
+          "The bug is a pure-Python formula error, so it should not depend on platform or BLAS, but the build still needs a compiled scipy; a wheel from a different revision will not transition.",
+          "The test diff adds asserts that reference variables eigenvectors, eigenvalues, n and lap; if these are not in scope in the test_eigenvectors method on the buggy revision, the test may fail with NameError on both revisions and not transition. Check the test body before trusting the transition.",
+          "The atol value is not stated in the evidence, so the tolerance used in the test is whatever the test file defines; if atol is loose, the buggy duplicate columns could still pass or fail unpredictably. Read atol from the test file rather than assuming it.",
+          "The evidence describes n=6 with rounded printed values only; the exact correct eigenvector values are not given, so the reproduction relies on the test's identity and reconstruction checks rather than hard-coded numbers.",
+          "No sanitiser, specific architecture, or threading mode is indicated, so none is planned; if the bug were only visible under a specific architecture the transition would not occur on x86_64 Linux, and the evidence gives no sign of that.",
+          "Both numpy and scipy version constraints are unbounded in the evidence; the chosen numpy>=2.0 and Python 3.11 may differ from the era the PR was observed in, which could change numerical output only marginally and is unlikely to affect the logical transition."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": null,
+          "reference_source": "Wikipedia periodic boundary conditions reference for second-derivative eigenvectors, as cited in the PR; the test checks reconstruction of lap.toarray() and orthogonality",
+          "why": "The atol value used in test_eigenvectors is not stated in the evidence, so the tolerance is unknown here and must be read from the test file"
+        },
+        "fails_on_buggy": "The orthogonality check eigenvectors @ eigenvectors.T vs np.eye(n) and the full-decomposition check V diag(w) V^T vs lap.toarray() both raise AssertionError on the buggy revision, because periodic _ev1d returns duplicate eigenvector columns (e.g. repeated rows 0.289/-0.577 for n=6), which makes V non-orthogonal and the reconstruction wrong.",
+        "passes_on_fixed": "On the fixed revision the periodic eigenvectors use sin(pi(k+0.5)/n*(j+1)) for even j+1 and cos(pi(k+0.5)/n*j) otherwise, giving an orthonormal basis, so both assert_allclose checks pass within atol for all parametrised shapes and bc values."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 4052,
+        "output_tokens": 3180,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 11819,
+        "output_tokens": 2155,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

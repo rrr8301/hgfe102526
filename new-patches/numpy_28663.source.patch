@@ -1,0 +1,338 @@
+diff --git a/.github/workflows/linux.yml b/.github/workflows/linux.yml
+index b4826f2e1642..57e5cf53f225 100644
+--- a/.github/workflows/linux.yml
++++ b/.github/workflows/linux.yml
+@@ -155,6 +155,51 @@ jobs:
+       env:
+         PYTHONOPTIMIZE: 2
+ 
++
++  armhf_test:
++    # Tests NumPy on 32-bit ARM hard-float (armhf) via compatibility mode
++    # running on aarch64 (ARM 64-bit) GitHub runners.
++    needs: [smoke_test]
++    if: github.repository == 'numpy/numpy'
++    runs-on: ubuntu-22.04-arm
++    steps:
++    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
++      with:
++        submodules: recursive
++        fetch-tags: true
++        persist-credentials: false
++    
++    - name: Creates new container
++      run: |
++        docker run --name the_container --interactive \
++          -v $(pwd):/numpy arm32v7/ubuntu:22.04 /bin/linux32 /bin/bash -c "
++          apt update &&
++          apt install -y ninja-build cmake git python3 python-is-python3 python3-dev python3-pip python3-venv &&
++          python -m pip install -r /numpy/requirements/build_requirements.txt &&
++          python -m pip install -r /numpy/requirements/test_requirements.txt
++        "
++        docker commit the_container the_container
++
++    - name: Meson Build
++      run: |
++        docker run --rm -e "TERM=xterm-256color" \
++          -v $(pwd):/numpy the_container \
++          /bin/script -e -q -c "/bin/linux32 /bin/bash --noprofile --norc -eo pipefail -c '
++            cd /numpy && spin build 
++          '"
++
++    - name: Meson Log
++      if: always()
++      run: 'cat build/meson-logs/meson-log.txt'
++
++    - name: Run Tests
++      run: |
++        docker run --rm -e "TERM=xterm-256color" \
++          -v $(pwd):/numpy the_container \
++          /bin/script -e -q -c "/bin/linux32 /bin/bash --noprofile --norc -eo pipefail -c '
++            cd /numpy && spin test -m full -- --timeout=600 --durations=10
++          '"
++
+   benchmark:
+     needs: [smoke_test]
+     runs-on: ubuntu-latest
+diff --git a/.github/workflows/linux_qemu.yml b/.github/workflows/linux_qemu.yml
+index 15681f4c476f..de7f6f816cee 100644
+--- a/.github/workflows/linux_qemu.yml
++++ b/.github/workflows/linux_qemu.yml
+@@ -38,17 +38,6 @@ jobs:
+       fail-fast: false
+       matrix:
+         BUILD_PROP:
+-          - [
+-              "armhf",
+-              "arm-linux-gnueabihf",
+-              "arm32v7/ubuntu:22.04",
+-              "-Dallow-noblas=true",
+-              # test_unary_spurious_fpexception is currently skipped
+-              # FIXME(@seiko2plus): Requires confirmation for the following issue:
+-              # The presence of an FP invalid exception caused by sqrt. Unsure if this is a qemu bug or not.
+-              "(test_kind or test_multiarray or test_simd or test_umath or test_ufunc) and not test_unary_spurious_fpexception",
+-              "arm"
+-            ]
+           - [
+               "ppc64le",
+               "powerpc64le-linux-gnu",
+diff --git a/numpy/_core/src/common/npy_cpu_features.c b/numpy/_core/src/common/npy_cpu_features.c
+index 7c0a4c60294c..2c1e064afda5 100644
+--- a/numpy/_core/src/common/npy_cpu_features.c
++++ b/numpy/_core/src/common/npy_cpu_features.c
+@@ -749,34 +749,33 @@ npy__cpu_init_features_linux(void)
+     #endif
+     }
+ #ifdef __arm__
++    npy__cpu_have[NPY_CPU_FEATURE_NEON]       = (hwcap & NPY__HWCAP_NEON)   != 0;
++    if (npy__cpu_have[NPY_CPU_FEATURE_NEON]) {
++        npy__cpu_have[NPY_CPU_FEATURE_NEON_FP16]  = (hwcap & NPY__HWCAP_HALF) != 0;
++        npy__cpu_have[NPY_CPU_FEATURE_NEON_VFPV4] = (hwcap & NPY__HWCAP_VFPv4) != 0;
++    }
+     // Detect Arm8 (aarch32 state)
+     if ((hwcap2 & NPY__HWCAP2_AES)  || (hwcap2 & NPY__HWCAP2_SHA1)  ||
+         (hwcap2 & NPY__HWCAP2_SHA2) || (hwcap2 & NPY__HWCAP2_PMULL) ||
+         (hwcap2 & NPY__HWCAP2_CRC32))
+     {
+-        hwcap = hwcap2;
++        npy__cpu_have[NPY_CPU_FEATURE_ASIMD] = npy__cpu_have[NPY_CPU_FEATURE_NEON];
++    }
+ #else
+-    if (1)
+-    {
+-        if (!(hwcap & (NPY__HWCAP_FP | NPY__HWCAP_ASIMD))) {
+-            // Is this could happen? maybe disabled by kernel
+-            // BTW this will break the baseline of AARCH64
+-            return 1;
+-        }
+-#endif
+-        npy__cpu_have[NPY_CPU_FEATURE_FPHP]       = (hwcap & NPY__HWCAP_FPHP)     != 0;
+-        npy__cpu_have[NPY_CPU_FEATURE_ASIMDHP]    = (hwcap & NPY__HWCAP_ASIMDHP)  != 0;
+-        npy__cpu_have[NPY_CPU_FEATURE_ASIMDDP]    = (hwcap & NPY__HWCAP_ASIMDDP)  != 0;
+-        npy__cpu_have[NPY_CPU_FEATURE_ASIMDFHM]   = (hwcap & NPY__HWCAP_ASIMDFHM) != 0;
+-        npy__cpu_have[NPY_CPU_FEATURE_SVE]        = (hwcap & NPY__HWCAP_SVE)      != 0;
+-        npy__cpu_init_features_arm8();
+-    } else {
+-        npy__cpu_have[NPY_CPU_FEATURE_NEON]       = (hwcap & NPY__HWCAP_NEON)   != 0;
+-        if (npy__cpu_have[NPY_CPU_FEATURE_NEON]) {
+-            npy__cpu_have[NPY_CPU_FEATURE_NEON_FP16]  = (hwcap & NPY__HWCAP_HALF) != 0;
+-            npy__cpu_have[NPY_CPU_FEATURE_NEON_VFPV4] = (hwcap & NPY__HWCAP_VFPv4) != 0;
+-        }
++    if (!(hwcap & (NPY__HWCAP_FP | NPY__HWCAP_ASIMD))) {
++        // Is this could happen? maybe disabled by kernel
++        // BTW this will break the baseline of AARCH64
++        return 1;
+     }
++    npy__cpu_init_features_arm8();
++#endif
++    npy__cpu_have[NPY_CPU_FEATURE_FPHP]       = (hwcap & NPY__HWCAP_FPHP)     != 0;
++    npy__cpu_have[NPY_CPU_FEATURE_ASIMDHP]    = (hwcap & NPY__HWCAP_ASIMDHP)  != 0;
++    npy__cpu_have[NPY_CPU_FEATURE_ASIMDDP]    = (hwcap & NPY__HWCAP_ASIMDDP)  != 0;
++    npy__cpu_have[NPY_CPU_FEATURE_ASIMDFHM]   = (hwcap & NPY__HWCAP_ASIMDFHM) != 0;
++#ifndef __arm__
++    npy__cpu_have[NPY_CPU_FEATURE_SVE]        = (hwcap & NPY__HWCAP_SVE)      != 0;
++#endif
+     return 1;
+ }
+ #endif
+diff --git a/numpy/_core/src/common/npy_cpuinfo_parser.h b/numpy/_core/src/common/npy_cpuinfo_parser.h
+index 154c4245ba2b..30f2976d28b6 100644
+--- a/numpy/_core/src/common/npy_cpuinfo_parser.h
++++ b/numpy/_core/src/common/npy_cpuinfo_parser.h
+@@ -36,25 +36,43 @@
+ #define NPY__HWCAP  16
+ #define NPY__HWCAP2 26
+ 
+-// arch/arm/include/uapi/asm/hwcap.h
+-#define NPY__HWCAP_HALF   (1 << 1)
+-#define NPY__HWCAP_NEON   (1 << 12)
+-#define NPY__HWCAP_VFPv3  (1 << 13)
+-#define NPY__HWCAP_VFPv4  (1 << 16)
+-#define NPY__HWCAP2_AES   (1 << 0)
+-#define NPY__HWCAP2_PMULL (1 << 1)
+-#define NPY__HWCAP2_SHA1  (1 << 2)
+-#define NPY__HWCAP2_SHA2  (1 << 3)
+-#define NPY__HWCAP2_CRC32 (1 << 4)
+-// arch/arm64/include/uapi/asm/hwcap.h
+-#define NPY__HWCAP_FP       (1 << 0)
+-#define NPY__HWCAP_ASIMD    (1 << 1)
+-#define NPY__HWCAP_FPHP     (1 << 9)
+-#define NPY__HWCAP_ASIMDHP  (1 << 10)
+-#define NPY__HWCAP_ASIMDDP  (1 << 20)
+-#define NPY__HWCAP_SVE      (1 << 22)
+-#define NPY__HWCAP_ASIMDFHM (1 << 23)
+-/* 
++#ifdef __arm__
++    // arch/arm/include/uapi/asm/hwcap.h
++    #define NPY__HWCAP_HALF	    (1 << 1)
++    #define NPY__HWCAP_NEON	    (1 << 12)
++    #define NPY__HWCAP_VFPv3	(1 << 13)
++    #define NPY__HWCAP_VFPv4	(1 << 16)
++
++    #define NPY__HWCAP_FPHP	    (1 << 22)
++    #define NPY__HWCAP_ASIMDHP	(1 << 23)
++    #define NPY__HWCAP_ASIMDDP	(1 << 24)
++    #define NPY__HWCAP_ASIMDFHM	(1 << 25)
++
++    #define NPY__HWCAP2_AES	    (1 << 0)
++    #define NPY__HWCAP2_PMULL	(1 << 1)
++    #define NPY__HWCAP2_SHA1	(1 << 2)
++    #define NPY__HWCAP2_SHA2	(1 << 3)
++    #define NPY__HWCAP2_CRC32	(1 << 4)
++#else
++    // arch/arm64/include/uapi/asm/hwcap.h
++    #define NPY__HWCAP_FP		(1 << 0)
++    #define NPY__HWCAP_ASIMD	(1 << 1)
++
++    #define NPY__HWCAP_FPHP		(1 << 9)
++    #define NPY__HWCAP_ASIMDHP	(1 << 10)
++    #define NPY__HWCAP_ASIMDDP	(1 << 20)
++    #define NPY__HWCAP_ASIMDFHM	(1 << 23)
++
++    #define NPY__HWCAP_AES		(1 << 3)
++    #define NPY__HWCAP_PMULL	(1 << 4)
++    #define NPY__HWCAP_SHA1		(1 << 5)
++    #define NPY__HWCAP_SHA2		(1 << 6)
++    #define NPY__HWCAP_CRC32	(1 << 7)
++    #define NPY__HWCAP_SVE		(1 << 22)
++#endif
++
++
++/*
+  * Get the size of a file by reading it until the end. This is needed
+  * because files under /proc do not always return a valid size when
+  * using fseek(0, SEEK_END) + ftell(). Nor can they be mmap()-ed.
+@@ -87,7 +105,7 @@ get_file_size(const char* pathname)
+     return result;
+ }
+ 
+-/* 
++/*
+  * Read the content of /proc/cpuinfo into a user-provided buffer.
+  * Return the length of the data, or -1 on error. Does *not*
+  * zero-terminate the content. Will not read more
+@@ -123,7 +141,7 @@ read_file(const char*  pathname, char*  buffer, size_t  buffsize)
+     return count;
+ }
+ 
+-/* 
++/*
+  * Extract the content of a the first occurrence of a given field in
+  * the content of /proc/cpuinfo and return it as a heap-allocated
+  * string that must be freed by the caller.
+@@ -182,7 +200,7 @@ extract_cpuinfo_field(const char* buffer, int buflen, const char* field)
+     return result;
+ }
+ 
+-/* 
++/*
+  * Checks that a space-separated list of items contains one given 'item'.
+  * Returns 1 if found, 0 otherwise.
+  */
+@@ -220,44 +238,51 @@ has_list_item(const char* list, const char* item)
+     return 0;
+ }
+ 
+-static void setHwcap(char* cpuFeatures, unsigned long* hwcap) {
+-    *hwcap |= has_list_item(cpuFeatures, "neon") ? NPY__HWCAP_NEON : 0;
+-    *hwcap |= has_list_item(cpuFeatures, "half") ? NPY__HWCAP_HALF : 0;
+-    *hwcap |= has_list_item(cpuFeatures, "vfpv3") ? NPY__HWCAP_VFPv3 : 0;
+-    *hwcap |= has_list_item(cpuFeatures, "vfpv4") ? NPY__HWCAP_VFPv4 : 0;
+-
+-    *hwcap |= has_list_item(cpuFeatures, "asimd") ? NPY__HWCAP_ASIMD : 0;
+-    *hwcap |= has_list_item(cpuFeatures, "fp") ? NPY__HWCAP_FP : 0;
+-    *hwcap |= has_list_item(cpuFeatures, "fphp") ? NPY__HWCAP_FPHP : 0;
+-    *hwcap |= has_list_item(cpuFeatures, "asimdhp") ? NPY__HWCAP_ASIMDHP : 0;
+-    *hwcap |= has_list_item(cpuFeatures, "asimddp") ? NPY__HWCAP_ASIMDDP : 0;
+-    *hwcap |= has_list_item(cpuFeatures, "asimdfhm") ? NPY__HWCAP_ASIMDFHM : 0;
+-}
+-
+ static int
+ get_feature_from_proc_cpuinfo(unsigned long *hwcap, unsigned long *hwcap2) {
+-    char* cpuinfo = NULL;
+-    int cpuinfo_len;
+-    cpuinfo_len = get_file_size("/proc/cpuinfo");
++    *hwcap = 0;
++    *hwcap2 = 0;
++
++    int cpuinfo_len = get_file_size("/proc/cpuinfo");
+     if (cpuinfo_len < 0) {
+         return 0;
+     }
+-    cpuinfo = malloc(cpuinfo_len);
++    char *cpuinfo = malloc(cpuinfo_len);
+     if (cpuinfo == NULL) {
+         return 0;
+     }
++
+     cpuinfo_len = read_file("/proc/cpuinfo", cpuinfo, cpuinfo_len);
+-    char* cpuFeatures = extract_cpuinfo_field(cpuinfo, cpuinfo_len, "Features");
+-    if(cpuFeatures == NULL) {
++    char *cpuFeatures = extract_cpuinfo_field(cpuinfo, cpuinfo_len, "Features");
++    if (cpuFeatures == NULL) {
++        free(cpuinfo);
+         return 0;
+     }
+-    setHwcap(cpuFeatures, hwcap);
+-    *hwcap2 |= *hwcap;
++    *hwcap |= has_list_item(cpuFeatures, "fphp") ? NPY__HWCAP_FPHP : 0;
++    *hwcap |= has_list_item(cpuFeatures, "asimdhp") ? NPY__HWCAP_ASIMDHP : 0;
++    *hwcap |= has_list_item(cpuFeatures, "asimddp") ? NPY__HWCAP_ASIMDDP : 0;
++    *hwcap |= has_list_item(cpuFeatures, "asimdfhm") ? NPY__HWCAP_ASIMDFHM : 0;
++#ifdef __arm__
++    *hwcap |= has_list_item(cpuFeatures, "neon") ? NPY__HWCAP_NEON : 0;
++    *hwcap |= has_list_item(cpuFeatures, "half") ? NPY__HWCAP_HALF : 0;
++    *hwcap |= has_list_item(cpuFeatures, "vfpv3") ? NPY__HWCAP_VFPv3 : 0;
++    *hwcap |= has_list_item(cpuFeatures, "vfpv4") ? NPY__HWCAP_VFPv4 : 0;
+     *hwcap2 |= has_list_item(cpuFeatures, "aes") ? NPY__HWCAP2_AES : 0;
+     *hwcap2 |= has_list_item(cpuFeatures, "pmull") ? NPY__HWCAP2_PMULL : 0;
+     *hwcap2 |= has_list_item(cpuFeatures, "sha1") ? NPY__HWCAP2_SHA1 : 0;
+     *hwcap2 |= has_list_item(cpuFeatures, "sha2") ? NPY__HWCAP2_SHA2 : 0;
+     *hwcap2 |= has_list_item(cpuFeatures, "crc32") ? NPY__HWCAP2_CRC32 : 0;
++#else
++    *hwcap |= has_list_item(cpuFeatures, "asimd") ? NPY__HWCAP_ASIMD : 0;
++    *hwcap |= has_list_item(cpuFeatures, "fp") ? NPY__HWCAP_FP : 0;
++    *hwcap |= has_list_item(cpuFeatures, "aes") ? NPY__HWCAP_AES : 0;
++    *hwcap |= has_list_item(cpuFeatures, "pmull") ? NPY__HWCAP_PMULL : 0;
++    *hwcap |= has_list_item(cpuFeatures, "sha1") ? NPY__HWCAP_SHA1 : 0;
++    *hwcap |= has_list_item(cpuFeatures, "sha2") ? NPY__HWCAP_SHA2 : 0;
++    *hwcap |= has_list_item(cpuFeatures, "crc32") ? NPY__HWCAP_CRC32 : 0;
++#endif
++    free(cpuinfo);
++    free(cpuFeatures);
+     return 1;
+ }
+ #endif  /* NUMPY_CORE_SRC_COMMON_NPY_CPUINFO_PARSER_H_ */
+diff --git a/numpy/_core/src/common/simd/neon/math.h b/numpy/_core/src/common/simd/neon/math.h
+index 58d14809fbfe..76c5b58be788 100644
+--- a/numpy/_core/src/common/simd/neon/math.h
++++ b/numpy/_core/src/common/simd/neon/math.h
+@@ -28,11 +28,13 @@ NPY_FINLINE npyv_f32 npyv_square_f32(npyv_f32 a)
+     // Based on ARM doc, see https://developer.arm.com/documentation/dui0204/j/CIHDIACI
+     NPY_FINLINE npyv_f32 npyv_sqrt_f32(npyv_f32 a)
+     {
++        const npyv_f32 one = vdupq_n_f32(1.0f);
+         const npyv_f32 zero = vdupq_n_f32(0.0f);
+         const npyv_u32 pinf = vdupq_n_u32(0x7f800000);
+         npyv_u32 is_zero = vceqq_f32(a, zero), is_inf = vceqq_u32(vreinterpretq_u32_f32(a), pinf);
+-        // guard against floating-point division-by-zero error
+-        npyv_f32 guard_byz = vbslq_f32(is_zero, vreinterpretq_f32_u32(pinf), a);
++        npyv_u32 is_special = vorrq_u32(is_zero, is_inf);
++        // guard against division-by-zero and infinity input to vrsqrte to avoid invalid fp error
++        npyv_f32 guard_byz = vbslq_f32(is_special, one, a);
+         // estimate to (1/√a)
+         npyv_f32 rsqrte = vrsqrteq_f32(guard_byz);
+         /**
+@@ -47,10 +49,8 @@ NPY_FINLINE npyv_f32 npyv_square_f32(npyv_f32 a)
+         rsqrte = vmulq_f32(vrsqrtsq_f32(vmulq_f32(a, rsqrte), rsqrte), rsqrte);
+         // a * (1/√a)
+         npyv_f32 sqrt = vmulq_f32(a, rsqrte);
+-        // return zero if the a is zero
+-        // - return zero if a is zero.
+-        // - return positive infinity if a is positive infinity
+-        return vbslq_f32(vorrq_u32(is_zero, is_inf), a, sqrt);
++        // Handle special cases: return a for zeros and positive infinities
++        return vbslq_f32(is_special, a, sqrt);
+     }
+ #endif // NPY_SIMD_F64
+ 

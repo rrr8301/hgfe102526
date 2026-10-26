@@ -1,0 +1,107 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_66640_gpt-5.4-nano/mined/pandas-dev__pandas_66640.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 17029,
+    "output_tokens": 4795,
+    "cost_usd": 0.0094,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66640,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66640",
+      "buggy_commit": "e7ed83ad33600979f659d2f946d016743d7d0c24",
+      "fixed_commit": "9fcddfbcad41d4d1cf13e355915a83a95f3e7565",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 9574,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the pandas accuracy bug from PR #66640 (commit e7ed83ad3360): when operating on Timedelta/TimedeltaIndex with an integral-valued float (e.g. 1.0), pandas should route to the exact int64 code path. On the buggy revision it instead uses float64 rounding, causing wrong results or exceptions. The reproduction strategy builds two pandas revisions (buggy and fixed) and runs the specific arithmetic tests so they fail on buggy and pass on fixed.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "cython",
+            "python-dateutil"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip setuptools wheel",
+            "pip install cython",
+            "git clone https://github.com/pandas-dev/pandas.git",
+            "cd pandas",
+            "# Install NUMPY before building pandas so the build uses it\npython -m pip install -U numpy",
+            "# Buggy build\ngit checkout e7ed83ad3360\npython -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true",
+            "# Fixed build\n# Replace <fixed_commit> with the merge commit/sha of PR#66640 that contains the fix\n# e.g. git checkout <fixed_commit>\n# python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true\n"
+          ],
+          "pinned_because": [
+            "NumPy is numerically relevant and unbounded in the provided evidence; choose a NumPy version that is widely supported and consistent. Exact pin not provided by the evidence, so do not assume a specific NumPy version beyond installing a modern one compatible with pandas build."
+          ]
+        },
+        "test_command": "pytest -q pandas/tests/scalar/timedelta/test_arithmetic.py::test_td_integral_float_op_is_exact --disable-warnings -k integral_float_op_is_exact",
+        "reproducing_test": "pandas/tests/scalar/timedelta/test_arithmetic.py::test_td_integral_float_op_is_exact (parametrized over op in {operator.mul, operator.truediv, operator.floordiv})",
+        "success_criterion": "On the buggy revision (git checkout e7ed83ad3360), the test assertions in test_td_integral_float_op_is_exact fail (wrong result due to float64 rounding and/or rounding onto the NaT sentinel; or mismatch when compared against the integer-equivalent result). On the fixed revision (git checkout the commit that includes the PR#66640 fix), all assertions pass: op(Timedelta.min, 1.0) == Timedelta.min and op(Timedelta.max, 1.0) == Timedelta.max, and for td=Timedelta(2**53+1,'ns') op(td,1.0)._value == 2**53+1 and op(td,1.0) == op(td,1).",
+        "numerical_probe": "Timedelta.min is iNaT+1 and float64 multiplication/division by 1.0 can round down onto the NaT sentinel; above 2**53 float64 cannot represent all integers so integral-valued float should be routed to the exact int64 path to preserve td=2**53+1 nanoseconds exactly.",
+        "input_output_examples": [
+          {
+            "input": "op(Timedelta.min, 1.0) where op is operator.mul/operator.truediv/operator.floordiv",
+            "buggy_output": "Fails the equality assertion because result is not Timedelta.min (float64 rounding onto NaT sentinel per GH#66551).",
+            "expected_output": "Equals Timedelta.min"
+          },
+          {
+            "input": "op(Timedelta.max, 1.0) where op is operator.mul/operator.truediv/operator.floordiv",
+            "buggy_output": "Fails the equality assertion because result is not Timedelta.max (float64 rounding out of int64 range per GH#66551).",
+            "expected_output": "Equals Timedelta.max"
+          },
+          {
+            "input": "op(Timedelta(2**53 + 1, \"ns\"), 1.0) for integral float 1.0",
+            "buggy_output": "Fails because op(td,1.0)._value becomes 2**53 (off-by-one) instead of 2**53+1 (float64 mantissa rounding).",
+            "expected_output": "op(td,1.0)._value == 2**53 + 1 and op(td,1.0) == op(td,1)"
+          }
+        ],
+        "risks": [
+          "Because the evidence does not specify a NumPy version, the exact buggy manifestation may depend on float64 semantics staying standard (it should) and on pandas\u2019 float routing logic. Avoid using unusual architectures/float modes (e.g., extended precision) that could mask rounding behavior.",
+          "If the chosen fixed commit is not the one that includes the PR#66640 changes (the evidence only provides the buggy sha e7ed83ad3360), the test may still fail or may not fail as expected; you must checkout the exact fixed revision corresponding to PR #66640.",
+          "Some failures may only appear when Timedelta operations go through the same code path as the scalar test; if the scalar test doesn\u2019t trigger the buggy path on your platform, also run the array test: pandas/tests/arithmetic/test_timedelta64.py::test_td64arr_integral_float_op_is_exact. The evidence indicates both scalar and array coverage were added for the same underlying bug.",
+          "Platform/toolchain constraints are not provided. If you run on a platform where pandas builds with different C/NumPy dispatch behavior, the failure could differ. Prefer a standard Linux/x86_64 environment with no special compiler flags beyond building pandas normally."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "PR #66640 test expectations (tm.assert_equal / == comparisons) and embedded comments describing routing to int64 exact path for integral-valued floats; expected outputs match equivalent integer operations for whole-numbered float operands.",
+          "why": "The test uses exact equality on Timedelta objects (and exact _value equality for the 2**53+1 ns case), so the transition is evaluated by whether the buggy revision produces a different Timedelta (including rounding onto NaT or off-by-one ns) versus the fixed revision producing the exact int-equivalent Timedelta."
+        },
+        "fails_on_buggy": "The test\u2019s `assert` statements fail because integral float operands (notably 1.0) are processed via float64 rounding instead of the exact int64 path, producing wrong Timedelta results for Timedelta.min/Timedelta.max and an off-by-one nanosecond (2**53 instead of 2**53+1) for Timedelta(2**53+1,'ns').",
+        "passes_on_fixed": "All assertions in test_td_integral_float_op_is_exact pass because the fix routes integral-valued floats to the int64 implementation, preserving exactness and matching the equivalent integer operations."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 4479,
+        "output_tokens": 1425,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002677
+      },
+      "miner_usage": {
+        "input_tokens": 12550,
+        "output_tokens": 3370,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.006723000000000001,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

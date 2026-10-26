@@ -1,0 +1,40 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index e66152ad401a5..e86fd674a4a8a 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -286,6 +286,7 @@ Groupby/resample/rolling
+ ^^^^^^^^^^^^^^^^^^^^^^^^
+ - Bug in :meth:`.DataFrameGroupBy.agg` when there are no groups, multiple keys, and ``group_keys=False`` (:issue:`51445`)
+ - Bug in :meth:`.DataFrameGroupBy.agg` would operate on the group as a whole when ``args`` or ``kwargs`` are supplied for the provided ``func``; now this method only operates on each Series of the group (:issue:`39169`)
++- Bug in :meth:`.GroupBy.any` and :meth:`.GroupBy.all` returning ``NaN`` with ``float64`` dtype for unobserved categorical groups on NumPy ``bool`` data instead of the boolean identity value with ``bool`` dtype (:issue:`65100`)
+ - Bug in :meth:`.Rolling.skew` and :meth:`.Rolling.kurt` (and their :class:`GroupBy` counterparts) returning ``0.0`` and ``-3.0`` respectively for degenerate windows or groups; these now return ``NaN`` (:issue:`62864`)
+ - Bug in :meth:`.Rolling.skew` and :meth:`.Rolling.kurt` returning ``NaN`` for low-variance windows (:issue:`62946`)
+ - Bug in :meth:`DataFrame.groupby` with a :class:`Grouper` with ``freq`` raising ``AttributeError`` when all grouping keys are ``NaT`` (:issue:`43486`)
+diff --git a/pandas/core/groupby/groupby.py b/pandas/core/groupby/groupby.py
+index 1fb88cad3b037..09a8e494ab3a9 100644
+--- a/pandas/core/groupby/groupby.py
++++ b/pandas/core/groupby/groupby.py
+@@ -1526,7 +1526,10 @@ def array_func(values: ArrayLike) -> ArrayLike:
+             # GH#37850 For numpy boolean data, any==max and all==min.
+             # The min/max Cython path is faster (fused types, no mask overhead).
+             # Excludes nullable BooleanDtype which needs Kleene logic.
+-            if how in ["any", "all"] and values.dtype == np.dtype("bool"):
++            use_bool_fastpath = how in ["any", "all"] and values.dtype == np.dtype(
++                "bool"
++            )
++            if use_bool_fastpath:
+                 _how = "max" if how == "any" else "min"
+             else:
+                 _how = how
+@@ -1547,6 +1550,11 @@ def array_func(values: ArrayLike) -> ArrayLike:
+                 if alt is None or how in ["any", "all", "std", "sem"]:
+                     raise  # TODO: re-raise as TypeError?  should not be reached
+             else:
++                if use_bool_fastpath and result.dtype.kind == "f":
++                    fill = 0.0 if how == "any" else 1.0
++                    result = np.where(
++                        np.isnan(result), fill, np.asarray(result)
++                    ).astype(bool)
+                 return result
+ 
+             assert alt is not None

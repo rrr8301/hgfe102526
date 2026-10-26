@@ -1,0 +1,2485 @@
+[
+  {
+    "slug": "scipy_25484",
+    "bug_type": "correctness",
+    "image": "python:3.12",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/3 reported example(s))",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "persistent",
+    "examples_verdict": "not_reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "fitpack2_noncontiguous_examples": "import numpy as np\nfrom math import sin, cos, pi\nfrom scipy.interpolate import SmoothBivariateSpline, LSQBivariateSpline, RectBivariateSpline, SmoothSphereBivariateSpline, LSQSphereBivariateSpline, RectSphereBivariateSpline\n\nrng = np.random.default_rng(0)\n\ndef _scattered_data(n=400):\n    x = rng.uniform(-5, 5, n)\n    y = rng.uniform(-5, 5, n)\n    z = x**2 + y\n    return x, y, z\n\ndef _sphere_scattered_data(n=200):\n    theta = rng.uniform(1e-3, pi-1e-3, n)\n    phi = rng.uniform(0, 2*pi, n)\n    r = np.sin(theta) * np.cos(phi) + 1.0\n    return theta, phi, r\n\ndef _strided(a):\n    a = np.asarray(a)\n    if a.ndim == 1:\n        tmp = np.empty(a.size * 2, dtype=a.dtype)\n        tmp[::2] = a\n        return tmp[::2]\n    else:\n        return a[::2, ::2]\n\n\ndef strided_contig_pair_eval(expr_kind):\n    if expr_kind == 'SmoothBivariateSpline_scatter':\n        x, y, z = _scattered_data(); xs, ys, zs = _strided(x), _strided(y), _strided(z)\n        xc, yc, zc = map(np.ascontiguousarray, (x, y, z))\n        vb = SmoothBivariateSpline(xs, ys, zs, kx=2, ky=2).ev(x, y)\n        vc = SmoothBivariateSpline(xc, yc, zc, kx=2, ky=2).ev(x, y)\n        out, ref = vb, vc\n    elif expr_kind == 'LSQBivariateSpline_scatter':\n        x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3)\n        xs, ys, zs = _strided(x), _strided(y), _strided(z)\n        ts = _strided(t)\n        xc, yc, zc = map(np.ascontiguousarray, (x, y, z))\n        tc = np.ascontiguousarray(t)\n        vb = LSQBivariateSpline(xs, ys, zs, ts, ts, kx=2, ky=2).ev(x, y)\n        vc = LSQBivariateSpline(xc, yc, zc, tc, tc, kx=2, ky=2).ev(x, y)\n        out, ref = vb, vc\n    elif expr_kind == 'RectBivariateSpline_grid':\n        gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14)\n        gz = np.sin(gx[:, None]) * np.cos(gy[None, :])\n        gxs, gys, gzs = _strided(gx), _strided(gy), _strided(gz)\n        gxc, gyc, gzc = map(np.ascontiguousarray, (gx, gy, gz))\n        t1 = np.linspace(0.1, 0.9, 5); t2 = np.linspace(0.1, 0.9, 5)\n        vb = RectBivariateSpline(gxs, gys, gzs)(t1, t2)\n        vc = RectBivariateSpline(gxc, gyc, gzc)(t1, t2)\n        out, ref = np.asarray(vb), np.asarray(vc)\n    elif expr_kind == 'SmoothSphereBivariateSpline_sphere':\n        theta, phi, r = _sphere_scattered_data(); ts, ps, rs = _strided(theta), _strided(phi), _strided(r)\n        tc, pc, rc = map(np.ascontiguousarray, (theta, phi, r))\n        vb = SmoothSphereBivariateSpline(ts, ps, rs, s=2.0).ev(theta, phi)\n        vc = SmoothSphereBivariateSpline(tc, pc, rc, s=2.0).ev(theta, phi)\n        out, ref = vb, vc\n    elif expr_kind == 'LSQSphereBivariateSpline_sphere':\n        theta, phi, r = _sphere_scattered_data()\n        tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]\n        ts, ps, rs = _strided(theta), _strided(phi), _strided(r)\n        tts, tps = _strided(tt), _strided(tp)\n        tc, pc, rc = map(np.ascontiguousarray, (theta, phi, r))\n        ttc, tpc = map(np.ascontiguousarray, (tt, tp))\n        vb = LSQSphereBivariateSpline(ts, ps, rs, tts, tps).ev(theta, phi)\n        vc = LSQSphereBivariateSpline(tc, pc, rc, ttc, tpc).ev(theta, phi)\n        out, ref = vb, vc\n    elif expr_kind == 'RectSphereBivariateSpline_spheregrid':\n        u = np.linspace(0, pi, 14)[1:-1]\n        v = np.linspace(0, 2*pi, 14, endpoint=False)\n        rg = np.sin(u[:, None]) * np.cos(v[None, :])\n        us, vs, rgs = _strided(u), _strided(v), _strided(rg)\n        uc, vc, rgc = map(np.ascontiguousarray, (u, v, rg))\n        vb = RectSphereBivariateSpline(us, vs, rgs)(u, v)\n        vc2 = RectSphereBivariateSpline(uc, vc, rgc)(u, v)\n        out, ref = np.asarray(vb), np.asarray(vc2)\n    else:\n        raise ValueError(expr_kind)\n\n    diff = np.max(np.abs(out - ref)) if np.size(out) else np.nan\n    nan_bad = bool(np.isnan(out).any() or np.isinf(out).any() or np.isnan(ref).any() or np.isinf(ref).any())\n    return out, ref, float(diff), nan_bad\n\nkinds = [\n    'SmoothBivariateSpline_scatter',\n    'LSQBivariateSpline_scatter',\n    'RectBivariateSpline_grid',\n    'SmoothSphereBivariateSpline_sphere',\n    'LSQSphereBivariateSpline_sphere',\n    'RectSphereBivariateSpline_spheregrid'\n]\n\nfor kind in kinds:\n    out, ref, diff, nan_bad = strided_contig_pair_eval(kind)\n    probe(kind + '.max_abs_diff', diff)\n    probe(kind + '.nan_or_inf', 1.0 if nan_bad else 0.0)\n",
+        "reported_examples": "import numpy as np\nfrom numpy import sin, cos, pi\nfrom scipy.interpolate import SmoothBivariateSpline, RectBivariateSpline, SmoothSphereBivariateSpline\n\n# helpers used by the probes/expressions\n\ndef _strided(a):\n    return np.asarray(a)\n\ndef _scattered_data(n=400, low=-5.0, high=5.0, rng_seed=0):\n    rng = np.random.default_rng(rng_seed)\n    x = rng.uniform(low, high, n)\n    y = rng.uniform(low, high, n)\n    z = x**2 + y\n    return x, y, z\n\ndef _sphere_scattered_data(n=200, rng_seed=0):\n    rng = np.random.default_rng(rng_seed)\n    theta = rng.uniform(0.0, pi, n)\n    phi = rng.uniform(0.0, 2.0*pi, n)\n    r = np.sin(theta) * np.cos(phi)\n    return theta, phi, r\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)\", \"x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)\", [], \"Strided-view fit must match contiguous-copy fit exactly (or within tolerance xp_assert_close)\"], [\"x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3); LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)\", \"LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)\", [\"x, y, z = _scattered_data()\", \"t = np.linspace(-4, 4, 3)\"], \"Strided-view fit equals contiguous-copy fit\"], [\"gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14); gz = sin(gx[:, None]) * cos(gy[None, :]); RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))\", \"RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))\", [\"gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14)\", \"gz = sin(gx[:, None]) * cos(gy[None, :])\"], \"Strided-view result equals contiguous-copy result\"], [\"theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)\", \"theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)\", [], \"Strided-view fit equals contiguous-copy fit\"], [\"theta, phi, r = _sphere_scattered_data(); tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]; LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)\", \"LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)\", [\"theta, phi, r = _sphere_scattered_data()\", \"tt = np.linspace(0, pi, 5)[1:-1]\", \"tp = np.linspace(0, 2*pi, 5)[1:-1]\"], \"Strided-view fit equals contiguous-copy fit\"], [\"u = np.linspace(0, pi, 14)[1:-1]; v = np.linspace(0, 2*pi, 14, endpoint=False); rg = sin(u[:, None]) * cos(v[None, :]); RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)\", \"RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)\", [\"u = np.linspace(0, pi, 14)[1:-1]\", \"v = np.linspace(0, 2*pi, 14, endpoint=False)\", \"rg = sin(u[:, None]) * cos(v[None, :])\"], \"Strided-view result equals contiguous-copy result\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nfrom scipy.interpolate import SmoothBivariateSpline, SmoothSphereBivariateSpline\n\n# Helper: create numpy arrays and apply strided view without copying\n# (handles both C/F contiguous cases)\ndef _strided(a):\n    a = np.asarray(a)\n    return a.reshape(-1)[::2].copy().view(type(a)) if a.size % 2 == 0 else a.copy()\n\n\ndef _scattered_data():\n    rng = np.random.default_rng(0)\n    n = 400\n    x = rng.uniform(-5, 5, n)\n    y = rng.uniform(-5, 5, n)\n    z = x**2 + y\n    return x, y, z\n\n\ndef _sphere_scattered_data():\n    rng = np.random.default_rng(1)\n    n = 200\n    theta = rng.uniform(0.0, np.pi, n)\n    phi = rng.uniform(0.0, 2.0 * np.pi, n)\n    # Construct a smooth radial function of angles\n    r = np.cos(theta) + 0.5 * np.sin(phi)\n    return theta, phi, r\n\n\n# Probe 1\nname1 = \"x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)\"\ntry:\n    x, y, z = _scattered_data()\n    # ensure enough points for k=2: need n >= (kx+1)*(ky+1) in practice\n    sx = _strided(x)\n    sy = _strided(y)\n    sz = _strided(z)\n    # If striding reduced size unexpectedly, fall back to non-strided copies\n    if sx.size < 10 or sy.size < 10 or sz.size < 10:\n        sx, sy, sz = np.asarray(x).copy(), np.asarray(y).copy(), np.asarray(z).copy()\n    out1 = SmoothBivariateSpline(sx, sy, sz, kx=2, ky=2).ev(x, y)\n    probe(name1, out1)\nexcept Exception as e:\n    probe_exception(name1, e)\n\n\n# Probe 2\nname2 = \"theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)\"\ntry:\n    theta, phi, r = _sphere_scattered_data()\n    stheta = _strided(theta)\n    sphi = _strided(phi)\n    sr = _strided(r)\n    if stheta.size < 10 or sphi.size < 10 or sr.size < 10:\n        stheta, sphi, sr = np.asarray(theta).copy(), np.asarray(phi).copy(), np.asarray(r).copy()\n    out2 = SmoothSphereBivariateSpline(stheta, sphi, sr, s=2.0).ev(theta, phi)\n    probe(name2, out2)\nexcept Exception as e:\n    probe_exception(name2, e)"
+      },
+      "fixed": {
+        "fitpack2_noncontiguous_examples": "import numpy as np\nfrom math import sin, cos, pi\nfrom scipy.interpolate import SmoothBivariateSpline, LSQBivariateSpline, RectBivariateSpline, SmoothSphereBivariateSpline, LSQSphereBivariateSpline, RectSphereBivariateSpline\n\nrng = np.random.default_rng(0)\n\ndef _scattered_data(n=400):\n    x = rng.uniform(-5, 5, n)\n    y = rng.uniform(-5, 5, n)\n    z = x**2 + y\n    return x, y, z\n\ndef _sphere_scattered_data(n=200):\n    # theta in (0, pi), phi in (0, 2*pi), r positive\n    theta = rng.uniform(1e-3, pi-1e-3, n)\n    phi = rng.uniform(0, 2*pi, n)\n    r = np.sin(theta) * np.cos(phi) + 1.0\n    return theta, phi, r\n\ndef _strided(a):\n    # Create a non-contiguous view deterministically\n    a = np.asarray(a)\n    if a.ndim == 1:\n        tmp = np.empty(a.size * 2, dtype=a.dtype)\n        tmp[::2] = a\n        return tmp[::2]  # still contiguous? ensure stride: use even-offset view with step 2\n    else:\n        # generic: stride by taking every other element in both dims\n        return a[::2, ::2]\n\n\ndef strided_contig_pair_eval(expr_kind):\n    # Returns (val_strided, val_contig, diagnostics dict)\n    if expr_kind == 'SmoothBivariateSpline_scatter':\n        x, y, z = _scattered_data()\n        xs, ys, zs = _strided(x), _strided(y), _strided(z)\n        xc, yc, zc = np.ascontiguousarray(x), np.ascontiguousarray(y), np.ascontiguousarray(z)\n        kx=2; ky=2\n        vb = SmoothBivariateSpline(xs, ys, zs, kx=kx, ky=ky).ev(x, y)\n        vc = SmoothBivariateSpline(xc, yc, zc, kx=kx, ky=ky).ev(x, y)\n        out = vb\n        ref = vc\n    elif expr_kind == 'LSQBivariateSpline_scatter':\n        x, y, z = _scattered_data()\n        t = np.linspace(-4, 4, 3)\n        xs, ys, zs = _strided(x), _strided(y), _strided(z)\n        ts = _strided(t)\n        xc, yc, zc = np.ascontiguousarray(x), np.ascontiguousarray(y), np.ascontiguousarray(z)\n        tc = np.ascontiguousarray(t)\n        vb = LSQBivariateSpline(xs, ys, zs, ts, ts, kx=2, ky=2).ev(x, y)\n        vc = LSQBivariateSpline(xc, yc, zc, tc, tc, kx=2, ky=2).ev(x, y)\n        out = vb\n        ref = vc\n    elif expr_kind == 'RectBivariateSpline_grid':\n        gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14)\n        gz = np.sin(gx[:, None]) * np.cos(gy[None, :])\n        gxs, gys, gzs = _strided(gx), _strided(gy), _strided(gz)\n        gxc, gyc, gzc = map(np.ascontiguousarray, (gx, gy, gz))\n        t1 = np.linspace(0.1, 0.9, 5)\n        t2 = np.linspace(0.1, 0.9, 5)\n        vb = RectBivariateSpline(gxs, gys, gzs)(t1, t2)\n        vc = RectBivariateSpline(gxc, gyc, gzc)(t1, t2)\n        out = np.asarray(vb)\n        ref = np.asarray(vc)\n    elif expr_kind == 'SmoothSphereBivariateSpline_sphere':\n        theta, phi, r = _sphere_scattered_data()\n        ts, ps, rs = _strided(theta), _strided(phi), _strided(r)\n        tc, pc, rc = map(np.ascontiguousarray, (theta, phi, r))\n        vb = SmoothSphereBivariateSpline(ts, ps, rs, s=2.0).ev(theta, phi)\n        vc = SmoothSphereBivariateSpline(tc, pc, rc, s=2.0).ev(theta, phi)\n        out = vb\n        ref = vc\n    elif expr_kind == 'LSQSphereBivariateSpline_sphere':\n        theta, phi, r = _sphere_scattered_data()\n        tt = np.linspace(0, pi, 5)[1:-1]\n        tp = np.linspace(0, 2*pi, 5)[1:-1]\n        ts, ps, rs = _strided(theta), _strided(phi), _strided(r)\n        tts, tps = _strided(tt), _strided(tp)\n        tc, pc, rc = map(np.ascontiguousarray, (theta, phi, r))\n        ttc, tpc = map(np.ascontiguousarray, (tt, tp))\n        vb = LSQSphereBivariateSpline(ts, ps, rs, tts, tps).ev(theta, phi)\n        vc = LSQSphereBivariateSpline(tc, pc, rc, ttc, tpc).ev(theta, phi)\n        out = vb\n        ref = vc\n    elif expr_kind == 'RectSphereBivariateSpline_spheregrid':\n        u = np.linspace(0, pi, 14)[1:-1]\n        v = np.linspace(0, 2*pi, 14, endpoint=False)\n        rg = np.sin(u[:, None]) * np.cos(v[None, :])\n        us, vs, rgs = _strided(u), _strided(v), _strided(rg)\n        uc, vc, rgc = map(np.ascontiguousarray, (u, v, rg))\n        vb = RectSphereBivariateSpline(us, vs, rgs)(u, v)\n        vc2 = RectSphereBivariateSpline(uc, vc, rgc)(u, v)\n        out = np.asarray(vb)\n        ref = np.asarray(vc2)\n    else:\n        raise ValueError(expr_kind)\n\n    # diagnostics\n    diff = np.max(np.abs(out - ref)) if np.size(out) else np.nan\n    nan_bad = bool(np.isnan(out).any() or np.isinf(out).any() or np.isnan(ref).any() or np.isinf(ref).any())\n    return out, ref, float(diff), nan_bad\n\nkinds = [\n    'SmoothBivariateSpline_scatter',\n    'LSQBivariateSpline_scatter',\n    'RectBivariateSpline_grid',\n    'SmoothSphereBivariateSpline_sphere',\n    'LSQSphereBivariateSpline_sphere',\n    'RectSphereBivariateSpline_spheregrid'\n]\n\nresults = {}\nfor kind in kinds:\n    out, ref, diff, nan_bad = strided_contig_pair_eval(kind)\n    results[kind] = {\n        'max_abs_diff': diff,\n        'nan_or_inf': nan_bad,\n        'out_first3': np.ravel(out)[:3].astype(float).tolist(),\n        'ref_first3': np.ravel(ref)[:3].astype(float).tolist(),\n    }\n\n# Record a stable scalar summary per kind\nfor kind in kinds:\n    probe(kind + '.max_abs_diff', results[kind]['max_abs_diff'])\n    probe(kind + '.nan_or_inf', 1.0 if results[kind]['nan_or_inf'] else 0.0)\n",
+        "reported_examples": "import numpy as np\nfrom numpy import sin, cos, pi\nfrom scipy.interpolate import SmoothBivariateSpline, RectBivariateSpline, SmoothSphereBivariateSpline\n\n# helpers used by the probes/expressions\n\ndef _strided(a):\n    return np.asarray(a)\n\ndef _scattered_data(n=400, low=-5.0, high=5.0, rng_seed=0):\n    rng = np.random.default_rng(rng_seed)\n    x = rng.uniform(low, high, n)\n    y = rng.uniform(low, high, n)\n    z = x**2 + y\n    return x, y, z\n\ndef _sphere_scattered_data(n=200, rng_seed=0):\n    rng = np.random.default_rng(rng_seed)\n    theta = rng.uniform(0.0, pi, n)\n    phi = rng.uniform(0.0, 2.0*pi, n)\n    r = np.sin(theta) * np.cos(phi)\n    return theta, phi, r\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)\", \"x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)\", [], \"Strided-view fit must match contiguous-copy fit exactly (or within tolerance xp_assert_close)\"], [\"x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3); LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)\", \"LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)\", [\"x, y, z = _scattered_data()\", \"t = np.linspace(-4, 4, 3)\"], \"Strided-view fit equals contiguous-copy fit\"], [\"gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14); gz = sin(gx[:, None]) * cos(gy[None, :]); RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))\", \"RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))\", [\"gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14)\", \"gz = sin(gx[:, None]) * cos(gy[None, :])\"], \"Strided-view result equals contiguous-copy result\"], [\"theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)\", \"theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)\", [], \"Strided-view fit equals contiguous-copy fit\"], [\"theta, phi, r = _sphere_scattered_data(); tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]; LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)\", \"LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)\", [\"theta, phi, r = _sphere_scattered_data()\", \"tt = np.linspace(0, pi, 5)[1:-1]\", \"tp = np.linspace(0, 2*pi, 5)[1:-1]\"], \"Strided-view fit equals contiguous-copy fit\"], [\"u = np.linspace(0, pi, 14)[1:-1]; v = np.linspace(0, 2*pi, 14, endpoint=False); rg = sin(u[:, None]) * cos(v[None, :]); RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)\", \"RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)\", [\"u = np.linspace(0, pi, 14)[1:-1]\", \"v = np.linspace(0, 2*pi, 14, endpoint=False)\", \"rg = sin(u[:, None]) * cos(v[None, :])\"], \"Strided-view result equals contiguous-copy result\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nfrom scipy.interpolate import SmoothBivariateSpline, SmoothSphereBivariateSpline\n\n# Helper: create numpy arrays and apply strided view without copying\n# (handles both C/F contiguous cases)\ndef _strided(a):\n    a = np.asarray(a)\n    return a.reshape(-1)[::2].copy().view(type(a)) if a.size % 2 == 0 else a.copy()\n\n\ndef _scattered_data():\n    rng = np.random.default_rng(0)\n    n = 400\n    x = rng.uniform(-5, 5, n)\n    y = rng.uniform(-5, 5, n)\n    z = x**2 + y\n    return x, y, z\n\n\ndef _sphere_scattered_data():\n    rng = np.random.default_rng(1)\n    n = 200\n    theta = rng.uniform(0.0, np.pi, n)\n    phi = rng.uniform(0.0, 2.0 * np.pi, n)\n    # Construct a smooth radial function of angles\n    r = np.cos(theta) + 0.5 * np.sin(phi)\n    return theta, phi, r\n\n\n# Probe 1\nname1 = \"x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)\"\ntry:\n    x, y, z = _scattered_data()\n    # ensure enough points for k=2: need n >= (kx+1)*(ky+1) in practice\n    sx = _strided(x)\n    sy = _strided(y)\n    sz = _strided(z)\n    # If striding reduced size unexpectedly, fall back to non-strided copies\n    if sx.size < 10 or sy.size < 10 or sz.size < 10:\n        sx, sy, sz = np.asarray(x).copy(), np.asarray(y).copy(), np.asarray(z).copy()\n    out1 = SmoothBivariateSpline(sx, sy, sz, kx=2, ky=2).ev(x, y)\n    probe(name1, out1)\nexcept Exception as e:\n    probe_exception(name1, e)\n\n\n# Probe 2\nname2 = \"theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)\"\ntry:\n    theta, phi, r = _sphere_scattered_data()\n    stheta = _strided(theta)\n    sphi = _strided(phi)\n    sr = _strided(r)\n    if stheta.size < 10 or sphi.size < 10 or sr.size < 10:\n        stheta, sphi, sr = np.asarray(theta).copy(), np.asarray(phi).copy(), np.asarray(r).copy()\n    out2 = SmoothSphereBivariateSpline(stheta, sphi, sr, s=2.0).ev(theta, phi)\n    probe(name2, out2)\nexcept Exception as e:\n    probe_exception(name2, e)"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/3 reported example(s))",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "persistent",
+      "examples_verdict": "not_reproduced",
+      "success_criterion": "The test pytest scipy/interpolate/tests/test_fitpack2.py::test_bivariate_spline_noncontiguous_input -v FAILS at the buggy commit with assertion errors (xp_assert_close violations showing strided results differ from contiguous results), and the full parametrized test suite covering SmoothBivariateSpline, LSQBivariateSpline, RectBivariateSpline, SmoothSphereBivariateSpline, LSQSphereBivariateSpline, and RectSphereBivariateSpline all exhibit the same failure pattern.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": 4,
+            "failed": 2,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 6,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)": [
+                -1.1024686808511823,
+                9.678866802323709,
+                17.01829735636722,
+                18.43632100860629,
+                8.043032313499381,
+                21.94416383979872,
+                -1.2159298487687875,
+                8.573809805525515,
+                -3.0785496417595426,
+                19.792584942040122,
+                14.560440116914279,
+                26.52835145692753,
+                17.57886144409322,
+                22.499808047203874,
+                10.107509473027903,
+                13.890397961871134,
+                15.972375224941763,
+                4.056802147569378,
+                5.326447851827017,
+                -0.838627959620323,
+                22.53105766340236,
+                11.381309588613961,
+                5.686710327771445,
+                -1.1327397521047144,
+                2.103351885020037,
+                1.712080434040841,
+                26.44080005952804,
+                25.72512828825767,
+                -0.4591383388574787,
+                3.51320899818334,
+                2.690775850939573,
+                2.3758593617625303,
+                15.255301496150851,
+                5.760504341799141,
+                2.393144935407459,
+                3.8010671511847622,
+                -0.3512582027648794,
+                13.037765965072808,
+                16.13089407433342,
+                3.9752416688193843,
+                2.468765196547398,
+                0.1278765133315121,
+                5.607623735677504,
+                4.338784884553897,
+                1.4868053367497245,
+                18.64316049872572,
+                7.3095022096811855,
+                1.2769559625932527,
+                14.887067438263514,
+                7.62656771071249,
+                "\u2026 350 more"
+              ],
+              "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)": [
+                -0.2546090626384301,
+                -0.9185570368904293,
+                0.6616024981743609,
+                -1.06352390056635,
+                0.20024734026465044,
+                -0.3306519765954346,
+                -1.0496471839971155,
+                0.8356105184468906,
+                -0.7168308206950549,
+                1.1379266979698994,
+                -0.5119251745429044,
+                -0.23630535420432225,
+                0.3812785692546266,
+                -1.1785003310008157,
+                0.49141756579590185,
+                -0.22402767871433857,
+                1.0400996780971732,
+                0.829115900628653,
+                0.48473356079847024,
+                0.4951727031725648,
+                -0.3288294137230099,
+                0.5372542360010417,
+                0.5295396966216074,
+                -1.0079318618110715,
+                -0.9299123594906379,
+                -1.1048764094251087,
+                0.4477480843889956,
+                1.0296414667979719,
+                1.0300180668695464,
+                -0.9393893239647635,
+                0.49822932201218373,
+                0.9239180925687557,
+                -0.21097492470307644,
+                -0.8644347234995795,
+                -0.4882890056421521,
+                -1.1499892636825644,
+                0.9782846640382303,
+                -0.5558711140807389,
+                -0.06828249081072758,
+                1.0786899808859791,
+                -0.06189821150832774,
+                -0.6584282134198736,
+                0.027401604197263268,
+                0.43195826417000516,
+                -0.5444810672211831,
+                0.556358633752592,
+                0.5340140569246266,
+                -0.4573544782018355,
+                0.6329860879408212,
+                -1.121955928413542,
+                "\u2026 150 more"
+              ]
+            },
+            "fixed_values": {
+              "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)": [
+                -1.1024686808511823,
+                9.678866802323709,
+                17.01829735636722,
+                18.43632100860629,
+                8.043032313499381,
+                21.94416383979872,
+                -1.2159298487687875,
+                8.573809805525515,
+                -3.0785496417595426,
+                19.792584942040122,
+                14.560440116914279,
+                26.52835145692753,
+                17.57886144409322,
+                22.499808047203874,
+                10.107509473027903,
+                13.890397961871134,
+                15.972375224941763,
+                4.056802147569378,
+                5.326447851827017,
+                -0.838627959620323,
+                22.53105766340236,
+                11.381309588613961,
+                5.686710327771445,
+                -1.1327397521047144,
+                2.103351885020037,
+                1.712080434040841,
+                26.44080005952804,
+                25.72512828825767,
+                -0.4591383388574787,
+                3.51320899818334,
+                2.690775850939573,
+                2.3758593617625303,
+                15.255301496150851,
+                5.760504341799141,
+                2.393144935407459,
+                3.8010671511847622,
+                -0.3512582027648794,
+                13.037765965072808,
+                16.13089407433342,
+                3.9752416688193843,
+                2.468765196547398,
+                0.1278765133315121,
+                5.607623735677504,
+                4.338784884553897,
+                1.4868053367497245,
+                18.64316049872572,
+                7.3095022096811855,
+                1.2769559625932527,
+                14.887067438263514,
+                7.62656771071249,
+                "\u2026 350 more"
+              ],
+              "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)": [
+                -0.2546090626384301,
+                -0.9185570368904293,
+                0.6616024981743609,
+                -1.06352390056635,
+                0.20024734026465044,
+                -0.3306519765954346,
+                -1.0496471839971155,
+                0.8356105184468906,
+                -0.7168308206950549,
+                1.1379266979698994,
+                -0.5119251745429044,
+                -0.23630535420432225,
+                0.3812785692546266,
+                -1.1785003310008157,
+                0.49141756579590185,
+                -0.22402767871433857,
+                1.0400996780971732,
+                0.829115900628653,
+                0.48473356079847024,
+                0.4951727031725648,
+                -0.3288294137230099,
+                0.5372542360010417,
+                0.5295396966216074,
+                -1.0079318618110715,
+                -0.9299123594906379,
+                -1.1048764094251087,
+                0.4477480843889956,
+                1.0296414667979719,
+                1.0300180668695464,
+                -0.9393893239647635,
+                0.49822932201218373,
+                0.9239180925687557,
+                -0.21097492470307644,
+                -0.8644347234995795,
+                -0.4882890056421521,
+                -1.1499892636825644,
+                0.9782846640382303,
+                -0.5558711140807389,
+                -0.06828249081072758,
+                1.0786899808859791,
+                -0.06189821150832774,
+                -0.6584282134198736,
+                0.027401604197263268,
+                0.43195826417000516,
+                -0.5444810672211831,
+                0.556358633752592,
+                0.5340140569246266,
+                -0.4573544782018355,
+                0.6329860879408212,
+                -1.121955928413542,
+                "\u2026 150 more"
+              ]
+            }
+          },
+          {
+            "label": "fitpack2_noncontiguous_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: x dimension of z must have same number of elements as x",
+                "produced NaN"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: x dimension of z must have same number of elements as x"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {
+              "SmoothBivariateSpline_scatter.max_abs_diff": "nan",
+              "SmoothBivariateSpline_scatter.nan_or_inf": 1.0,
+              "LSQBivariateSpline_scatter.max_abs_diff": "nan",
+              "LSQBivariateSpline_scatter.nan_or_inf": 1.0
+            },
+            "fixed_values": {}
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)": "__error__: SyntaxError: invalid character '\u00b2' (U+00B2) (<string>, line 1)",
+              "x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3); LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)": "__error__: NameError: name 'LSQBivariateSpline' is not defined",
+              "gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14); gz = sin(gx[:, None]) * cos(gy[None, :]); RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))": [
+                [
+                  0.09933460135611598,
+                  0.09537447523852488,
+                  0.08761203098084934,
+                  0.07635678451177097,
+                  0.06205740731022532
+                ],
+                [
+                  0.2940436912655087,
+                  0.282321188878663,
+                  0.2593433168017734,
+                  0.2260262835355285,
+                  0.18369821660075877
+                ],
+                [
+                  0.4770301578809764,
+                  0.45801261956791045,
+                  0.4207353772049377,
+                  0.36668480543201154,
+                  0.29801553942671755
+                ],
+                [
+                  0.6409989562906421,
+                  0.6154445505397709,
+                  0.5653540624368764,
+                  0.492724775753491,
+                  0.40045193490383424
+                ],
+                [
+                  0.7794130409735671,
+                  0.7483405456113003,
+                  0.6874337699091176,
+                  0.5991212810320355,
+                  0.48692350788419375
+                ]
+              ],
+              "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "theta, phi, r = _sphere_scattered_data(); tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]; LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)": "__error__: NameError: name 'LSQSphereBivariateSpline' is not defined",
+              "u = np.linspace(0, pi, 14)[1:-1]; v = np.linspace(0, 2*pi, 14, endpoint=False); rg = sin(u[:, None]) * cos(v[None, :]); RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)": "__error__: NameError: name 'RectSphereBivariateSpline' is not defined"
+            },
+            "fixed_values": {
+              "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)": "__error__: SyntaxError: invalid character '\u00b2' (U+00B2) (<string>, line 1)",
+              "x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3); LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)": "__error__: NameError: name 'LSQBivariateSpline' is not defined",
+              "gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14); gz = sin(gx[:, None]) * cos(gy[None, :]); RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))": [
+                [
+                  0.09933460135611598,
+                  0.09537447523852488,
+                  0.08761203098084934,
+                  0.07635678451177097,
+                  0.06205740731022532
+                ],
+                [
+                  0.2940436912655087,
+                  0.282321188878663,
+                  0.2593433168017734,
+                  0.2260262835355285,
+                  0.18369821660075877
+                ],
+                [
+                  0.4770301578809764,
+                  0.45801261956791045,
+                  0.4207353772049377,
+                  0.36668480543201154,
+                  0.29801553942671755
+                ],
+                [
+                  0.6409989562906421,
+                  0.6154445505397709,
+                  0.5653540624368764,
+                  0.492724775753491,
+                  0.40045193490383424
+                ],
+                [
+                  0.7794130409735671,
+                  0.7483405456113003,
+                  0.6874337699091176,
+                  0.5991212810320355,
+                  0.48692350788419375
+                ]
+              ],
+              "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "theta, phi, r = _sphere_scattered_data(); tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]; LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)": "__error__: NameError: name 'LSQSphereBivariateSpline' is not defined",
+              "u = np.linspace(0, pi, 14)[1:-1]; v = np.linspace(0, 2*pi, 14, endpoint=False); rg = sin(u[:, None]) * cos(v[None, :]); RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)": "__error__: NameError: name 'RectSphereBivariateSpline' is not defined"
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)",
+            "expected_output": "Strided-view fit must match contiguous-copy fit exactly (or within tolerance xp_assert_close)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Garbage fit (strided-view result differs significantly from contiguous-copy result due to C binding reading interleaved NaN values as coordinates)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)",
+              "observed": [
+                -1.1024686808511823,
+                9.678866802323709,
+                17.01829735636722,
+                18.43632100860629,
+                8.043032313499381,
+                21.94416383979872,
+                -1.2159298487687875,
+                8.573809805525515,
+                -3.0785496417595426,
+                19.792584942040122,
+                14.560440116914279,
+                26.52835145692753,
+                17.57886144409322,
+                22.499808047203874,
+                10.107509473027903,
+                13.890397961871134,
+                15.972375224941763,
+                4.056802147569378,
+                5.326447851827017,
+                -0.838627959620323,
+                22.53105766340236,
+                11.381309588613961,
+                5.686710327771445,
+                -1.1327397521047144,
+                2.103351885020037,
+                1.712080434040841,
+                26.44080005952804,
+                25.72512828825767,
+                -0.4591383388574787,
+                3.51320899818334,
+                2.690775850939573,
+                2.3758593617625303,
+                15.255301496150851,
+                5.760504341799141,
+                2.393144935407459,
+                3.8010671511847622,
+                -0.3512582027648794,
+                13.037765965072808,
+                16.13089407433342,
+                3.9752416688193843,
+                2.468765196547398,
+                0.1278765133315121,
+                5.607623735677504,
+                4.338784884553897,
+                1.4868053367497245,
+                18.64316049872572,
+                7.3095022096811855,
+                1.2769559625932527,
+                14.887067438263514,
+                7.62656771071249,
+                "\u2026 350 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)",
+              "observed": [
+                -1.1024686808511823,
+                9.678866802323709,
+                17.01829735636722,
+                18.43632100860629,
+                8.043032313499381,
+                21.94416383979872,
+                -1.2159298487687875,
+                8.573809805525515,
+                -3.0785496417595426,
+                19.792584942040122,
+                14.560440116914279,
+                26.52835145692753,
+                17.57886144409322,
+                22.499808047203874,
+                10.107509473027903,
+                13.890397961871134,
+                15.972375224941763,
+                4.056802147569378,
+                5.326447851827017,
+                -0.838627959620323,
+                22.53105766340236,
+                11.381309588613961,
+                5.686710327771445,
+                -1.1327397521047144,
+                2.103351885020037,
+                1.712080434040841,
+                26.44080005952804,
+                25.72512828825767,
+                -0.4591383388574787,
+                3.51320899818334,
+                2.690775850939573,
+                2.3758593617625303,
+                15.255301496150851,
+                5.760504341799141,
+                2.393144935407459,
+                3.8010671511847622,
+                -0.3512582027648794,
+                13.037765965072808,
+                16.13089407433342,
+                3.9752416688193843,
+                2.468765196547398,
+                0.1278765133315121,
+                5.607623735677504,
+                4.338784884553897,
+                1.4868053367497245,
+                18.64316049872572,
+                7.3095022096811855,
+                1.2769559625932527,
+                14.887067438263514,
+                7.62656771071249,
+                "\u2026 350 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3); LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)",
+            "expected_output": "Strided-view fit equals contiguous-copy fit",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Garbage fit (strided read misinterprets NaN interleaving)",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3); LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)",
+              "observed": "__error__: NameError: name 'LSQBivariateSpline' is not defined",
+              "evaluation_error": "NameError: name 'LSQBivariateSpline' is not defined",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3); LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)",
+              "observed": "__error__: NameError: name 'LSQBivariateSpline' is not defined",
+              "evaluation_error": "NameError: name 'LSQBivariateSpline' is not defined",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14); gz = sin(gx[:, None]) * cos(gy[None, :]); RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))",
+            "expected_output": "Strided-view result equals contiguous-copy result",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Garbage result (strided inputs misread)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14); gz = sin(gx[:, None]) * cos(gy[None, :]); RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))",
+              "observed": [
+                [
+                  0.09933460135611598,
+                  0.09537447523852488,
+                  0.08761203098084934,
+                  0.07635678451177097,
+                  0.06205740731022532
+                ],
+                [
+                  0.2940436912655087,
+                  0.282321188878663,
+                  0.2593433168017734,
+                  0.2260262835355285,
+                  0.18369821660075877
+                ],
+                [
+                  0.4770301578809764,
+                  0.45801261956791045,
+                  0.4207353772049377,
+                  0.36668480543201154,
+                  0.29801553942671755
+                ],
+                [
+                  0.6409989562906421,
+                  0.6154445505397709,
+                  0.5653540624368764,
+                  0.492724775753491,
+                  0.40045193490383424
+                ],
+                [
+                  0.7794130409735671,
+                  0.7483405456113003,
+                  0.6874337699091176,
+                  0.5991212810320355,
+                  0.48692350788419375
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14); gz = sin(gx[:, None]) * cos(gy[None, :]); RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))",
+              "observed": [
+                [
+                  0.09933460135611598,
+                  0.09537447523852488,
+                  0.08761203098084934,
+                  0.07635678451177097,
+                  0.06205740731022532
+                ],
+                [
+                  0.2940436912655087,
+                  0.282321188878663,
+                  0.2593433168017734,
+                  0.2260262835355285,
+                  0.18369821660075877
+                ],
+                [
+                  0.4770301578809764,
+                  0.45801261956791045,
+                  0.4207353772049377,
+                  0.36668480543201154,
+                  0.29801553942671755
+                ],
+                [
+                  0.6409989562906421,
+                  0.6154445505397709,
+                  0.5653540624368764,
+                  0.492724775753491,
+                  0.40045193490383424
+                ],
+                [
+                  0.7794130409735671,
+                  0.7483405456113003,
+                  0.6874337699091176,
+                  0.5991212810320355,
+                  0.48692350788419375
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)",
+            "expected_output": "Strided-view fit equals contiguous-copy fit",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Garbage fit",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)",
+              "observed": [
+                -0.2546090626384301,
+                -0.9185570368904293,
+                0.6616024981743609,
+                -1.06352390056635,
+                0.20024734026465044,
+                -0.3306519765954346,
+                -1.0496471839971155,
+                0.8356105184468906,
+                -0.7168308206950549,
+                1.1379266979698994,
+                -0.5119251745429044,
+                -0.23630535420432225,
+                0.3812785692546266,
+                -1.1785003310008157,
+                0.49141756579590185,
+                -0.22402767871433857,
+                1.0400996780971732,
+                0.829115900628653,
+                0.48473356079847024,
+                0.4951727031725648,
+                -0.3288294137230099,
+                0.5372542360010417,
+                0.5295396966216074,
+                -1.0079318618110715,
+                -0.9299123594906379,
+                -1.1048764094251087,
+                0.4477480843889956,
+                1.0296414667979719,
+                1.0300180668695464,
+                -0.9393893239647635,
+                0.49822932201218373,
+                0.9239180925687557,
+                -0.21097492470307644,
+                -0.8644347234995795,
+                -0.4882890056421521,
+                -1.1499892636825644,
+                0.9782846640382303,
+                -0.5558711140807389,
+                -0.06828249081072758,
+                1.0786899808859791,
+                -0.06189821150832774,
+                -0.6584282134198736,
+                0.027401604197263268,
+                0.43195826417000516,
+                -0.5444810672211831,
+                0.556358633752592,
+                0.5340140569246266,
+                -0.4573544782018355,
+                0.6329860879408212,
+                -1.121955928413542,
+                "\u2026 150 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)",
+              "observed": [
+                -0.2546090626384301,
+                -0.9185570368904293,
+                0.6616024981743609,
+                -1.06352390056635,
+                0.20024734026465044,
+                -0.3306519765954346,
+                -1.0496471839971155,
+                0.8356105184468906,
+                -0.7168308206950549,
+                1.1379266979698994,
+                -0.5119251745429044,
+                -0.23630535420432225,
+                0.3812785692546266,
+                -1.1785003310008157,
+                0.49141756579590185,
+                -0.22402767871433857,
+                1.0400996780971732,
+                0.829115900628653,
+                0.48473356079847024,
+                0.4951727031725648,
+                -0.3288294137230099,
+                0.5372542360010417,
+                0.5295396966216074,
+                -1.0079318618110715,
+                -0.9299123594906379,
+                -1.1048764094251087,
+                0.4477480843889956,
+                1.0296414667979719,
+                1.0300180668695464,
+                -0.9393893239647635,
+                0.49822932201218373,
+                0.9239180925687557,
+                -0.21097492470307644,
+                -0.8644347234995795,
+                -0.4882890056421521,
+                -1.1499892636825644,
+                0.9782846640382303,
+                -0.5558711140807389,
+                -0.06828249081072758,
+                1.0786899808859791,
+                -0.06189821150832774,
+                -0.6584282134198736,
+                0.027401604197263268,
+                0.43195826417000516,
+                -0.5444810672211831,
+                0.556358633752592,
+                0.5340140569246266,
+                -0.4573544782018355,
+                0.6329860879408212,
+                -1.121955928413542,
+                "\u2026 150 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "theta, phi, r = _sphere_scattered_data(); tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]; LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)",
+            "expected_output": "Strided-view fit equals contiguous-copy fit",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Garbage fit",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "theta, phi, r = _sphere_scattered_data(); tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]; LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)",
+              "observed": "__error__: NameError: name 'LSQSphereBivariateSpline' is not defined",
+              "evaluation_error": "NameError: name 'LSQSphereBivariateSpline' is not defined",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "theta, phi, r = _sphere_scattered_data(); tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]; LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)",
+              "observed": "__error__: NameError: name 'LSQSphereBivariateSpline' is not defined",
+              "evaluation_error": "NameError: name 'LSQSphereBivariateSpline' is not defined",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "u = np.linspace(0, pi, 14)[1:-1]; v = np.linspace(0, 2*pi, 14, endpoint=False); rg = sin(u[:, None]) * cos(v[None, :]); RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)",
+            "expected_output": "Strided-view result equals contiguous-copy result",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Garbage result",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "u = np.linspace(0, pi, 14)[1:-1]; v = np.linspace(0, 2*pi, 14, endpoint=False); rg = sin(u[:, None]) * cos(v[None, :]); RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)",
+              "observed": "__error__: NameError: name 'RectSphereBivariateSpline' is not defined",
+              "evaluation_error": "NameError: name 'RectSphereBivariateSpline' is not defined",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "u = np.linspace(0, pi, 14)[1:-1]; v = np.linspace(0, 2*pi, 14, endpoint=False); rg = sin(u[:, None]) * cos(v[None, :]); RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)",
+              "observed": "__error__: NameError: name 'RectSphereBivariateSpline' is not defined",
+              "evaluation_error": "NameError: name 'RectSphereBivariateSpline' is not defined",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 5,
+            "n_failed": 3,
+            "ran_test": true,
+            "failed_setup_or_build": [
+              "cd /workspace/buggy && python -m pip install . -vv -Csetup-args=--werror"
+            ]
+          },
+          "fixed": {
+            "n_commands": 3,
+            "n_failed": 1,
+            "ran_test": true,
+            "failed_setup_or_build": [
+              "cd /workspace/fixed && python -m pip install . -vv -Csetup-args=--werror"
+            ]
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "array-api-strict>=2.3.1",
+            "cython>=3.2.0",
+            "hypothesis>=6.30",
+            "meson-python>=0.15.0",
+            "ninja>=1.8.2",
+            "numpy>=2.0.0",
+            "pybind11>=2.4.3",
+            "pytest>=8.0.0",
+            "pythran>=0.18.1",
+            "setuptools<67.3"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-06-30T12:18:32+03:00",
+        "fixed_commit_date": "2026-06-30T11:30:24+02:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev",
+            "ccache",
+            "libgfortran-13-dev"
+          ]
+        },
+        "era": "2026-06-30T11:30:24+02:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.12/site-packages/scipy/__init__.py",
+            "build_requires": [
+              "meson-python>=0.15.0",
+              "Cython>=3.2.0",
+              "pybind11>=2.13.2",
+              "pythran>=0.18.1"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.5.0",
+              "pandas": "3.0.4",
+              "matplotlib": "3.11.0",
+              "pyparsing": "3.3.2"
+            },
+            "test_extras": [],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.0 in ./.venv/lib/python3.12/site-packages (from scipy==1.19.0.dev0) (2.5.0)\nBuilding wheels for collected packages: scipy\n  Building wheel for scipy (pyproject.toml): started\n  Building wheel for scipy (pyproject.toml): finished with status 'done'\n  Created wheel for scipy: filename=scipy-1.19.0.dev0-cp312-cp312-linux_x86_64.whl size=24872018 sha256=ef9308169ae74b69f15f22d5448837efffeca545fb5b8b86d3ae64fc2e806925\n  Stored in directory: /tmp/pip-ephem-wheel-cache-3ht1s85n/wheels/7a/8e/f6/6361a05021faea16c41b60355501cb8542c208befbd0798736\nSuccessfully built scipy\nInstalling collected packages: scipy\nSuccessfully installed scipy-1.19.0.dev0\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.12/site-packages/scipy/__init__.py",
+            "build_requires": [
+              "meson-python>=0.15.0",
+              "Cython>=3.2.0",
+              "pybind11>=2.13.2",
+              "pythran>=0.18.1"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.5.0",
+              "pandas": "3.0.4",
+              "matplotlib": "3.11.0",
+              "pyparsing": "3.3.2"
+            },
+            "test_extras": [],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.0 in ./.venv/lib/python3.12/site-packages (from scipy==1.19.0.dev0) (2.5.0)\nBuilding wheels for collected packages: scipy\n  Building wheel for scipy (pyproject.toml): started\n  Building wheel for scipy (pyproject.toml): finished with status 'done'\n  Created wheel for scipy: filename=scipy-1.19.0.dev0-cp312-cp312-linux_x86_64.whl size=24872089 sha256=3c523272432b6e1ab3924cfa6a456f9521a49effc9eaf1b6cad838072d337b6d\n  Stored in directory: /tmp/pip-ephem-wheel-cache-s8edkbg6/wheels/71/38/20/6358bc83d061b0e5b7f2ca1588a2c1d520ab055cf84e576666\nSuccessfully built scipy\nInstalling collected packages: scipy\nSuccessfully installed scipy-1.19.0.dev0\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": 4,
+        "failed": 2,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 6,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 3,
+        "verdict": "persistent",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)": [
+                -1.1024686808511823,
+                9.678866802323709,
+                17.01829735636722,
+                18.43632100860629,
+                8.043032313499381,
+                21.94416383979872,
+                -1.2159298487687875,
+                8.573809805525515,
+                -3.0785496417595426,
+                19.792584942040122,
+                14.560440116914279,
+                26.52835145692753,
+                17.57886144409322,
+                22.499808047203874,
+                10.107509473027903,
+                13.890397961871134,
+                15.972375224941763,
+                4.056802147569378,
+                5.326447851827017,
+                -0.838627959620323,
+                22.53105766340236,
+                11.381309588613961,
+                5.686710327771445,
+                -1.1327397521047144,
+                2.103351885020037,
+                1.712080434040841,
+                26.44080005952804,
+                25.72512828825767,
+                -0.4591383388574787,
+                3.51320899818334,
+                2.690775850939573,
+                2.3758593617625303,
+                15.255301496150851,
+                5.760504341799141,
+                2.393144935407459,
+                3.8010671511847622,
+                -0.3512582027648794,
+                13.037765965072808,
+                16.13089407433342,
+                3.9752416688193843,
+                2.468765196547398,
+                0.1278765133315121,
+                5.607623735677504,
+                4.338784884553897,
+                1.4868053367497245,
+                18.64316049872572,
+                7.3095022096811855,
+                1.2769559625932527,
+                14.887067438263514,
+                7.62656771071249,
+                "\u2026 350 more"
+              ],
+              "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)": [
+                -0.2546090626384301,
+                -0.9185570368904293,
+                0.6616024981743609,
+                -1.06352390056635,
+                0.20024734026465044,
+                -0.3306519765954346,
+                -1.0496471839971155,
+                0.8356105184468906,
+                -0.7168308206950549,
+                1.1379266979698994,
+                -0.5119251745429044,
+                -0.23630535420432225,
+                0.3812785692546266,
+                -1.1785003310008157,
+                0.49141756579590185,
+                -0.22402767871433857,
+                1.0400996780971732,
+                0.829115900628653,
+                0.48473356079847024,
+                0.4951727031725648,
+                -0.3288294137230099,
+                0.5372542360010417,
+                0.5295396966216074,
+                -1.0079318618110715,
+                -0.9299123594906379,
+                -1.1048764094251087,
+                0.4477480843889956,
+                1.0296414667979719,
+                1.0300180668695464,
+                -0.9393893239647635,
+                0.49822932201218373,
+                0.9239180925687557,
+                -0.21097492470307644,
+                -0.8644347234995795,
+                -0.4882890056421521,
+                -1.1499892636825644,
+                0.9782846640382303,
+                -0.5558711140807389,
+                -0.06828249081072758,
+                1.0786899808859791,
+                -0.06189821150832774,
+                -0.6584282134198736,
+                0.027401604197263268,
+                0.43195826417000516,
+                -0.5444810672211831,
+                0.556358633752592,
+                0.5340140569246266,
+                -0.4573544782018355,
+                0.6329860879408212,
+                -1.121955928413542,
+                "\u2026 150 more"
+              ]
+            },
+            "fixed_values": {
+              "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)": [
+                -1.1024686808511823,
+                9.678866802323709,
+                17.01829735636722,
+                18.43632100860629,
+                8.043032313499381,
+                21.94416383979872,
+                -1.2159298487687875,
+                8.573809805525515,
+                -3.0785496417595426,
+                19.792584942040122,
+                14.560440116914279,
+                26.52835145692753,
+                17.57886144409322,
+                22.499808047203874,
+                10.107509473027903,
+                13.890397961871134,
+                15.972375224941763,
+                4.056802147569378,
+                5.326447851827017,
+                -0.838627959620323,
+                22.53105766340236,
+                11.381309588613961,
+                5.686710327771445,
+                -1.1327397521047144,
+                2.103351885020037,
+                1.712080434040841,
+                26.44080005952804,
+                25.72512828825767,
+                -0.4591383388574787,
+                3.51320899818334,
+                2.690775850939573,
+                2.3758593617625303,
+                15.255301496150851,
+                5.760504341799141,
+                2.393144935407459,
+                3.8010671511847622,
+                -0.3512582027648794,
+                13.037765965072808,
+                16.13089407433342,
+                3.9752416688193843,
+                2.468765196547398,
+                0.1278765133315121,
+                5.607623735677504,
+                4.338784884553897,
+                1.4868053367497245,
+                18.64316049872572,
+                7.3095022096811855,
+                1.2769559625932527,
+                14.887067438263514,
+                7.62656771071249,
+                "\u2026 350 more"
+              ],
+              "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)": [
+                -0.2546090626384301,
+                -0.9185570368904293,
+                0.6616024981743609,
+                -1.06352390056635,
+                0.20024734026465044,
+                -0.3306519765954346,
+                -1.0496471839971155,
+                0.8356105184468906,
+                -0.7168308206950549,
+                1.1379266979698994,
+                -0.5119251745429044,
+                -0.23630535420432225,
+                0.3812785692546266,
+                -1.1785003310008157,
+                0.49141756579590185,
+                -0.22402767871433857,
+                1.0400996780971732,
+                0.829115900628653,
+                0.48473356079847024,
+                0.4951727031725648,
+                -0.3288294137230099,
+                0.5372542360010417,
+                0.5295396966216074,
+                -1.0079318618110715,
+                -0.9299123594906379,
+                -1.1048764094251087,
+                0.4477480843889956,
+                1.0296414667979719,
+                1.0300180668695464,
+                -0.9393893239647635,
+                0.49822932201218373,
+                0.9239180925687557,
+                -0.21097492470307644,
+                -0.8644347234995795,
+                -0.4882890056421521,
+                -1.1499892636825644,
+                0.9782846640382303,
+                -0.5558711140807389,
+                -0.06828249081072758,
+                1.0786899808859791,
+                -0.06189821150832774,
+                -0.6584282134198736,
+                0.027401604197263268,
+                0.43195826417000516,
+                -0.5444810672211831,
+                0.556358633752592,
+                0.5340140569246266,
+                -0.4573544782018355,
+                0.6329860879408212,
+                -1.121955928413542,
+                "\u2026 150 more"
+              ]
+            }
+          },
+          {
+            "label": "fitpack2_noncontiguous_examples",
+            "outcome": "persistent",
+            "buggy": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: x dimension of z must have same number of elements as x",
+                "produced NaN"
+              ]
+            },
+            "fixed": {
+              "present": true,
+              "reasons": [
+                "probe raised: ValueError: x dimension of z must have same number of elements as x"
+              ]
+            },
+            "buggy_status": "exception",
+            "fixed_status": "exception",
+            "values_differ": null,
+            "buggy_values": {
+              "SmoothBivariateSpline_scatter.max_abs_diff": "nan",
+              "SmoothBivariateSpline_scatter.nan_or_inf": 1.0,
+              "LSQBivariateSpline_scatter.max_abs_diff": "nan",
+              "LSQBivariateSpline_scatter.nan_or_inf": 1.0
+            },
+            "fixed_values": {}
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)": "__error__: SyntaxError: invalid character '\u00b2' (U+00B2) (<string>, line 1)",
+              "x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3); LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)": "__error__: NameError: name 'LSQBivariateSpline' is not defined",
+              "gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14); gz = sin(gx[:, None]) * cos(gy[None, :]); RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))": [
+                [
+                  0.09933460135611598,
+                  0.09537447523852488,
+                  0.08761203098084934,
+                  0.07635678451177097,
+                  0.06205740731022532
+                ],
+                [
+                  0.2940436912655087,
+                  0.282321188878663,
+                  0.2593433168017734,
+                  0.2260262835355285,
+                  0.18369821660075877
+                ],
+                [
+                  0.4770301578809764,
+                  0.45801261956791045,
+                  0.4207353772049377,
+                  0.36668480543201154,
+                  0.29801553942671755
+                ],
+                [
+                  0.6409989562906421,
+                  0.6154445505397709,
+                  0.5653540624368764,
+                  0.492724775753491,
+                  0.40045193490383424
+                ],
+                [
+                  0.7794130409735671,
+                  0.7483405456113003,
+                  0.6874337699091176,
+                  0.5991212810320355,
+                  0.48692350788419375
+                ]
+              ],
+              "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "theta, phi, r = _sphere_scattered_data(); tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]; LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)": "__error__: NameError: name 'LSQSphereBivariateSpline' is not defined",
+              "u = np.linspace(0, pi, 14)[1:-1]; v = np.linspace(0, 2*pi, 14, endpoint=False); rg = sin(u[:, None]) * cos(v[None, :]); RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)": "__error__: NameError: name 'RectSphereBivariateSpline' is not defined"
+            },
+            "fixed_values": {
+              "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)": "__error__: SyntaxError: invalid character '\u00b2' (U+00B2) (<string>, line 1)",
+              "x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3); LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)": "__error__: NameError: name 'LSQBivariateSpline' is not defined",
+              "gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14); gz = sin(gx[:, None]) * cos(gy[None, :]); RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))": [
+                [
+                  0.09933460135611598,
+                  0.09537447523852488,
+                  0.08761203098084934,
+                  0.07635678451177097,
+                  0.06205740731022532
+                ],
+                [
+                  0.2940436912655087,
+                  0.282321188878663,
+                  0.2593433168017734,
+                  0.2260262835355285,
+                  0.18369821660075877
+                ],
+                [
+                  0.4770301578809764,
+                  0.45801261956791045,
+                  0.4207353772049377,
+                  0.36668480543201154,
+                  0.29801553942671755
+                ],
+                [
+                  0.6409989562906421,
+                  0.6154445505397709,
+                  0.5653540624368764,
+                  0.492724775753491,
+                  0.40045193490383424
+                ],
+                [
+                  0.7794130409735671,
+                  0.7483405456113003,
+                  0.6874337699091176,
+                  0.5991212810320355,
+                  0.48692350788419375
+                ]
+              ],
+              "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "theta, phi, r = _sphere_scattered_data(); tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]; LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)": "__error__: NameError: name 'LSQSphereBivariateSpline' is not defined",
+              "u = np.linspace(0, pi, 14)[1:-1]; v = np.linspace(0, 2*pi, 14, endpoint=False); rg = sin(u[:, None]) * cos(v[None, :]); RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)": "__error__: NameError: name 'RectSphereBivariateSpline' is not defined"
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 6,
+        "n_judged": 3,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 3,
+        "n_contested": 0,
+        "unobserved": [
+          "x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3); LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)",
+          "theta, phi, r = _sphere_scattered_data(); tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]; LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)",
+          "u = np.linspace(0, pi, 14)[1:-1]; v = np.linspace(0, 2*pi, 14, endpoint=False); rg = sin(u[:, None]) * cos(v[None, :]); RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)"
+        ],
+        "verdict": "not_reproduced",
+        "examples": [
+          {
+            "input": "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)",
+            "expected_output": "Strided-view fit must match contiguous-copy fit exactly (or within tolerance xp_assert_close)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Garbage fit (strided-view result differs significantly from contiguous-copy result due to C binding reading interleaved NaN values as coordinates)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)",
+              "observed": [
+                -1.1024686808511823,
+                9.678866802323709,
+                17.01829735636722,
+                18.43632100860629,
+                8.043032313499381,
+                21.94416383979872,
+                -1.2159298487687875,
+                8.573809805525515,
+                -3.0785496417595426,
+                19.792584942040122,
+                14.560440116914279,
+                26.52835145692753,
+                17.57886144409322,
+                22.499808047203874,
+                10.107509473027903,
+                13.890397961871134,
+                15.972375224941763,
+                4.056802147569378,
+                5.326447851827017,
+                -0.838627959620323,
+                22.53105766340236,
+                11.381309588613961,
+                5.686710327771445,
+                -1.1327397521047144,
+                2.103351885020037,
+                1.712080434040841,
+                26.44080005952804,
+                25.72512828825767,
+                -0.4591383388574787,
+                3.51320899818334,
+                2.690775850939573,
+                2.3758593617625303,
+                15.255301496150851,
+                5.760504341799141,
+                2.393144935407459,
+                3.8010671511847622,
+                -0.3512582027648794,
+                13.037765965072808,
+                16.13089407433342,
+                3.9752416688193843,
+                2.468765196547398,
+                0.1278765133315121,
+                5.607623735677504,
+                4.338784884553897,
+                1.4868053367497245,
+                18.64316049872572,
+                7.3095022096811855,
+                1.2769559625932527,
+                14.887067438263514,
+                7.62656771071249,
+                "\u2026 350 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y)",
+              "observed": [
+                -1.1024686808511823,
+                9.678866802323709,
+                17.01829735636722,
+                18.43632100860629,
+                8.043032313499381,
+                21.94416383979872,
+                -1.2159298487687875,
+                8.573809805525515,
+                -3.0785496417595426,
+                19.792584942040122,
+                14.560440116914279,
+                26.52835145692753,
+                17.57886144409322,
+                22.499808047203874,
+                10.107509473027903,
+                13.890397961871134,
+                15.972375224941763,
+                4.056802147569378,
+                5.326447851827017,
+                -0.838627959620323,
+                22.53105766340236,
+                11.381309588613961,
+                5.686710327771445,
+                -1.1327397521047144,
+                2.103351885020037,
+                1.712080434040841,
+                26.44080005952804,
+                25.72512828825767,
+                -0.4591383388574787,
+                3.51320899818334,
+                2.690775850939573,
+                2.3758593617625303,
+                15.255301496150851,
+                5.760504341799141,
+                2.393144935407459,
+                3.8010671511847622,
+                -0.3512582027648794,
+                13.037765965072808,
+                16.13089407433342,
+                3.9752416688193843,
+                2.468765196547398,
+                0.1278765133315121,
+                5.607623735677504,
+                4.338784884553897,
+                1.4868053367497245,
+                18.64316049872572,
+                7.3095022096811855,
+                1.2769559625932527,
+                14.887067438263514,
+                7.62656771071249,
+                "\u2026 350 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3); LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)",
+            "expected_output": "Strided-view fit equals contiguous-copy fit",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Garbage fit (strided read misinterprets NaN interleaving)",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3); LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)",
+              "observed": "__error__: NameError: name 'LSQBivariateSpline' is not defined",
+              "evaluation_error": "NameError: name 'LSQBivariateSpline' is not defined",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "x, y, z = _scattered_data(); t = np.linspace(-4, 4, 3); LSQBivariateSpline(_strided(x), _strided(y), _strided(z), _strided(t), _strided(t), kx=2, ky=2).ev(x, y)",
+              "observed": "__error__: NameError: name 'LSQBivariateSpline' is not defined",
+              "evaluation_error": "NameError: name 'LSQBivariateSpline' is not defined",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14); gz = sin(gx[:, None]) * cos(gy[None, :]); RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))",
+            "expected_output": "Strided-view result equals contiguous-copy result",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Garbage result (strided inputs misread)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14); gz = sin(gx[:, None]) * cos(gy[None, :]); RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))",
+              "observed": [
+                [
+                  0.09933460135611598,
+                  0.09537447523852488,
+                  0.08761203098084934,
+                  0.07635678451177097,
+                  0.06205740731022532
+                ],
+                [
+                  0.2940436912655087,
+                  0.282321188878663,
+                  0.2593433168017734,
+                  0.2260262835355285,
+                  0.18369821660075877
+                ],
+                [
+                  0.4770301578809764,
+                  0.45801261956791045,
+                  0.4207353772049377,
+                  0.36668480543201154,
+                  0.29801553942671755
+                ],
+                [
+                  0.6409989562906421,
+                  0.6154445505397709,
+                  0.5653540624368764,
+                  0.492724775753491,
+                  0.40045193490383424
+                ],
+                [
+                  0.7794130409735671,
+                  0.7483405456113003,
+                  0.6874337699091176,
+                  0.5991212810320355,
+                  0.48692350788419375
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14); gz = sin(gx[:, None]) * cos(gy[None, :]); RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5))",
+              "observed": [
+                [
+                  0.09933460135611598,
+                  0.09537447523852488,
+                  0.08761203098084934,
+                  0.07635678451177097,
+                  0.06205740731022532
+                ],
+                [
+                  0.2940436912655087,
+                  0.282321188878663,
+                  0.2593433168017734,
+                  0.2260262835355285,
+                  0.18369821660075877
+                ],
+                [
+                  0.4770301578809764,
+                  0.45801261956791045,
+                  0.4207353772049377,
+                  0.36668480543201154,
+                  0.29801553942671755
+                ],
+                [
+                  0.6409989562906421,
+                  0.6154445505397709,
+                  0.5653540624368764,
+                  0.492724775753491,
+                  0.40045193490383424
+                ],
+                [
+                  0.7794130409735671,
+                  0.7483405456113003,
+                  0.6874337699091176,
+                  0.5991212810320355,
+                  0.48692350788419375
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)",
+            "expected_output": "Strided-view fit equals contiguous-copy fit",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Garbage fit",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)",
+              "observed": [
+                -0.2546090626384301,
+                -0.9185570368904293,
+                0.6616024981743609,
+                -1.06352390056635,
+                0.20024734026465044,
+                -0.3306519765954346,
+                -1.0496471839971155,
+                0.8356105184468906,
+                -0.7168308206950549,
+                1.1379266979698994,
+                -0.5119251745429044,
+                -0.23630535420432225,
+                0.3812785692546266,
+                -1.1785003310008157,
+                0.49141756579590185,
+                -0.22402767871433857,
+                1.0400996780971732,
+                0.829115900628653,
+                0.48473356079847024,
+                0.4951727031725648,
+                -0.3288294137230099,
+                0.5372542360010417,
+                0.5295396966216074,
+                -1.0079318618110715,
+                -0.9299123594906379,
+                -1.1048764094251087,
+                0.4477480843889956,
+                1.0296414667979719,
+                1.0300180668695464,
+                -0.9393893239647635,
+                0.49822932201218373,
+                0.9239180925687557,
+                -0.21097492470307644,
+                -0.8644347234995795,
+                -0.4882890056421521,
+                -1.1499892636825644,
+                0.9782846640382303,
+                -0.5558711140807389,
+                -0.06828249081072758,
+                1.0786899808859791,
+                -0.06189821150832774,
+                -0.6584282134198736,
+                0.027401604197263268,
+                0.43195826417000516,
+                -0.5444810672211831,
+                0.556358633752592,
+                0.5340140569246266,
+                -0.4573544782018355,
+                0.6329860879408212,
+                -1.121955928413542,
+                "\u2026 150 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)",
+              "observed": [
+                -0.2546090626384301,
+                -0.9185570368904293,
+                0.6616024981743609,
+                -1.06352390056635,
+                0.20024734026465044,
+                -0.3306519765954346,
+                -1.0496471839971155,
+                0.8356105184468906,
+                -0.7168308206950549,
+                1.1379266979698994,
+                -0.5119251745429044,
+                -0.23630535420432225,
+                0.3812785692546266,
+                -1.1785003310008157,
+                0.49141756579590185,
+                -0.22402767871433857,
+                1.0400996780971732,
+                0.829115900628653,
+                0.48473356079847024,
+                0.4951727031725648,
+                -0.3288294137230099,
+                0.5372542360010417,
+                0.5295396966216074,
+                -1.0079318618110715,
+                -0.9299123594906379,
+                -1.1048764094251087,
+                0.4477480843889956,
+                1.0296414667979719,
+                1.0300180668695464,
+                -0.9393893239647635,
+                0.49822932201218373,
+                0.9239180925687557,
+                -0.21097492470307644,
+                -0.8644347234995795,
+                -0.4882890056421521,
+                -1.1499892636825644,
+                0.9782846640382303,
+                -0.5558711140807389,
+                -0.06828249081072758,
+                1.0786899808859791,
+                -0.06189821150832774,
+                -0.6584282134198736,
+                0.027401604197263268,
+                0.43195826417000516,
+                -0.5444810672211831,
+                0.556358633752592,
+                0.5340140569246266,
+                -0.4573544782018355,
+                0.6329860879408212,
+                -1.121955928413542,
+                "\u2026 150 more"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "theta, phi, r = _sphere_scattered_data(); tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]; LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)",
+            "expected_output": "Strided-view fit equals contiguous-copy fit",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Garbage fit",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "theta, phi, r = _sphere_scattered_data(); tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]; LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)",
+              "observed": "__error__: NameError: name 'LSQSphereBivariateSpline' is not defined",
+              "evaluation_error": "NameError: name 'LSQSphereBivariateSpline' is not defined",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "theta, phi, r = _sphere_scattered_data(); tt = np.linspace(0, pi, 5)[1:-1]; tp = np.linspace(0, 2*pi, 5)[1:-1]; LSQSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), _strided(tt), _strided(tp)).ev(theta, phi)",
+              "observed": "__error__: NameError: name 'LSQSphereBivariateSpline' is not defined",
+              "evaluation_error": "NameError: name 'LSQSphereBivariateSpline' is not defined",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "u = np.linspace(0, pi, 14)[1:-1]; v = np.linspace(0, 2*pi, 14, endpoint=False); rg = sin(u[:, None]) * cos(v[None, :]); RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)",
+            "expected_output": "Strided-view result equals contiguous-copy result",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Garbage result",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "u = np.linspace(0, pi, 14)[1:-1]; v = np.linspace(0, 2*pi, 14, endpoint=False); rg = sin(u[:, None]) * cos(v[None, :]); RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)",
+              "observed": "__error__: NameError: name 'RectSphereBivariateSpline' is not defined",
+              "evaluation_error": "NameError: name 'RectSphereBivariateSpline' is not defined",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "u = np.linspace(0, pi, 14)[1:-1]; v = np.linspace(0, 2*pi, 14, endpoint=False); rg = sin(u[:, None]) * cos(v[None, :]); RectSphereBivariateSpline(_strided(u), _strided(v), _strided(rg))(u, v)",
+              "observed": "__error__: NameError: name 'RectSphereBivariateSpline' is not defined",
+              "evaluation_error": "NameError: name 'RectSphereBivariateSpline' is not defined",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 5,
+          "n_failed": 3,
+          "ran_test": true,
+          "failed_setup_or_build": [
+            "cd /workspace/buggy && python -m pip install . -vv -Csetup-args=--werror"
+          ]
+        },
+        "fixed": {
+          "n_commands": 3,
+          "n_failed": 1,
+          "ran_test": true,
+          "failed_setup_or_build": [
+            "cd /workspace/fixed && python -m pip install . -vv -Csetup-args=--werror"
+          ]
+        }
+      },
+      "success_criterion": "The test pytest scipy/interpolate/tests/test_fitpack2.py::test_bivariate_spline_noncontiguous_input -v FAILS at the buggy commit with assertion errors (xp_assert_close violations showing strided results differ from contiguous results), and the full parametrized test suite covering SmoothBivariateSpline, LSQBivariateSpline, RectBivariateSpline, SmoothSphereBivariateSpline, LSQSphereBivariateSpline, and RectSphereBivariateSpline all exhibit the same failure pattern."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "array-api-strict>=2.3.1",
+          "cython>=3.2.0",
+          "hypothesis>=6.30",
+          "meson-python>=0.15.0",
+          "ninja>=1.8.2",
+          "numpy>=2.0.0",
+          "pybind11>=2.4.3",
+          "pytest>=8.0.0",
+          "pythran>=0.18.1",
+          "setuptools<67.3"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-06-30T12:18:32+03:00",
+      "fixed_commit_date": "2026-06-30T11:30:24+02:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev",
+          "ccache",
+          "libgfortran-13-dev"
+        ]
+      },
+      "era": "2026-06-30T11:30:24+02:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.12/site-packages/scipy/__init__.py",
+          "build_requires": [
+            "meson-python>=0.15.0",
+            "Cython>=3.2.0",
+            "pybind11>=2.13.2",
+            "pythran>=0.18.1"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.5.0",
+            "pandas": "3.0.4",
+            "matplotlib": "3.11.0",
+            "pyparsing": "3.3.2"
+          },
+          "test_extras": [],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.0 in ./.venv/lib/python3.12/site-packages (from scipy==1.19.0.dev0) (2.5.0)\nBuilding wheels for collected packages: scipy\n  Building wheel for scipy (pyproject.toml): started\n  Building wheel for scipy (pyproject.toml): finished with status 'done'\n  Created wheel for scipy: filename=scipy-1.19.0.dev0-cp312-cp312-linux_x86_64.whl size=24872018 sha256=ef9308169ae74b69f15f22d5448837efffeca545fb5b8b86d3ae64fc2e806925\n  Stored in directory: /tmp/pip-ephem-wheel-cache-3ht1s85n/wheels/7a/8e/f6/6361a05021faea16c41b60355501cb8542c208befbd0798736\nSuccessfully built scipy\nInstalling collected packages: scipy\nSuccessfully installed scipy-1.19.0.dev0\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.12/site-packages/scipy/__init__.py",
+          "build_requires": [
+            "meson-python>=0.15.0",
+            "Cython>=3.2.0",
+            "pybind11>=2.13.2",
+            "pythran>=0.18.1"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.5.0",
+            "pandas": "3.0.4",
+            "matplotlib": "3.11.0",
+            "pyparsing": "3.3.2"
+          },
+          "test_extras": [],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=2.0.0 in ./.venv/lib/python3.12/site-packages (from scipy==1.19.0.dev0) (2.5.0)\nBuilding wheels for collected packages: scipy\n  Building wheel for scipy (pyproject.toml): started\n  Building wheel for scipy (pyproject.toml): finished with status 'done'\n  Created wheel for scipy: filename=scipy-1.19.0.dev0-cp312-cp312-linux_x86_64.whl size=24872089 sha256=3c523272432b6e1ab3924cfa6a456f9521a49effc9eaf1b6cad838072d337b6d\n  Stored in directory: /tmp/pip-ephem-wheel-cache-s8edkbg6/wheels/71/38/20/6358bc83d061b0e5b7f2ca1588a2c1d520ab055cf84e576666\nSuccessfully built scipy\nInstalling collected packages: scipy\nSuccessfully installed scipy-1.19.0.dev0\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 8,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the scipy interpolate FITPACK bivariate spline bug by showing the noncontiguous/strided-input failure on the buggy revision and its resolution on the fixed revision.",
+          "milestones": [
+            "buggy_setup_and_observable_failure [buggy] \u2014 Build/verify the buggy revision environment and confirm the targeted bivariate spline noncontiguous-input test fails there. (2 steps, verify: steps_succeeded, test_ran, test_fails)",
+            "buggy_value_probe_via_reported_examples [buggy] \u2014 Demonstrate the reported incorrect numeric values for the strided-view vs contiguous-copy inputs on the buggy revision using the test\u2019s own embedded example expressions. (1 steps, verify: steps_succeeded, examples_reproduced, probe_ran)",
+            "fixed_setup_and_passes_test [fixed] \u2014 Build/verify the fixed revision environment and confirm the targeted bivariate spline noncontiguous-input test passes there. (2 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "fixed_value_probe_matches_expected_examples [fixed] \u2014 Check the reported example expressions produce the expected (contiguous-copy-matching) values on the fixed revision. (1 steps, verify: steps_succeeded, examples_reproduced, probe_clean)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -m pip install . -vv -Csetup-args=--werror",
+        "purpose": "setup",
+        "exit_code": 1,
+        "runtime_s": 170.34
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs scipy.interpolate.tests.test_fitpack2 -k test_bivariate_spline_noncontiguous_input --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning -v",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 2.49
+      },
+      {
+        "verification": {
+          "milestone": "buggy_setup_and_observable_failure",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && python -m pip install . -vv -Csetup-args=--werror` exited 1: data-generation-failed\n\n\u00d7 Encountered error while generating package metadata.\n\u2570\u2500> See above for output.\n\nnote: This is an issue with the package mentioned above, not pip.\nhint: See above for details.; `cd /workspace/buggy && python -I -m pytest --pyargs scipy.interpolate.tests.test` exited 1: 2/site-packages/scipy/interpolate/tests/test_fitpack2.py::test_bivariate_spline_noncontiguous_input[LSQBivariateSpline]\n================= 2 failed, 4 passed, 108 deselected in 1.84s =================="
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce and quantify the FITPACK noncontiguous-input bivariate spline correctness bug on the buggy revision and confirm the fix on the fixed revision using direct numerical probes based on the report\u2019s example expressions (since test-based install failed on buggy).",
+          "milestones": [
+            "fixed_setup_and_probe_via_reported_examples [fixed] \u2014 Build/verify the fixed revision environment and run numerical evaluation of the report\u2019s example expressions on both fixed and buggy revisions to observe the defect without relying on the failing buggy test/install path. (3 steps, verify: steps_succeeded, probe_ran)",
+            "buggy_vs_fixed_revision_differ_on_probe_signature [buggy] \u2014 Confirm that the strided-input probe signature differs between buggy and fixed revisions, establishing an observable correctness defect on buggy that is fixed on fixed. (1 steps, verify: revisions_differ, probe_ran)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -m pip install . -vv -Csetup-args=--werror",
+        "purpose": "setup",
+        "exit_code": 1,
+        "runtime_s": 148.08
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "fitpack2_noncontiguous_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[fixed] run_numerical_probe(fitpack2_noncontiguous_examples) \u2014 Run the report-derived numerical probe for strided-view vs contiguous-copy matching expressions on the fixed revision to establish correct behavior post-fix."
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "fitpack2_noncontiguous_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(fitpack2_noncontiguous_examples) \u2014 Re-run the same numerical probe on the buggy revision to capture the defect signature for strided inputs; install may fail, but the probe will still run if the buggy revision is importable from its built environment."
+      },
+      {
+        "verification": {
+          "milestone": "fixed_setup_and_probe_via_reported_examples",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/fixed && python -m pip install . -vv -Csetup-args=--werror` exited 1: data-generation-failed\n\n\u00d7 Encountered error while generating package metadata.\n\u2570\u2500> See above for output.\n\nnote: This is an issue with the package mentioned above, not pip.\nhint: See above for details.; [fixed] run_numerical_probe(fitpack2_noncontiguous_examples) \u2014 Run the report-derived numerical probe for strided-view vs contiguous-copy matching expressions on the fixed revision to establish correct behavior post-fix. did not execute; [buggy] run_numerical_probe(fitpack2_noncontiguous_examples) \u2014 Re-run the same numerical probe on the buggy revision to capture the defect signature for strided inputs; install may fail, but the probe will still run if the buggy revision is importable from its built environment. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Rebuild/verify both revisions via the already-prepared venvs and run a direct strided-vs-contiguous numerical reproducer (from the report\u2019s expressions) to show buggy behavior on the buggy revision and correctness on the fixed revision, without relying on the failing buggy test install path.",
+          "milestones": [
+            "fixed_env_ready_and_probe_strided_vs_contig [fixed] \u2014 On the fixed revision, import SciPy from its built venv and run numerical evaluations for the report\u2019s strided-view vs contiguous-copy expressions, recording results for later comparison with the buggy revision. (2 steps, verify: steps_succeeded, probe_ran)",
+            "buggy_vs_fixed_probe_signature_reliably_differs [buggy] \u2014 Run the same strided-vs-contiguous numerical probe on the buggy revision and verify its signature (e.g., large max_abs_diff or NaN/Inf indicators) differs from the fixed revision. (2 steps, verify: steps_succeeded, probe_ran)",
+            "revisions_differ_on_strided_signature [buggy] \u2014 Establish that the buggy and fixed revisions differ on the recorded strided-input signature produced by the probe (max_abs_diff and/or nan_or_inf), demonstrating the correctness issue is fixed. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -c \"import scipy, numpy as np; from scipy.interpolate import SmoothBivariateSpline, LSQBivariateSpline, RectBivariateSpline, SmoothSphereBivariateSpline, LSQSphereBivariateSpline, RectSphereBivariateSpline; print('scipy', scipy.__version__)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.8
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "fitpack2_noncontiguous_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: ValueError: x dimension of z must have same number of elements as x"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "fixed_env_ready_and_probe_strided_vs_contig",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import scipy; from scipy.interpolate import SmoothBivariateSpline; print('scipy', scipy.__version__)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.79
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "fitpack2_noncontiguous_examples",
+        "language": "python",
+        "status": "exception",
+        "pathology": true,
+        "reasons": [
+          "probe raised: ValueError: x dimension of z must have same number of elements as x",
+          "produced NaN"
+        ],
+        "expected": null,
+        "observed": [
+          "nan",
+          1.0,
+          "nan",
+          1.0
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_vs_fixed_probe_signature_reliably_differs",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "echo 'using recorded probe outputs for comparison'",
+        "purpose": "debug",
+        "exit_code": 0,
+        "runtime_s": 0.13
+      },
+      {
+        "verification": {
+          "milestone": "revisions_differ_on_strided_signature",
+          "verified": false,
+          "results": [
+            {
+              "check": "revisions_differ",
+              "passed": false,
+              "detail": "no difference established (transition fail->missing, numeric persistent)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Verify strided-input bivariate spline fitting produces different numerical outputs on buggy vs fixed revisions, demonstrating the correctness fix without relying on the failing buggy test path.",
+          "milestones": [
+            "revisions_differ_on_strided_signature [buggy] \u2014 Show that the buggy and fixed revisions differ on strided-input vs contiguous-copy spline evaluations (e.g., NaN presence and/or max_abs_diff), and that fixed matches contiguous behavior. (2 steps, verify: steps_succeeded, examples_reproduced, revisions_differ)",
+            "test_passes_fixed_and_fails_on_buggy_probe [buggy] \u2014 Confirm that at least one of the report examples is cleanly consistent on fixed (finite, matching expected) but exhibits the reported buggy behavior on buggy (NaN/Inf or large mismatch). (2 steps, verify: steps_succeeded, examples_reproduced, probe_ran, probe_clean, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": true,
+        "reasons": [
+          "produced NaN"
+        ],
+        "expected": null,
+        "observed": [
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan",
+          "nan"
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          -1.1024686808511726,
+          9.678866802323718,
+          17.018297356367196,
+          18.423546870649233,
+          8.04303231349937,
+          21.94416383979874,
+          -1.2159298487687742,
+          8.573809805525517,
+          -3.0785496417595275,
+          19.792584942040126
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "revisions_differ_on_strided_signature",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "examples_reproduced",
+              "passed": false,
+              "detail": "1/6 mined example(s) reproduced (verdict incomplete, 0 still wrong on fixed); 4 never evaluated \u2014 the preamble does not bind everything they need: x, y, z = _scattered_data() (400 random points from U(-5, 5) with z = x\u00b2 + y); SmoothBivariateSpline(_strided(x), _strided(y), _strided(z), kx=2, ky=2).ev(x, y); gx, gy = np.linspace(0, 1, 12), np.linspace(0, 1, 14); gz = sin(gx[:, None]) * cos(gy[None, :]); RectBivariateSpline(_strided(gx), _strided(gy), _strided(gz))(np.linspace(0.1, 0.9, 5), np.linspace(0.1, 0.9, 5)); theta, phi, r = _sphere_scattered_data() (200 random spherical coords); SmoothSphereBivariateSpline(_strided(theta), _strided(phi), _strided(r), s=2.0).ev(theta, phi)"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": true,
+              "detail": "the numerical probe shows the defect only on buggy"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs scipy.interpolate.tests.test_fitpack2 -k test_bivariate_spline_noncontiguous_input -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 1.77
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs scipy.interpolate.tests.test_fitpack2 -k test_bivariate_spline_noncontiguous_input -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.32
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_bivariate_spline_noncontiguous_input",
+          "command": "python -I -m pytest --pyargs scipy.interpolate.tests.test_fitpack2 -k test_bivariate_spline_noncontiguous_input -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "scipy",
+          "statuses": {
+            "buggy": "fail",
+            "fixed": "pass"
+          },
+          "exit_codes": {
+            "buggy": 1,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_bivariate_spline_noncontiguous_input",
+              "command": "python -I -m pytest --pyargs scipy.interpolate.tests.test_fitpack2 -k test_bivariate_spline_noncontiguous_input -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "fail",
+              "fixed": "pass"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 8)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "the code is not valid Python: invalid syntax (line 8)."
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          -1.1024686808511726,
+          9.678866802323718,
+          17.018297356367196,
+          18.423546870649233,
+          8.04303231349937,
+          21.94416383979874,
+          -1.2159298487687742,
+          8.573809805525517,
+          -3.0785496417595275,
+          19.792584942040126
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          -1.1024686808511726,
+          9.678866802323718,
+          17.018297356367196,
+          18.423546870649233,
+          8.04303231349937,
+          21.94416383979874,
+          -1.2159298487687742,
+          8.573809805525517,
+          -3.0785496417595275,
+          19.792584942040126
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.09933460135611598,
+          0.09537447523852488,
+          0.08761203098084934,
+          0.07635678451177097,
+          0.06205740731022532,
+          0.2940436912655087,
+          0.282321188878663,
+          0.2593433168017734,
+          0.2260262835355285,
+          0.18369821660075877
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.09933460135611598,
+          0.09537447523852488,
+          0.08761203098084934,
+          0.07635678451177097,
+          0.06205740731022532,
+          0.2940436912655087,
+          0.282321188878663,
+          0.2593433168017734,
+          0.2260262835355285,
+          0.18369821660075877
+        ]
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 6,
+            "recorded": 6,
+            "error": null,
+            "could_not_evaluate": 5
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 6,
+            "recorded": 6,
+            "error": null,
+            "could_not_evaluate": 5
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          -1.1024686808511823,
+          9.678866802323709,
+          17.01829735636722,
+          18.43632100860629,
+          8.043032313499381,
+          21.94416383979872,
+          -1.2159298487687875,
+          8.573809805525515,
+          -3.0785496417595426,
+          19.792584942040122
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          -1.1024686808511823,
+          9.678866802323709,
+          17.01829735636722,
+          18.43632100860629,
+          8.043032313499381,
+          21.94416383979872,
+          -1.2159298487687875,
+          8.573809805525515,
+          -3.0785496417595426,
+          19.792584942040122
+        ]
+      },
+      {
+        "described_examples": {
+          "n_described": 2,
+          "buggy": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "persistent",
+        "examples_verdict": "not_reproduced",
+        "examples": "0/3"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/3 reported example(s))"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 8,
+      "input_tokens": 19818,
+      "output_tokens": 11273,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.018055
+    }
+  }
+]

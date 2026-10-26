@@ -1,0 +1,1464 @@
+[
+  {
+    "slug": "jax_40415",
+    "bug_type": "accuracy",
+    "image": "python:3.12-slim",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 2/2 reported example(s) reproduce, but 1 of 3 reported example(s) could not be evaluated on either revision, so those values remain unchecked",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "diverged",
+    "examples_verdict": "incomplete",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "tanh_jvp_symmetry": "import jax\nimport jax.lax as lax\nimport jax.numpy as jnp\n\n# Test array from the strategy: x values where symmetry should hold\nx = jnp.linspace(0.1, 8.9, 20, dtype=jnp.float32)\ng = jnp.full_like(x, 1.3)\n\n# Compute JVP at x and -x\n_, jvp_pos = jax.jvp(lax.tanh, (x,), (g,))\n_, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,))\n\n# Record the JVP outputs\nprobe('jvp_pos_first_5', jvp_pos[:5])\nprobe('jvp_neg_first_5', jvp_neg[:5])\nprobe('jvp_pos_last_5', jvp_pos[-5:])\nprobe('jvp_neg_last_5', jvp_neg[-5:])\n\n# Record whether they differ (should be True for buggy, False for fixed)\nprobe('jvp_all_equal', jnp.allclose(jvp_pos, jvp_neg, rtol=1e-6, atol=0))\n\n# Find indices where they differ most\nmismatch = jnp.abs(jvp_pos - jvp_neg)\nmax_mismatch_idx = jnp.argmax(mismatch)\nprobe('max_mismatch_index', max_mismatch_idx)\nprobe('max_mismatch_value', mismatch[max_mismatch_idx])",
+        "tanh_jvp_symmetry_values": "import jax\nimport jax.numpy as jnp\nfrom jax import lax\n\n# Set up test inputs matching the test's parameters\nx = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)\ng = jnp.full_like(x, 1.3)  # tangent vector\n\n# Compute JVP on positive x\n_, jvp_pos = jax.jvp(lax.tanh, (x,), (g,))\n\n# Compute JVP on negative x\n_, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,))\n\n# Record the outputs and their difference to show the defect\nfor i in range(min(5, len(x))):\n    probe(f'jvp_pos[{i}]', float(jvp_pos[i]))\n    probe(f'jvp_neg[{i}]', float(jvp_neg[i]))\n    probe(f'diff[{i}]', float(jvp_pos[i] - jvp_neg[i]))\n\n# Also measure the gradient symmetry\ngrad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z)))\ngrad_pos = grad_fn(x)\ngrad_neg = grad_fn(-x)\n\nfor i in range(min(5, len(x))):\n    probe(f'grad_pos[{i}]', float(grad_pos[i]))\n    probe(f'grad_neg[{i}]', float(grad_neg[i]))\n    probe(f'grad_diff[{i}]', float(grad_pos[i] - grad_neg[i]))",
+        "reported_examples": "import jax\nimport jax.lax as lax\nimport jax.numpy as jnp\n\n# Example 1: JVP symmetry test\ntry:\n    x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)\n    g = jnp.full_like(x, 1.3)\n    _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,))\n    _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,))\n    \n    # Check if arrays are equal\n    are_equal = jnp.allclose(jvp_pos, jvp_neg, atol=0, rtol=0)\n    max_diff = jnp.max(jnp.abs(jvp_pos - jvp_neg))\n    \n    probe(\"x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)\", \n          (\"arrays_equal\", bool(are_equal), \"max_diff\", float(max_diff)))\nexcept Exception as e:\n    probe(\"x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)\", \n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 2: Grad symmetry test\ntry:\n    x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)\n    grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z)))\n    grad_pos = grad_fn(x)\n    grad_neg = grad_fn(-x)\n    \n    # Check if gradients are equal\n    are_equal = jnp.allclose(grad_pos, grad_neg, atol=0, rtol=0)\n    max_diff = jnp.max(jnp.abs(grad_pos - grad_neg))\n    \n    probe(\"grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)\", \n          (\"arrays_equal\", bool(are_equal), \"max_diff\", float(max_diff)))\nexcept Exception as e:\n    probe(\"grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)\", \n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 3: XLA metadata test - check the HLO operation\ntry:\n    from jax import jit\n    import jax.experimental.export as export\n    \n    # Compile tanh to HLO and extract the operation name\n    tanh_jit = jit(jnp.tanh)\n    x_test = jnp.array(0.5, dtype=jnp.float32)\n    \n    # Get the lowered HLO\n    try:\n        lowered = tanh_jit.lower(x_test)\n        hlo_str = str(lowered.compiler_ir())\n        \n        # Look for the operation type in HLO - check for 'multiply' or 'add'\n        has_multiply = 'multiply' in hlo_str.lower()\n        has_add = 'add' in hlo_str.lower()\n        \n        probe(\"xla_metadata_test.py parameterized case (\\\"tanh(x)\\\", jnp.tanh, \\\"multiply\\\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.\",\n              (\"hlo_has_multiply\", bool(has_multiply), \"hlo_has_add\", bool(has_add), \"hlo_snippet\", hlo_str[:500] if len(hlo_str) > 500 else hlo_str))\n    except Exception as inner_e:\n        probe(\"xla_metadata_test.py parameterized case (\\\"tanh(x)\\\", jnp.tanh, \\\"multiply\\\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.\",\n              \"__error__: \" + type(inner_e).__name__ + \": \" + str(inner_e))\nexcept Exception as e:\n    probe(\"xla_metadata_test.py parameterized case (\\\"tanh(x)\\\", jnp.tanh, \\\"multiply\\\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.\",\n          \"__error__: \" + type(e).__name__ + \": \" + str(e))",
+        "described_examples": "import jax\nimport jax.numpy as jnp\nfrom jax import jit\n\ntry:\n    # Create the jitted tanh function\n    jitted_tanh = jit(jnp.tanh)\n    \n    # Call it with a test input to generate HLO\n    x = jnp.array(1.0)\n    result = jitted_tanh(x)\n    \n    # Get the HLO text to find op names\n    lowered = jitted_tanh.lower(x)\n    compiled = lowered.compile()\n    hlo_text = compiled.as_compiled_ir()\n    \n    # Check if \"multiply\" appears in the HLO op names\n    matched = \"multiply\" in hlo_text\n    \n    probe(\"xla_metadata_test.py parameterized case (\\\"tanh(x)\\\", jnp.tanh, \\\"multiply\\\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.\", matched)\nexcept Exception as e:\n    probe_exception(\"xla_metadata_test.py parameterized case (\\\"tanh(x)\\\", jnp.tanh, \\\"multiply\\\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.\", e)"
+      },
+      "fixed": {
+        "tanh_jvp_symmetry_values": "import jax\nimport jax.numpy as jnp\nfrom jax import lax\n\n# Set up test inputs matching the test's parameters\nx = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)\ng = jnp.full_like(x, 1.3)  # tangent vector\n\n# Compute JVP on positive x\n_, jvp_pos = jax.jvp(lax.tanh, (x,), (g,))\n\n# Compute JVP on negative x\n_, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,))\n\n# Record the outputs and their difference to show they match\nfor i in range(min(5, len(x))):\n    probe(f'jvp_pos[{i}]', float(jvp_pos[i]))\n    probe(f'jvp_neg[{i}]', float(jvp_neg[i]))\n    probe(f'diff[{i}]', float(jvp_pos[i] - jvp_neg[i]))\n\n# Also measure the gradient symmetry\ngrad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z)))\ngrad_pos = grad_fn(x)\ngrad_neg = grad_fn(-x)\n\nfor i in range(min(5, len(x))):\n    probe(f'grad_pos[{i}]', float(grad_pos[i]))\n    probe(f'grad_neg[{i}]', float(grad_neg[i]))\n    probe(f'grad_diff[{i}]', float(grad_pos[i] - grad_neg[i]))",
+        "reported_examples": "import jax\nimport jax.lax as lax\nimport jax.numpy as jnp\n\n# Example 1: JVP symmetry test\ntry:\n    x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)\n    g = jnp.full_like(x, 1.3)\n    _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,))\n    _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,))\n    \n    # Check if arrays are equal\n    are_equal = jnp.allclose(jvp_pos, jvp_neg, atol=0, rtol=0)\n    max_diff = jnp.max(jnp.abs(jvp_pos - jvp_neg))\n    \n    probe(\"x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)\", \n          (\"arrays_equal\", bool(are_equal), \"max_diff\", float(max_diff)))\nexcept Exception as e:\n    probe(\"x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)\", \n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 2: Grad symmetry test\ntry:\n    x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)\n    grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z)))\n    grad_pos = grad_fn(x)\n    grad_neg = grad_fn(-x)\n    \n    # Check if gradients are equal\n    are_equal = jnp.allclose(grad_pos, grad_neg, atol=0, rtol=0)\n    max_diff = jnp.max(jnp.abs(grad_pos - grad_neg))\n    \n    probe(\"grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)\", \n          (\"arrays_equal\", bool(are_equal), \"max_diff\", float(max_diff)))\nexcept Exception as e:\n    probe(\"grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)\", \n          \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n# Example 3: XLA metadata test - check the HLO operation\ntry:\n    from jax import jit\n    import jax.experimental.export as export\n    \n    # Compile tanh to HLO and extract the operation name\n    tanh_jit = jit(jnp.tanh)\n    x_test = jnp.array(0.5, dtype=jnp.float32)\n    \n    # Get the lowered HLO\n    try:\n        lowered = tanh_jit.lower(x_test)\n        hlo_str = str(lowered.compiler_ir())\n        \n        # Look for the operation type in HLO - check for 'multiply' or 'add'\n        has_multiply = 'multiply' in hlo_str.lower()\n        has_add = 'add' in hlo_str.lower()\n        \n        probe(\"xla_metadata_test.py parameterized case (\\\"tanh(x)\\\", jnp.tanh, \\\"multiply\\\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.\",\n              (\"hlo_has_multiply\", bool(has_multiply), \"hlo_has_add\", bool(has_add), \"hlo_snippet\", hlo_str[:500] if len(hlo_str) > 500 else hlo_str))\n    except Exception as inner_e:\n        probe(\"xla_metadata_test.py parameterized case (\\\"tanh(x)\\\", jnp.tanh, \\\"multiply\\\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.\",\n              \"__error__: \" + type(inner_e).__name__ + \": \" + str(inner_e))\nexcept Exception as e:\n    probe(\"xla_metadata_test.py parameterized case (\\\"tanh(x)\\\", jnp.tanh, \\\"multiply\\\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.\",\n          \"__error__: \" + type(e).__name__ + \": \" + str(e))",
+        "described_examples": "import jax\nimport jax.numpy as jnp\nfrom jax import jit\n\ntry:\n    # Create the jitted tanh function\n    jitted_tanh = jit(jnp.tanh)\n    \n    # Call it with a test input to generate HLO\n    x = jnp.array(1.0)\n    result = jitted_tanh(x)\n    \n    # Get the HLO text to find op names\n    lowered = jitted_tanh.lower(x)\n    compiled = lowered.compile()\n    hlo_text = compiled.as_compiled_ir()\n    \n    # Check if \"multiply\" appears in the HLO op names\n    matched = \"multiply\" in hlo_text\n    \n    probe(\"xla_metadata_test.py parameterized case (\\\"tanh(x)\\\", jnp.tanh, \\\"multiply\\\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.\", matched)\nexcept Exception as e:\n    probe_exception(\"xla_metadata_test.py parameterized case (\\\"tanh(x)\\\", jnp.tanh, \\\"multiply\\\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.\", e)"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 2/2 reported example(s) reproduce, but 1 of 3 reported example(s) could not be evaluated on either revision, so those values remain unchecked",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "diverged",
+      "examples_verdict": "incomplete",
+      "success_criterion": "At buggy commit cc95c6c8 with the PR's tests added (and jax/_src/lax/lax.py untouched), python -m pytest tests/lax_test.py -k testTanhGradSymmetry FAILS with an assertArraysEqual AssertionError on the jvp and/or grad comparison; the same test is expected to PASS once PR #40415's lax.py change is applied. Secondary signal: the updated tanh(x)=='multiply' xla_metadata_test case fails at the buggy commit.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 1,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 1,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.": {
+                "raised": "AttributeError",
+                "message": "'Compiled' object has no attribute 'as_compiled_ir'",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              }
+            },
+            "fixed_values": {
+              "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.": {
+                "raised": "AttributeError",
+                "message": "'Compiled' object has no attribute 'as_compiled_ir'",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              }
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)": [
+                "arrays_equal",
+                false,
+                "max_diff",
+                1.4901161193847656e-07
+              ],
+              "grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)": [
+                "arrays_equal",
+                false,
+                "max_diff",
+                2.384185791015625e-07
+              ],
+              "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.": "__error__: ModuleNotFoundError: No module named 'jax.experimental.export'"
+            },
+            "fixed_values": {
+              "x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)": [
+                "arrays_equal",
+                true,
+                "max_diff",
+                0.0
+              ],
+              "grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)": [
+                "arrays_equal",
+                true,
+                "max_diff",
+                0.0
+              ],
+              "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.": "__error__: ModuleNotFoundError: No module named 'jax.experimental.export'"
+            }
+          },
+          {
+            "label": "tanh_jvp_symmetry",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "jvp_pos_first_5": [
+                1.2870861291885376,
+                0.961449921131134,
+                0.5243643522262573,
+                0.23943322896957397,
+                0.10061272233724594
+              ],
+              "jvp_neg_first_5": [
+                1.2870862483978271,
+                0.961449921131134,
+                0.5243644714355469,
+                0.23943334817886353,
+                0.1006128191947937
+              ],
+              "jvp_pos_last_5": [
+                3.874298727168934e-06,
+                1.704692181192513e-06,
+                6.198881692398572e-07,
+                1.5497207073167374e-07,
+                1.5497207073167374e-07
+              ],
+              "jvp_neg_last_5": [
+                3.8146945371408947e-06,
+                1.6689294852767489e-06,
+                7.152556236178498e-07,
+                2.384185791015625e-07,
+                2.384185791015625e-07
+              ],
+              "jvp_all_equal": false,
+              "max_mismatch_index": 0,
+              "max_mismatch_value": 1.1920928955078125e-07
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "tanh_jvp_symmetry_values",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "jvp_pos[0]": 1.2870861291885376,
+              "jvp_neg[0]": 1.2870862483978271,
+              "diff[0]": -1.1920928955078125e-07,
+              "jvp_pos[1]": 1.254698634147644,
+              "jvp_neg[1]": 1.2546985149383545,
+              "diff[1]": 1.1920928955078125e-07,
+              "jvp_pos[2]": 1.204634428024292,
+              "jvp_neg[2]": 1.2046343088150024,
+              "diff[2]": 1.1920928955078125e-07,
+              "jvp_pos[3]": 1.1397724151611328,
+              "jvp_neg[3]": 1.1397722959518433,
+              "diff[3]": 1.1920928955078125e-07,
+              "jvp_pos[4]": 1.0635770559310913,
+              "jvp_neg[4]": 1.0635770559310913,
+              "diff[4]": 0.0,
+              "grad_pos[0]": 1.2870861291885376,
+              "grad_neg[0]": 1.2870862483978271,
+              "grad_diff[0]": -1.1920928955078125e-07,
+              "grad_pos[1]": 1.2546987533569336,
+              "grad_neg[1]": 1.2546985149383545,
+              "grad_diff[1]": 2.384185791015625e-07,
+              "grad_pos[2]": 1.2046343088150024,
+              "grad_neg[2]": 1.2046343088150024,
+              "grad_diff[2]": 0.0,
+              "grad_pos[3]": 1.1397724151611328,
+              "grad_neg[3]": 1.1397724151611328,
+              "grad_diff[3]": 0.0,
+              "grad_pos[4]": 1.0635770559310913,
+              "grad_neg[4]": 1.0635770559310913,
+              "grad_diff[4]": 0.0
+            },
+            "fixed_values": {
+              "jvp_pos[0]": 1.2870862483978271,
+              "jvp_neg[0]": 1.2870862483978271,
+              "diff[0]": 0.0,
+              "jvp_pos[1]": 1.254698634147644,
+              "jvp_neg[1]": 1.254698634147644,
+              "diff[1]": 0.0,
+              "jvp_pos[2]": 1.204634189605713,
+              "jvp_neg[2]": 1.204634189605713,
+              "diff[2]": 0.0,
+              "jvp_pos[3]": 1.1397722959518433,
+              "jvp_neg[3]": 1.1397722959518433,
+              "diff[3]": 0.0,
+              "jvp_pos[4]": 1.0635770559310913,
+              "jvp_neg[4]": 1.0635770559310913,
+              "diff[4]": 0.0,
+              "grad_pos[0]": 1.2870862483978271,
+              "grad_neg[0]": 1.2870862483978271,
+              "grad_diff[0]": 0.0,
+              "grad_pos[1]": 1.254698634147644,
+              "grad_neg[1]": 1.254698634147644,
+              "grad_diff[1]": 0.0,
+              "grad_pos[2]": 1.204634189605713,
+              "grad_neg[2]": 1.204634189605713,
+              "grad_diff[2]": 0.0,
+              "grad_pos[3]": 1.1397722959518433,
+              "grad_neg[3]": 1.1397722959518433,
+              "grad_diff[3]": 0.0,
+              "grad_pos[4]": 1.0635770559310913,
+              "grad_neg[4]": 1.0635770559310913,
+              "grad_diff[4]": 0.0
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)",
+            "expected_output": "jvp_pos == jvp_neg bit-for-bit (arrays equal under assertArraysEqual).",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "jvp_pos and jvp_neg differ in at least one element (old rule (g + g*ans)*(1-ans) rounds before forming (1+ans)*(1-ans)); assertArraysEqual raises AssertionError.",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)",
+              "observed": [
+                "arrays_equal",
+                false,
+                "max_diff",
+                1.4901161193847656e-07
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)",
+              "observed": [
+                "arrays_equal",
+                true,
+                "max_diff",
+                0.0
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)",
+            "expected_output": "grad_fn(x) == grad_fn(-x) bit-for-bit under assertArraysEqual.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "grad_fn(x) != grad_fn(-x) (same premature rounding in the default tanh JVP rule); assertArraysEqual raises AssertionError.",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)",
+              "observed": [
+                "arrays_equal",
+                false,
+                "max_diff",
+                2.384185791015625e-07
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)",
+              "observed": [
+                "arrays_equal",
+                true,
+                "max_diff",
+                0.0
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.",
+            "expected_output": "Recorded HLO op is 'multiply', matching the updated expectation (new rule mul(g, mul(add(_one(ans), ans), sub(_one(ans), ans)))).",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Recorded HLO op for tanh is 'add' (buggy rule mul(add(g, mul(g, ans)), sub(_one(x), ans))), so matching 'multiply' fails.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.",
+              "observed": "__error__: ModuleNotFoundError: No module named 'jax.experimental.export'",
+              "evaluation_error": "ModuleNotFoundError: No module named 'jax.experimental.export'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.",
+              "observed": "__error__: ModuleNotFoundError: No module named 'jax.experimental.export'",
+              "evaluation_error": "ModuleNotFoundError: No module named 'jax.experimental.export'",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 5,
+            "n_failed": 1,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 2,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-09-03T13:09:53-07:00",
+        "fixed_commit_date": "2026-09-03T13:24:51-07:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [],
+          "skipped": "the instance names no system packages"
+        },
+        "era": "2026-09-03T13:24:51-07:00",
+        "build": {
+          "skipped": "not a compiled Python instance"
+        },
+        "runtime": {
+          "era_pins": {
+            "numpy": "2.5.2",
+            "pandas": "3.0.5",
+            "matplotlib": "3.11.1",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.49.0"
+          },
+          "companion": {
+            "wheel": "jaxlib",
+            "declared": [
+              "0.11.1",
+              "0.11.1"
+            ],
+            "wanted": "0.11.1",
+            "installed": true
+          },
+          "dependencies_installed": {
+            "buggy": true,
+            "fixed": true
+          },
+          "pretend_version": false,
+          "test_extras": [],
+          "imports_from": {
+            "buggy": "/workspace/buggy/jax/__init__.py",
+            "fixed": "/workspace/fixed/jax/__init__.py"
+          },
+          "ok": true
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": [
+              "build/test-requirements.txt"
+            ],
+            "installed_whole": true,
+            "failed": []
+          },
+          "fixed": {
+            "files": [
+              "build/test-requirements.txt"
+            ],
+            "installed_whole": true,
+            "failed": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 1,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 1,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 4,
+        "verdict": "diverged",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.": {
+                "raised": "AttributeError",
+                "message": "'Compiled' object has no attribute 'as_compiled_ir'",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              }
+            },
+            "fixed_values": {
+              "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.": {
+                "raised": "AttributeError",
+                "message": "'Compiled' object has no attribute 'as_compiled_ir'",
+                "origin": "/tmp/_numagent_probe.py",
+                "in_repository": false
+              }
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)": [
+                "arrays_equal",
+                false,
+                "max_diff",
+                1.4901161193847656e-07
+              ],
+              "grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)": [
+                "arrays_equal",
+                false,
+                "max_diff",
+                2.384185791015625e-07
+              ],
+              "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.": "__error__: ModuleNotFoundError: No module named 'jax.experimental.export'"
+            },
+            "fixed_values": {
+              "x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)": [
+                "arrays_equal",
+                true,
+                "max_diff",
+                0.0
+              ],
+              "grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)": [
+                "arrays_equal",
+                true,
+                "max_diff",
+                0.0
+              ],
+              "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.": "__error__: ModuleNotFoundError: No module named 'jax.experimental.export'"
+            }
+          },
+          {
+            "label": "tanh_jvp_symmetry",
+            "outcome": "unpaired",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": null,
+            "buggy_status": "ok",
+            "fixed_status": null,
+            "values_differ": null,
+            "buggy_values": {
+              "jvp_pos_first_5": [
+                1.2870861291885376,
+                0.961449921131134,
+                0.5243643522262573,
+                0.23943322896957397,
+                0.10061272233724594
+              ],
+              "jvp_neg_first_5": [
+                1.2870862483978271,
+                0.961449921131134,
+                0.5243644714355469,
+                0.23943334817886353,
+                0.1006128191947937
+              ],
+              "jvp_pos_last_5": [
+                3.874298727168934e-06,
+                1.704692181192513e-06,
+                6.198881692398572e-07,
+                1.5497207073167374e-07,
+                1.5497207073167374e-07
+              ],
+              "jvp_neg_last_5": [
+                3.8146945371408947e-06,
+                1.6689294852767489e-06,
+                7.152556236178498e-07,
+                2.384185791015625e-07,
+                2.384185791015625e-07
+              ],
+              "jvp_all_equal": false,
+              "max_mismatch_index": 0,
+              "max_mismatch_value": 1.1920928955078125e-07
+            },
+            "fixed_values": null
+          },
+          {
+            "label": "tanh_jvp_symmetry_values",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "jvp_pos[0]": 1.2870861291885376,
+              "jvp_neg[0]": 1.2870862483978271,
+              "diff[0]": -1.1920928955078125e-07,
+              "jvp_pos[1]": 1.254698634147644,
+              "jvp_neg[1]": 1.2546985149383545,
+              "diff[1]": 1.1920928955078125e-07,
+              "jvp_pos[2]": 1.204634428024292,
+              "jvp_neg[2]": 1.2046343088150024,
+              "diff[2]": 1.1920928955078125e-07,
+              "jvp_pos[3]": 1.1397724151611328,
+              "jvp_neg[3]": 1.1397722959518433,
+              "diff[3]": 1.1920928955078125e-07,
+              "jvp_pos[4]": 1.0635770559310913,
+              "jvp_neg[4]": 1.0635770559310913,
+              "diff[4]": 0.0,
+              "grad_pos[0]": 1.2870861291885376,
+              "grad_neg[0]": 1.2870862483978271,
+              "grad_diff[0]": -1.1920928955078125e-07,
+              "grad_pos[1]": 1.2546987533569336,
+              "grad_neg[1]": 1.2546985149383545,
+              "grad_diff[1]": 2.384185791015625e-07,
+              "grad_pos[2]": 1.2046343088150024,
+              "grad_neg[2]": 1.2046343088150024,
+              "grad_diff[2]": 0.0,
+              "grad_pos[3]": 1.1397724151611328,
+              "grad_neg[3]": 1.1397724151611328,
+              "grad_diff[3]": 0.0,
+              "grad_pos[4]": 1.0635770559310913,
+              "grad_neg[4]": 1.0635770559310913,
+              "grad_diff[4]": 0.0
+            },
+            "fixed_values": {
+              "jvp_pos[0]": 1.2870862483978271,
+              "jvp_neg[0]": 1.2870862483978271,
+              "diff[0]": 0.0,
+              "jvp_pos[1]": 1.254698634147644,
+              "jvp_neg[1]": 1.254698634147644,
+              "diff[1]": 0.0,
+              "jvp_pos[2]": 1.204634189605713,
+              "jvp_neg[2]": 1.204634189605713,
+              "diff[2]": 0.0,
+              "jvp_pos[3]": 1.1397722959518433,
+              "jvp_neg[3]": 1.1397722959518433,
+              "diff[3]": 0.0,
+              "jvp_pos[4]": 1.0635770559310913,
+              "jvp_neg[4]": 1.0635770559310913,
+              "diff[4]": 0.0,
+              "grad_pos[0]": 1.2870862483978271,
+              "grad_neg[0]": 1.2870862483978271,
+              "grad_diff[0]": 0.0,
+              "grad_pos[1]": 1.254698634147644,
+              "grad_neg[1]": 1.254698634147644,
+              "grad_diff[1]": 0.0,
+              "grad_pos[2]": 1.204634189605713,
+              "grad_neg[2]": 1.204634189605713,
+              "grad_diff[2]": 0.0,
+              "grad_pos[3]": 1.1397722959518433,
+              "grad_neg[3]": 1.1397722959518433,
+              "grad_diff[3]": 0.0,
+              "grad_pos[4]": 1.0635770559310913,
+              "grad_neg[4]": 1.0635770559310913,
+              "grad_diff[4]": 0.0
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 3,
+        "n_judged": 2,
+        "n_reproduced": 2,
+        "evaluable": true,
+        "n_diverged": 2,
+        "n_unobserved": 1,
+        "n_contested": 0,
+        "unobserved": [
+          "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string."
+        ],
+        "verdict": "incomplete",
+        "examples": [
+          {
+            "input": "x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)",
+            "expected_output": "jvp_pos == jvp_neg bit-for-bit (arrays equal under assertArraysEqual).",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "jvp_pos and jvp_neg differ in at least one element (old rule (g + g*ans)*(1-ans) rounds before forming (1+ans)*(1-ans)); assertArraysEqual raises AssertionError.",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)",
+              "observed": [
+                "arrays_equal",
+                false,
+                "max_diff",
+                1.4901161193847656e-07
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); _, jvp_pos = jax.jvp(lax.tanh, (x,), (g,)); _, jvp_neg = jax.jvp(lax.tanh, (-x,), (g,)); self.assertArraysEqual(jvp_pos, jvp_neg)",
+              "observed": [
+                "arrays_equal",
+                true,
+                "max_diff",
+                0.0
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)",
+            "expected_output": "grad_fn(x) == grad_fn(-x) bit-for-bit under assertArraysEqual.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "grad_fn(x) != grad_fn(-x) (same premature rounding in the default tanh JVP rule); assertArraysEqual raises AssertionError.",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)",
+              "observed": [
+                "arrays_equal",
+                false,
+                "max_diff",
+                2.384185791015625e-07
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); self.assertArraysEqual(grad_fn(x), grad_fn(-x)) with x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32)",
+              "observed": [
+                "arrays_equal",
+                true,
+                "max_diff",
+                0.0
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.",
+            "expected_output": "Recorded HLO op is 'multiply', matching the updated expectation (new rule mul(g, mul(add(_one(ans), ans), sub(_one(ans), ans)))).",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Recorded HLO op for tanh is 'add' (buggy rule mul(add(g, mul(g, ans)), sub(_one(x), ans))), so matching 'multiply' fails.",
+            "outcome": "not_observed",
+            "revisions_differ": null,
+            "buggy": {
+              "record": "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.",
+              "observed": "__error__: ModuleNotFoundError: No module named 'jax.experimental.export'",
+              "evaluation_error": "ModuleNotFoundError: No module named 'jax.experimental.export'",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string.",
+              "observed": "__error__: ModuleNotFoundError: No module named 'jax.experimental.export'",
+              "evaluation_error": "ModuleNotFoundError: No module named 'jax.experimental.export'",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 5,
+          "n_failed": 1,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 2,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "At buggy commit cc95c6c8 with the PR's tests added (and jax/_src/lax/lax.py untouched), python -m pytest tests/lax_test.py -k testTanhGradSymmetry FAILS with an assertArraysEqual AssertionError on the jvp and/or grad comparison; the same test is expected to PASS once PR #40415's lax.py change is applied. Secondary signal: the updated tanh(x)=='multiply' xla_metadata_test case fails at the buggy commit."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-09-03T13:09:53-07:00",
+      "fixed_commit_date": "2026-09-03T13:24:51-07:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [],
+        "skipped": "the instance names no system packages"
+      },
+      "era": "2026-09-03T13:24:51-07:00",
+      "build": {
+        "skipped": "not a compiled Python instance"
+      },
+      "runtime": {
+        "era_pins": {
+          "numpy": "2.5.2",
+          "pandas": "3.0.5",
+          "matplotlib": "3.11.1",
+          "pyparsing": "3.3.2",
+          "llvmlite": "0.49.0"
+        },
+        "companion": {
+          "wheel": "jaxlib",
+          "declared": [
+            "0.11.1",
+            "0.11.1"
+          ],
+          "wanted": "0.11.1",
+          "installed": true
+        },
+        "dependencies_installed": {
+          "buggy": true,
+          "fixed": true
+        },
+        "pretend_version": false,
+        "test_extras": [],
+        "imports_from": {
+          "buggy": "/workspace/buggy/jax/__init__.py",
+          "fixed": "/workspace/fixed/jax/__init__.py"
+        },
+        "ok": true
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": [
+            "build/test-requirements.txt"
+          ],
+          "installed_whole": true,
+          "failed": []
+        },
+        "fixed": {
+          "files": [
+            "build/test-requirements.txt"
+          ],
+          "installed_whole": true,
+          "failed": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 9,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the tanh JVP rounding/accuracy bug by demonstrating that the buggy formulation breaks symmetry between tanh(x) and tanh(-x) gradients, while the fixed formulation preserves it.",
+          "milestones": [
+            "buggy_environment_ready [buggy] \u2014 Set up the buggy revision with JAX installed in editable mode so the buggy tanh JVP rule is available. (3 steps, verify: steps_succeeded)",
+            "buggy_symmetry_breaks [buggy] \u2014 Demonstrate that the buggy tanh JVP breaks symmetry: jvp(tanh, x) != jvp(tanh, -x) for tangent g=1.3. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "buggy_test_fails [buggy] \u2014 Run the testTanhGradSymmetry test on the buggy revision and confirm it fails. (1 steps, verify: test_ran, test_fails)",
+            "fixed_environment_ready [fixed] \u2014 Set up the fixed revision with JAX installed in editable mode so the corrected tanh JVP rule is available. (3 steps, verify: steps_succeeded)",
+            "fixed_symmetry_preserved [fixed] \u2014 Demonstrate that the fixed tanh JVP preserves symmetry: jvp(tanh, x) == jvp(tanh, -x) for tangent g=1.3. (1 steps, verify: probe_ran, probe_clean)",
+            "fixed_test_passes [fixed] \u2014 Run the testTanhGradSymmetry test on the fixed revision and confirm it passes. (1 steps, verify: test_ran, test_passes)",
+            "revisions_differ_on_symmetry [fixed] \u2014 Confirm that the buggy and fixed revisions produce different results for the tanh JVP symmetry property. (1 steps, verify: test_ran, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -c \"import jax, jaxlib; print('JAX version:', jax.__version__); print('JAX file:', jax.__file__); print('jaxlib version:', jaxlib.__version__)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.95
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && git rev-parse HEAD",
+        "purpose": "inspect",
+        "exit_code": 127,
+        "runtime_s": 0.12
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && grep -A 5 'def tanh_jvp' jax/_src/lax/lax.py | head -20",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.12
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_ready",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`cd /workspace/buggy && git rev-parse HEAD` exited 127: bash: line 1: git: command not found"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the tanh JVP rounding/accuracy bug by demonstrating that the buggy formulation breaks symmetry between tanh(x) and tanh(-x) gradients via numerical probes, while the fixed formulation preserves it.",
+          "milestones": [
+            "buggy_source_verified [buggy] \u2014 Verify the buggy tanh JVP rule (g + g*ans)*(1-ans) is present in the buggy revision's source code. (1 steps, verify: steps_succeeded)",
+            "buggy_symmetry_breaks [buggy] \u2014 Demonstrate that the buggy tanh JVP breaks symmetry: jvp(tanh, x) != jvp(tanh, -x) for tangent g=1.3. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "fixed_source_verified [fixed] \u2014 Verify the fixed tanh JVP rule g*((1+ans)*(1-ans)) is present in the fixed revision's source code. (1 steps, verify: steps_succeeded)",
+            "fixed_symmetry_preserved [fixed] \u2014 Demonstrate that the fixed tanh JVP preserves symmetry: jvp(tanh, x) == jvp(tanh, -x) for tangent g=1.3. (1 steps, verify: probe_ran, probe_clean)",
+            "revisions_differ_on_symmetry [fixed] \u2014 Confirm that the buggy and fixed revisions produce different results for the tanh JVP symmetry property. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && grep -A 10 'def tanh_jvp' jax/_src/lax/lax.py | head -25",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.14
+      },
+      {
+        "verification": {
+          "milestone": "buggy_source_verified",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "tanh_jvp_symmetry",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(tanh_jvp_symmetry) \u2014 Measure JVP and gradient symmetry: buggy version should show mismatches between tanh(x) and tanh(-x) derivatives"
+      },
+      {
+        "verification": {
+          "milestone": "buggy_symmetry_breaks",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the tanh JVP rounding/accuracy bug by demonstrating that the buggy formulation breaks symmetry between tanh(x) and tanh(-x) gradients via numerical probes, while the fixed formulation preserves it.",
+          "milestones": [
+            "buggy_symmetry_breaks [buggy] \u2014 Demonstrate that the buggy tanh JVP breaks symmetry: jvp(tanh, x) != jvp(tanh, -x) for tangent g=1.3 by measuring and comparing JVP outputs on opposite inputs. (1 steps, verify: probe_ran, probe_shows_defect)",
+            "fixed_source_verified [fixed] \u2014 Verify the fixed tanh JVP rule g*((1+ans)*(1-ans)) is present in the fixed revision's source code. (1 steps, verify: steps_succeeded)",
+            "fixed_symmetry_preserved [fixed] \u2014 Demonstrate that the fixed tanh JVP preserves symmetry: jvp(tanh, x) == jvp(tanh, -x) for tangent g=1.3 by measuring the same JVP outputs on both revisions. (1 steps, verify: probe_ran, probe_clean)",
+            "revisions_differ_on_symmetry [fixed] \u2014 Confirm that the buggy and fixed revisions produce different results for the tanh JVP symmetry property by comparing the probe measurements. (1 steps, verify: revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "tanh_jvp_symmetry",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.2870861291885376,
+          0.961449921131134,
+          0.5243643522262573,
+          0.23943322896957397,
+          0.10061272233724594,
+          1.2870862483978271,
+          0.961449921131134,
+          0.5243644714355469,
+          0.23943334817886353,
+          0.1006128191947937
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_symmetry_breaks",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "no probe exhibited the defect on buggy (values [1.2870861291885376, 0.961449921131134, 0.5243643522262573, 0.23943322896957397])"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the tanh JVP rounding bug by verifying that the buggy formulation breaks gradient symmetry while the fixed formulation preserves it.",
+          "milestones": [
+            "buggy_test_fails [buggy] \u2014 Verify that testTanhGradSymmetry test fails on the buggy revision, demonstrating that jvp(tanh, x) != jvp(tanh, -x) for tangent g=1.3. (1 steps, verify: test_ran, test_fails)",
+            "buggy_symmetry_measured [buggy] \u2014 Measure and record the concrete JVP output values on buggy revision for tanh(x) and tanh(-x) with tangent g=1.3 to quantify the symmetry breaking. (1 steps, verify: probe_ran)",
+            "fixed_test_passes [fixed] \u2014 Verify that testTanhGradSymmetry test passes on the fixed revision, demonstrating that the fixed tanh JVP preserves gradient symmetry. (1 steps, verify: test_ran, test_passes)",
+            "fixed_symmetry_measured [fixed] \u2014 Measure and record the JVP output values on fixed revision for tanh(x) and tanh(-x) with tangent g=1.3 to show that symmetry is preserved. (1 steps, verify: probe_ran, probe_clean)",
+            "revisions_differ_on_tanh_symmetry [fixed] \u2014 Confirm that buggy and fixed revisions produce measurably different results for the tanh JVP symmetry property, with buggy showing non-zero differences and fixed showing zero differences. (1 steps, verify: steps_succeeded, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -m pytest tests/lax_test.py::LaxTest::testTanhGradSymmetry -xvs 2>&1 | head -100",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 3.8
+      },
+      {
+        "verification": {
+          "milestone": "buggy_test_fails",
+          "verified": true,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "tanh_jvp_symmetry_values",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.2870861291885376,
+          1.2870862483978271,
+          -1.1920928955078125e-07,
+          1.254698634147644,
+          1.2546985149383545,
+          1.1920928955078125e-07,
+          1.204634428024292,
+          1.2046343088150024,
+          1.1920928955078125e-07,
+          1.1397724151611328
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "buggy_symmetry_measured",
+          "verified": true,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -m pytest tests/lax_test.py::LaxTest::testTanhGradSymmetry -xvs 2>&1 | head -100",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 2.94
+      },
+      {
+        "verification": {
+          "milestone": "fixed_test_passes",
+          "verified": true,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on fixed"
+            },
+            {
+              "check": "test_passes",
+              "passed": true,
+              "detail": "test pass on fixed (milestone required pass)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "tanh_jvp_symmetry_values",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.2870862483978271,
+          1.2870862483978271,
+          0.0,
+          1.254698634147644,
+          1.254698634147644,
+          0.0,
+          1.204634189605713,
+          1.204634189605713,
+          0.0,
+          1.1397722959518433
+        ]
+      },
+      {
+        "verification": {
+          "milestone": "fixed_symmetry_measured",
+          "verified": true,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": true,
+              "detail": "all probes completed"
+            },
+            {
+              "check": "probe_clean",
+              "passed": true,
+              "detail": "every probe is clean on fixed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "echo 'Symmetry comparison: buggy revision shows jvp_pos != jvp_neg, fixed revision shows jvp_pos == jvp_neg. Test passes on fixed, fails on buggy.'",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.13
+      },
+      {
+        "verification": {
+          "milestone": "revisions_differ_on_tanh_symmetry",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": true,
+              "detail": "the reproducing test goes FAIL -> PASS"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.4901161193847656e-07,
+          1.2870861291885376,
+          1.2870862483978271,
+          2.384185791015625e-07,
+          1.2870861291885376,
+          1.2870862483978271
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.0,
+          1.2870862483978271,
+          1.2870862483978271,
+          0.0,
+          1.2870862483978271,
+          1.2870862483978271
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.4901161193847656e-07,
+          2.384185791015625e-07
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "example_probe_repair": {
+          "examples_repaired": [
+            "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string."
+          ],
+          "observed_before": 2,
+          "observed_after": 2
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          1.4901161193847656e-07,
+          2.384185791015625e-07
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "example_probe_repair": {
+          "examples_repaired": [
+            "xla_metadata_test.py parameterized case (\"tanh(x)\", jnp.tanh, \"multiply\"): jit(jnp.tanh) called and the recorded HLO op name matched against the expected string."
+          ],
+          "observed_before": 2,
+          "observed_after": 2
+        }
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 3,
+            "recorded": 3,
+            "error": null,
+            "could_not_evaluate": 1
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 3,
+            "recorded": 3,
+            "error": null,
+            "could_not_evaluate": 1
+          },
+          "preamble": "generated probe",
+          "observed": 2
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "described_examples": {
+          "n_described": 1,
+          "buggy": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 1,
+            "target_reached": true
+          },
+          "repaired": 2,
+          "unusable": {
+            "buggy": "every record came from the probe's own failure: 'Compiled' object has no attribute 'as_compiled_ir'",
+            "fixed": "every record came from the probe's own failure: 'Compiled' object has no attribute 'as_compiled_ir'"
+          }
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "diverged",
+        "examples_verdict": "incomplete",
+        "examples": "2/2"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 2/2 reported example(s) reproduce, but 1 of 3 reported example(s) could not be evaluated on either revision, so those values remain unchecked"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "claude-haiku-4-5-20251001",
+      "calls": 13,
+      "input_tokens": 44601,
+      "output_tokens": 20191,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.145556
+    }
+  }
+]

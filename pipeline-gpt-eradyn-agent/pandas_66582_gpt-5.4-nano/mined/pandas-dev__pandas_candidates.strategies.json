@@ -1,0 +1,122 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_66582_gpt-5.4-nano/mined/pandas-dev__pandas_66582.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 16231,
+    "output_tokens": 4077,
+    "cost_usd": 0.008343,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66582,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66582",
+      "buggy_commit": "92d805f913febf5ece5a91a96d2a54ef8b7f0c7d",
+      "fixed_commit": "eac34231b720d3f9fa2130bc87dcfc607f2138c2",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 8368,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas GH#66582 accuracy bug (PR#66582) where summing timedelta64 uses a float64 accumulator, causing rounding for totals > 2**53 and boundary errors (e.g., Timedelta.min -> NaT). The reproduction should make the added tests `test_td64_sum_exact` / `test_sum_timedelta64_exact` fail on the buggy commit and pass on the fixed commit by building/running pandas with the same default reduction code path (no special flags to avoid the float64 accumulator).",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.11 (choose latest available in CI; not fixed by evidence)",
+          "pip_packages": [
+            "numpy",
+            "python-dateutil",
+            "pytz? (not required by evidence; avoid unless pandas test deps need it)",
+            "cython",
+            "hypothesis (only if the test suite requires it; not strictly required for these specific tests)",
+            "pytest",
+            "packaging",
+            "setuptools",
+            "wheel"
+          ],
+          "system_packages": [
+            "git",
+            "gcc (or another C/C++ compiler toolchain needed for pandas extension build)",
+            "python3-dev (or equivalent)"
+          ],
+          "build_commands": [
+            "python -m pip install -U pip",
+            "python -m pip install -U cython numpy pytest python-dateutil",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy is required; no documented version constraint was provided in the evidence, so choose a broadly compatible recent NumPy. If the bug only reproduces for certain NumPy float behavior, pin NumPy to the version used by the failing CI run for that revision (unknown from evidence).",
+            "Cython is required for building from source per pandas README; version not constrained by evidence.",
+            "No documented version constraints were given for python-dateutil/tzdata; do not pin them specifically for this bug unless the build/test environment requires it."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/series/test_reductions.py::test_td64_sum_exact pandas/tests/frame/test_reductions.py::test_sum_timedelta64_exact",
+        "reproducing_test": "pandas/tests/series/test_reductions.py::test_td64_sum_exact (and the analogous DataFrame test)",
+        "success_criterion": "On the buggy revision 92d805f913fe, `test_td64_sum_exact` and `test_sum_timedelta64_exact` fail due to incorrect sums (off-by-one rounding or Timedelta.min becoming NaT). On the fixed revision (the PR\u2019s merge commit or post-92d805f913fe commit that replaces float64 accumulation with int64+overflow checking), the same tests pass with exact expected timedelta64 results.",
+        "numerical_probe": "N/A (the tests assert exact equality and exception/NaT behavior, not raw printed numeric values). The numerical trigger is summing timedelta64 values whose int64 sum exceeds 2**53, forcing float64 rounding if the buggy float64 accumulator path is used.",
+        "input_output_examples": [
+          {
+            "input": "Series([Timedelta(2**53 + 1, 'ns'), Timedelta(0, 'ns')]).sum()",
+            "buggy_output": "Not equal to Timedelta(2**53 + 1) (likely rounded/off-by-one due to float64 53-bit mantissa).",
+            "expected_output": "Timedelta(2**53 + 1, 'ns')"
+          },
+          {
+            "input": "Series([Timedelta.min]).sum()",
+            "buggy_output": "NaT",
+            "expected_output": "Timedelta.min"
+          },
+          {
+            "input": "Series([Timedelta(2**62 + 1, 'ns'), Timedelta(-(2**62), 'ns')]).sum()",
+            "buggy_output": "Not equal to Timedelta(1, 'ns') (e.g., 0 days)",
+            "expected_output": "Timedelta(1, 'ns')"
+          },
+          {
+            "input": "DataFrame({'a': arr, 'b': arr[::-1]}).sum(axis=axis) where arr=np.array([2**53+1,0],dtype='m8[ns]')",
+            "buggy_output": "At least one element differs from the expected timedelta64 value array (exact value mismatch).",
+            "expected_output": "Series(np.array([2**53 + 1] * 2, dtype='m8[ns]'), index=df.axes[1-axis])"
+          }
+        ],
+        "risks": [
+          "This defect depends on the internal reduction implementation for timedelta64 (the float64-accumulation code path). If the buggy revision is built in a configuration that routes to a different implementation (e.g., an alternative backend, compilation option, or platform-specific specialization), the test may not fail. Keep build configuration close to default pandas source builds.",
+          "The exact failing value (off-by-one vs NaT for Timedelta.min) is sensitive to when/where float64 rounding is introduced and to bounds/NaT sentinel handling; however, the provided tests are designed to catch the rounding/bounds issues without requiring you to inspect intermediate values.",
+          "NumPy version is not constrained by evidence. If the rounding/representation interacts with NumPy version/compiler SIMD behavior, you may need to pin NumPy to reproduce CI. The evidence only says NumPy is a dependency (no constraint).",
+          "If the fixed commit changes exception behavior rather than equality for some cases, make sure you run the exact same tests listed; the oracle here is exact assertion equality/raises as written in the tests.",
+          "Architecture/toolchain risk: if this bug is only triggered on specific architectures or compilers (e.g., 32-bit, unusual float optimizations), reproduction may fail elsewhere. Use a standard x86_64 Linux build with a modern GCC/Clang.",
+          "Do not run with sanitizers or aggressive floating-point contraction flags unless you know they were used for the failing case; those could change rounding behavior and lead to non-transition. Evidence does not mention such flags."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "The added tests `test_td64_sum_exact` and `test_sum_timedelta64_exact` encode the expected exact timedelta64 outputs and exact exception/NaT results (no tolerance).",
+          "why": "The bug is a correctness/rounding problem with float64\u2019s 53-bit mantissa; the tests check exact equality or exact NaT/exception outcomes."
+        },
+        "fails_on_buggy": "`test_td64_sum_exact` fails on buggy commit 92d805f913fe because `ser.sum()` for the provided timedelta64 boundary inputs returns an incorrect result (e.g., `Series([Timedelta.min]).sum()` evaluates to NaT instead of Timedelta.min, and/or the 2**53+1/ns sum is off due to float64 rounding). The failing assertion is `tm.assert_series_equal` in the DataFrame test and `assert ser.sum() == ...` / `assert ser.sum() is pd.NaT` in the Series test.",
+        "passes_on_fixed": "On the fixed pandas revision corresponding to PR#66582\u2019s change (replacing float64 accumulation with int64 accumulation plus bounds checking and exemptions), `test_td64_sum_exact` and `test_sum_timedelta64_exact` pass with exact expected timedelta64 sums."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 4055,
+        "output_tokens": 1484,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002666
+      },
+      "miner_usage": {
+        "input_tokens": 12176,
+        "output_tokens": 2593,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.005677,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

@@ -1,0 +1,1446 @@
+[
+  {
+    "slug": "scipy_21918",
+    "bug_type": "special_value",
+    "image": "python:3.11",
+    "status": "REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 2/3 reported example(s) show the reported difference between the revisions; no probe is pathological, but the two revisions record different values",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "diverged",
+    "examples_verdict": "diverged",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import numpy as np\nfrom numpy import exp, linspace\nfrom scipy.optimize import curve_fit\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')\", \"exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')\", [], \"Successfully returns popt and pcov that match the reference result obtained by manually deleting the NaN indices from x, y, and sigma (rows/columns for 2D sigma) and calling curve_fit without nan_policy\"], [\"N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')\", \"N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')\", [], \"res_opt and res_cov are allclose(atol=1e-14) to ref_opt and ref_cov computed without nan_policy after manual NaN removal\"], [\"N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')\", \"N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')\", [], \"res_opt and res_cov are allclose(atol=1e-14) to ref_opt and ref_cov computed without nan_policy after manual NaN removal from rows and columns of sigma\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nfrom scipy.optimize import curve_fit\n\n\ndef exponential(x, a, b):\n    return b * np.exp(a * x)\n\n\ndef _run_case(sigdim):\n    rng = np.random.default_rng(0)\n    N = 100\n    x = np.linspace(1, 10, N)\n    y_true = 0.5 * np.exp(0.2 * x)\n    noise = rng.normal(scale=0.02 * np.max(y_true), size=N)\n    y = y_true + noise\n\n    # 5 random NaNs placed in x and 5 in y\n    nan_idx_x = rng.choice(N, size=5, replace=False)\n    nan_idx_y = rng.choice(N, size=5, replace=False)\n    x = x.astype(float)\n    y = y.astype(float)\n    x[nan_idx_x] = np.nan\n    y[nan_idx_y] = np.nan\n\n    if sigdim == 1:\n        sigma = x * 0.05  # length 100; will contain NaNs where x is NaN\n    elif sigdim == 2:\n        a = rng.normal(size=N)\n        # Ensure SPD even if covariance ends up ill-conditioned\n        sigma = np.outer(a, a) + 1e-6 * np.eye(N)\n    else:\n        raise ValueError(\"sigdim must be 1 or 2\")\n\n    # curve_fit with nan_policy='omit'\n    popt, pcov = curve_fit(\n        exponential,\n        x,\n        y,\n        p0=[0.1, 1.0],\n        sigma=sigma,\n        nan_policy='omit',\n    )\n    return popt, pcov\n\n\ndef probe_scenario_1():\n    rng = np.random.default_rng(1)\n    x = np.linspace(0, 1, 50)\n    y = exponential(x, 0.3, 2.0)\n\n    # Force NaNs\n    ix = rng.choice(len(x), size=5, replace=False)\n    iy = rng.choice(len(y), size=5, replace=False)\n    x = x.astype(float)\n    y = y.astype(float)\n    x[ix] = np.nan\n    y[iy] = np.nan\n\n    # sigma scalar\n    sigma = 1.0\n    return curve_fit(\n        exponential,\n        x,\n        y,\n        p0=[0.1, 1.0],\n        sigma=sigma,\n        nan_policy='omit',\n    )\n\n\ndef probe_scenario_2():\n    return _run_case(1)\n\n\ndef probe_scenario_3():\n    return _run_case(2)\n\n\n# Run all scenarios and record exactly one result per description name.\n# The harness provides probe(name, value) and probe_exception(name, exception).\n\nnames_and_funcs = [\n    (\n        \"exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')\",\n        probe_scenario_1,\n    ),\n    (\n        \"N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')\",\n        probe_scenario_2,\n    ),\n    (\n        \"N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')\",\n        probe_scenario_3,\n    ),\n]\n\nfor name, fn in names_and_funcs:\n    try:\n        res = fn()\n        probe(name, res)\n    except Exception as e:\n        probe_exception(name, e)"
+      },
+      "fixed": {
+        "reported_examples": "import numpy as np\nfrom numpy import exp, linspace\nfrom scipy.optimize import curve_fit\n# [record name, expression, bindings the report attached, reported expected text]\n__numagent_cases__ = [[\"exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')\", \"exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')\", [], \"Successfully returns popt and pcov that match the reference result obtained by manually deleting the NaN indices from x, y, and sigma (rows/columns for 2D sigma) and calling curve_fit without nan_policy\"], [\"N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')\", \"N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')\", [], \"res_opt and res_cov are allclose(atol=1e-14) to ref_opt and ref_cov computed without nan_policy after manual NaN removal\"], [\"N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')\", \"N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')\", [], \"res_opt and res_cov are allclose(atol=1e-14) to ref_opt and ref_cov computed without nan_policy after manual NaN removal from rows and columns of sigma\"]]\nfor __numagent_name, __numagent_expr, __numagent_binds, __numagent_want in __numagent_cases__:\n    try:\n        for __numagent_bind in __numagent_binds:\n            exec(__numagent_bind)\n        probe(__numagent_name, eval(__numagent_expr))\n    except Exception as __numagent_err:\n        probe(__numagent_name, \"__error__: \" + type(__numagent_err).__name__\n              + \": \" + str(__numagent_err)[:200])\n    if __numagent_want:\n        try:    # the expectation may itself be an expression in this language\n            probe(\"expected::\" + __numagent_name, eval(__numagent_want))\n        except Exception:\n            pass                    # prose, not code \u2014 the comparator handles it\n",
+        "described_examples": "import numpy as np\nfrom scipy.optimize import curve_fit\n\n\ndef exponential(x, a, b):\n    return b * np.exp(a * x)\n\n\ndef _run_case(sigdim):\n    rng = np.random.default_rng(0)\n    N = 100\n    x = np.linspace(1, 10, N)\n    y_true = 0.5 * np.exp(0.2 * x)\n    noise = rng.normal(scale=0.02 * np.max(y_true), size=N)\n    y = y_true + noise\n\n    # 5 random NaNs placed in x and 5 in y\n    nan_idx_x = rng.choice(N, size=5, replace=False)\n    nan_idx_y = rng.choice(N, size=5, replace=False)\n    x = x.astype(float)\n    y = y.astype(float)\n    x[nan_idx_x] = np.nan\n    y[nan_idx_y] = np.nan\n\n    if sigdim == 1:\n        sigma = x * 0.05  # length 100; will contain NaNs where x is NaN\n    elif sigdim == 2:\n        a = rng.normal(size=N)\n        # Ensure SPD even if covariance ends up ill-conditioned\n        sigma = np.outer(a, a) + 1e-6 * np.eye(N)\n    else:\n        raise ValueError(\"sigdim must be 1 or 2\")\n\n    # curve_fit with nan_policy='omit'\n    popt, pcov = curve_fit(\n        exponential,\n        x,\n        y,\n        p0=[0.1, 1.0],\n        sigma=sigma,\n        nan_policy='omit',\n    )\n    return popt, pcov\n\n\ndef probe_scenario_1():\n    rng = np.random.default_rng(1)\n    x = np.linspace(0, 1, 50)\n    y = exponential(x, 0.3, 2.0)\n\n    # Force NaNs\n    ix = rng.choice(len(x), size=5, replace=False)\n    iy = rng.choice(len(y), size=5, replace=False)\n    x = x.astype(float)\n    y = y.astype(float)\n    x[ix] = np.nan\n    y[iy] = np.nan\n\n    # sigma scalar\n    sigma = 1.0\n    return curve_fit(\n        exponential,\n        x,\n        y,\n        p0=[0.1, 1.0],\n        sigma=sigma,\n        nan_policy='omit',\n    )\n\n\ndef probe_scenario_2():\n    return _run_case(1)\n\n\ndef probe_scenario_3():\n    return _run_case(2)\n\n\n# Run all scenarios and record exactly one result per description name.\n# The harness provides probe(name, value) and probe_exception(name, exception).\n\nnames_and_funcs = [\n    (\n        \"exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')\",\n        probe_scenario_1,\n    ),\n    (\n        \"N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')\",\n        probe_scenario_2,\n    ),\n    (\n        \"N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')\",\n        probe_scenario_3,\n    ),\n]\n\nfor name, fn in names_and_funcs:\n    try:\n        res = fn()\n        probe(name, res)\n    except Exception as e:\n        probe_exception(name, e)"
+      }
+    },
+    "report": {
+      "status": "REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 2/3 reported example(s) show the reported difference between the revisions; no probe is pathological, but the two revisions record different values",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "diverged",
+      "examples_verdict": "diverged",
+      "success_criterion": "The test commands execute without raising exceptions and return PASS status. Specifically: (1) test_curvefit_omitnan[0] (sigma_dim=0, scalar sigma) completes without ValueError; (2) test_curvefit_omitnan[1] (sigma_dim=1, 1D sigma) completes and popt/pcov match reference to atol=1e-14; (3) test_curvefit_omitnan[2] (sigma_dim=2, 2D sigma) completes and popt/pcov match reference to atol=1e-14; (4) test_curvefit_simplecovariance completes without errors. All assertions pass when the buggy code is run (expected: ValueError on current buggy commit; success when fix is applied).",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": 1,
+            "failed": 2,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 3,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')": [
+                [
+                  0.3,
+                  2.0
+                ],
+                [
+                  [
+                    0.0,
+                    -0.0
+                  ],
+                  [
+                    -0.0,
+                    0.0
+                  ]
+                ]
+              ],
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')": {
+                "raised": "ValueError",
+                "message": "`sigma` has incorrect shape.",
+                "origin": "/workspace/buggy/.venv/lib/python3.11/site-packages/scipy/optimize/_minpack_py.py",
+                "in_repository": true
+              },
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')": {
+                "raised": "ValueError",
+                "message": "`sigma` has incorrect shape.",
+                "origin": "/workspace/buggy/.venv/lib/python3.11/site-packages/scipy/optimize/_minpack_py.py",
+                "in_repository": true
+              }
+            },
+            "fixed_values": {
+              "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')": [
+                [
+                  0.3,
+                  2.0
+                ],
+                [
+                  [
+                    0.0,
+                    -0.0
+                  ],
+                  [
+                    -0.0,
+                    0.0
+                  ]
+                ]
+              ],
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')": [
+                [
+                  0.19921477442446772,
+                  0.5037603485432404
+                ],
+                [
+                  [
+                    4.297168387280522e-06,
+                    -1.0785663142733298e-05
+                  ],
+                  [
+                    -1.0785663142733298e-05,
+                    3.6491273244005134e-05
+                  ]
+                ]
+              ],
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')": [
+                [
+                  0.19774204986016033,
+                  0.5091091249828891
+                ],
+                [
+                  [
+                    3.836438647096983e-06,
+                    -1.49477465586075e-05
+                  ],
+                  [
+                    -1.49477465586075e-05,
+                    6.228845471897163e-05
+                  ]
+                ]
+              ]
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')": "__error__: SyntaxError: invalid decimal literal (<string>, line 1)",
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')": "__error__: SyntaxError: invalid decimal literal (<string>, line 1)"
+            },
+            "fixed_values": {
+              "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')": "__error__: SyntaxError: invalid decimal literal (<string>, line 1)",
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')": "__error__: SyntaxError: invalid decimal literal (<string>, line 1)"
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')",
+            "expected_output": "Successfully returns popt and pcov that match the reference result obtained by manually deleting the NaN indices from x, y, and sigma (rows/columns for 2D sigma) and calling curve_fit without nan_policy",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: `sigma` has incorrect shape.",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')",
+              "observed": [
+                [
+                  0.3,
+                  2.0
+                ],
+                [
+                  [
+                    0.0,
+                    -0.0
+                  ],
+                  [
+                    -0.0,
+                    0.0
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')",
+              "observed": [
+                [
+                  0.3,
+                  2.0
+                ],
+                [
+                  [
+                    0.0,
+                    -0.0
+                  ],
+                  [
+                    -0.0,
+                    0.0
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')",
+            "expected_output": "res_opt and res_cov are allclose(atol=1e-14) to ref_opt and ref_cov computed without nan_policy after manual NaN removal",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: `sigma` has incorrect shape.",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')",
+              "observed": {
+                "raised": "ValueError",
+                "message": "`sigma` has incorrect shape.",
+                "origin": "/workspace/buggy/.venv/lib/python3.11/site-packages/scipy/optimize/_minpack_py.py",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')",
+              "observed": [
+                [
+                  0.19921477442446772,
+                  0.5037603485432404
+                ],
+                [
+                  [
+                    4.297168387280522e-06,
+                    -1.0785663142733298e-05
+                  ],
+                  [
+                    -1.0785663142733298e-05,
+                    3.6491273244005134e-05
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')",
+            "expected_output": "res_opt and res_cov are allclose(atol=1e-14) to ref_opt and ref_cov computed without nan_policy after manual NaN removal from rows and columns of sigma",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: `sigma` has incorrect shape. (internal indexing sigma[~has_nan, ~has_nan] collapses to 1D array)",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')",
+              "observed": {
+                "raised": "ValueError",
+                "message": "`sigma` has incorrect shape.",
+                "origin": "/workspace/buggy/.venv/lib/python3.11/site-packages/scipy/optimize/_minpack_py.py",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')",
+              "observed": [
+                [
+                  0.19774204986016033,
+                  0.5091091249828891
+                ],
+                [
+                  [
+                    3.836438647096983e-06,
+                    -1.49477465586075e-05
+                  ],
+                  [
+                    -1.49477465586075e-05,
+                    6.228845471897163e-05
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 3,
+            "n_failed": 1,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 1,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "meson-python>=0.15.0",
+            "Cython>=3.0.8",
+            "pybind11>=2.13.2",
+            "pythran>=0.14.0",
+            "numpy>=2.0.0rc1",
+            "array-api-strict>=2.0",
+            "hypothesis>=6.30"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2024-12-03T13:41:48+00:00",
+        "fixed_commit_date": "2024-12-03T08:30:31-08:00",
+        "reproducing_test_present": true,
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2024-12-03T08:30:31-08:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/scipy/__init__.py",
+            "build_requires": [
+              "meson-python>=0.15.0",
+              "Cython>=3.0.8",
+              "pybind11>=2.13.2",
+              "pythran>=0.14.0"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.1.3",
+              "pandas": "2.2.3",
+              "matplotlib": "3.9.3",
+              "pyparsing": "3.2.0",
+              "meson-python": "0.17.1",
+              "cython": "3.0.11",
+              "pybind11": "2.13.6",
+              "pythran": "0.17.0"
+            },
+            "test_extras": [
+              "pytest",
+              "pytest-cov",
+              "pytest-timeout",
+              "pytest-xdist",
+              "asv",
+              "mpmath",
+              "gmpy2",
+              "threadpoolctl",
+              "scikit-umfpack",
+              "pooch",
+              "hypothesis>=6.30",
+              "array-api-strict>=2.0,<2.1.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.23.5 in ./.venv/lib/python3.11/site-packages (from scipy==1.15.0.dev0) (2.1.3)\nBuilding wheels for collected packages: scipy\n  Building wheel for scipy (pyproject.toml): started\n  Building wheel for scipy (pyproject.toml): finished with status 'done'\n  Created wheel for scipy: filename=scipy-1.15.0.dev0-cp311-cp311-linux_x86_64.whl size=33328694 sha256=cc384012c80fc8974494091618002ae29fdccc67f3abd32c308faf01721b96b5\n  Stored in directory: /tmp/pip-ephem-wheel-cache-whwgl6vs/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built scipy\nInstalling collected packages: scipy\nSuccessfully installed scipy-1.15.0.dev0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/scipy/__init__.py",
+            "build_requires": [
+              "meson-python>=0.15.0",
+              "Cython>=3.0.8",
+              "pybind11>=2.13.2",
+              "pythran>=0.14.0"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.1.3",
+              "pandas": "2.2.3",
+              "matplotlib": "3.9.3",
+              "pyparsing": "3.2.0",
+              "meson-python": "0.17.1",
+              "cython": "3.0.11",
+              "pybind11": "2.13.6",
+              "pythran": "0.17.0"
+            },
+            "test_extras": [
+              "pytest",
+              "pytest-cov",
+              "pytest-timeout",
+              "pytest-xdist",
+              "asv",
+              "mpmath",
+              "gmpy2",
+              "threadpoolctl",
+              "scikit-umfpack",
+              "pooch",
+              "hypothesis>=6.30",
+              "array-api-strict>=2.0,<2.1.1"
+            ],
+            "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.23.5 in ./.venv/lib/python3.11/site-packages (from scipy==1.15.0.dev0) (2.1.3)\nBuilding wheels for collected packages: scipy\n  Building wheel for scipy (pyproject.toml): started\n  Building wheel for scipy (pyproject.toml): finished with status 'done'\n  Created wheel for scipy: filename=scipy-1.15.0.dev0-cp311-cp311-linux_x86_64.whl size=33328741 sha256=3d0499c8680b13488c04f9b61df75574cf5ffb9c3e5b3cbfa35cd5bcf75758ec\n  Stored in directory: /tmp/pip-ephem-wheel-cache-dlf8ob5n/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built scipy\nInstalling collected packages: scipy\nSuccessfully installed scipy-1.15.0.dev0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": [
+              "requirements/test.txt"
+            ],
+            "installed_whole": true,
+            "failed": []
+          },
+          "fixed": {
+            "files": [
+              "requirements/test.txt"
+            ],
+            "installed_whole": true,
+            "failed": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": 1,
+        "failed": 2,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 3,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 2,
+        "verdict": "diverged",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')": [
+                [
+                  0.3,
+                  2.0
+                ],
+                [
+                  [
+                    0.0,
+                    -0.0
+                  ],
+                  [
+                    -0.0,
+                    0.0
+                  ]
+                ]
+              ],
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')": {
+                "raised": "ValueError",
+                "message": "`sigma` has incorrect shape.",
+                "origin": "/workspace/buggy/.venv/lib/python3.11/site-packages/scipy/optimize/_minpack_py.py",
+                "in_repository": true
+              },
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')": {
+                "raised": "ValueError",
+                "message": "`sigma` has incorrect shape.",
+                "origin": "/workspace/buggy/.venv/lib/python3.11/site-packages/scipy/optimize/_minpack_py.py",
+                "in_repository": true
+              }
+            },
+            "fixed_values": {
+              "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')": [
+                [
+                  0.3,
+                  2.0
+                ],
+                [
+                  [
+                    0.0,
+                    -0.0
+                  ],
+                  [
+                    -0.0,
+                    0.0
+                  ]
+                ]
+              ],
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')": [
+                [
+                  0.19921477442446772,
+                  0.5037603485432404
+                ],
+                [
+                  [
+                    4.297168387280522e-06,
+                    -1.0785663142733298e-05
+                  ],
+                  [
+                    -1.0785663142733298e-05,
+                    3.6491273244005134e-05
+                  ]
+                ]
+              ],
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')": [
+                [
+                  0.19774204986016033,
+                  0.5091091249828891
+                ],
+                [
+                  [
+                    3.836438647096983e-06,
+                    -1.49477465586075e-05
+                  ],
+                  [
+                    -1.49477465586075e-05,
+                    6.228845471897163e-05
+                  ]
+                ]
+              ]
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')": "__error__: SyntaxError: invalid decimal literal (<string>, line 1)",
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')": "__error__: SyntaxError: invalid decimal literal (<string>, line 1)"
+            },
+            "fixed_values": {
+              "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')": "__error__: SyntaxError: invalid decimal literal (<string>, line 1)",
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')": "__error__: SyntaxError: invalid syntax (<string>, line 1)",
+              "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')": "__error__: SyntaxError: invalid decimal literal (<string>, line 1)"
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 3,
+        "n_judged": 3,
+        "n_reproduced": 2,
+        "evaluable": true,
+        "n_diverged": 2,
+        "n_unobserved": 0,
+        "n_contested": 0,
+        "unobserved": [],
+        "verdict": "diverged",
+        "examples": [
+          {
+            "input": "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')",
+            "expected_output": "Successfully returns popt and pcov that match the reference result obtained by manually deleting the NaN indices from x, y, and sigma (rows/columns for 2D sigma) and calling curve_fit without nan_policy",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: `sigma` has incorrect shape.",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')",
+              "observed": [
+                [
+                  0.3,
+                  2.0
+                ],
+                [
+                  [
+                    0.0,
+                    -0.0
+                  ],
+                  [
+                    -0.0,
+                    0.0
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "exponential(x, a, b) = b * exp(a*x); x contains NaN at indices i_x; y contains NaN at indices i_y; sigma is scalar, 1D array of length N, or 2D NxN covariance matrix; curve_fit(exponential, x, y, p0=[0.1, 1.0], sigma=sigma, nan_policy='omit')",
+              "observed": [
+                [
+                  0.3,
+                  2.0
+                ],
+                [
+                  [
+                    0.0,
+                    -0.0
+                  ],
+                  [
+                    -0.0,
+                    0.0
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')",
+            "expected_output": "res_opt and res_cov are allclose(atol=1e-14) to ref_opt and ref_cov computed without nan_policy after manual NaN removal",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: `sigma` has incorrect shape.",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')",
+              "observed": {
+                "raised": "ValueError",
+                "message": "`sigma` has incorrect shape.",
+                "origin": "/workspace/buggy/.venv/lib/python3.11/site-packages/scipy/optimize/_minpack_py.py",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=1: sigma=x*0.05 (length 100); curve_fit(..., sigma=sigma, nan_policy='omit')",
+              "observed": [
+                [
+                  0.19921477442446772,
+                  0.5037603485432404
+                ],
+                [
+                  [
+                    4.297168387280522e-06,
+                    -1.0785663142733298e-05
+                  ],
+                  [
+                    -1.0785663142733298e-05,
+                    3.6491273244005134e-05
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')",
+            "expected_output": "res_opt and res_cov are allclose(atol=1e-14) to ref_opt and ref_cov computed without nan_policy after manual NaN removal from rows and columns of sigma",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError: `sigma` has incorrect shape. (internal indexing sigma[~has_nan, ~has_nan] collapses to 1D array)",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')",
+              "observed": {
+                "raised": "ValueError",
+                "message": "`sigma` has incorrect shape.",
+                "origin": "/workspace/buggy/.venv/lib/python3.11/site-packages/scipy/optimize/_minpack_py.py",
+                "in_repository": true
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "N=100, x=linspace(1,10,N), y=0.5*exp(0.2*x)+noise; 5 random NaNs placed in x and 5 in y; sigma_dim=2: sigma=a@a.T (100x100 SPD matrix); curve_fit(..., sigma=sigma, nan_policy='omit')",
+              "observed": [
+                [
+                  0.19774204986016033,
+                  0.5091091249828891
+                ],
+                [
+                  [
+                    3.836438647096983e-06,
+                    -1.49477465586075e-05
+                  ],
+                  [
+                    -1.49477465586075e-05,
+                    6.228845471897163e-05
+                  ]
+                ]
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 3,
+          "n_failed": 1,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 1,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "The test commands execute without raising exceptions and return PASS status. Specifically: (1) test_curvefit_omitnan[0] (sigma_dim=0, scalar sigma) completes without ValueError; (2) test_curvefit_omitnan[1] (sigma_dim=1, 1D sigma) completes and popt/pcov match reference to atol=1e-14; (3) test_curvefit_omitnan[2] (sigma_dim=2, 2D sigma) completes and popt/pcov match reference to atol=1e-14; (4) test_curvefit_simplecovariance completes without errors. All assertions pass when the buggy code is run (expected: ValueError on current buggy commit; success when fix is applied)."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "meson-python>=0.15.0",
+          "Cython>=3.0.8",
+          "pybind11>=2.13.2",
+          "pythran>=0.14.0",
+          "numpy>=2.0.0rc1",
+          "array-api-strict>=2.0",
+          "hypothesis>=6.30"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2024-12-03T13:41:48+00:00",
+      "fixed_commit_date": "2024-12-03T08:30:31-08:00",
+      "reproducing_test_present": true,
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2024-12-03T08:30:31-08:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/scipy/__init__.py",
+          "build_requires": [
+            "meson-python>=0.15.0",
+            "Cython>=3.0.8",
+            "pybind11>=2.13.2",
+            "pythran>=0.14.0"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.1.3",
+            "pandas": "2.2.3",
+            "matplotlib": "3.9.3",
+            "pyparsing": "3.2.0",
+            "meson-python": "0.17.1",
+            "cython": "3.0.11",
+            "pybind11": "2.13.6",
+            "pythran": "0.17.0"
+          },
+          "test_extras": [
+            "pytest",
+            "pytest-cov",
+            "pytest-timeout",
+            "pytest-xdist",
+            "asv",
+            "mpmath",
+            "gmpy2",
+            "threadpoolctl",
+            "scikit-umfpack",
+            "pooch",
+            "hypothesis>=6.30",
+            "array-api-strict>=2.0,<2.1.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/buggy\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.23.5 in ./.venv/lib/python3.11/site-packages (from scipy==1.15.0.dev0) (2.1.3)\nBuilding wheels for collected packages: scipy\n  Building wheel for scipy (pyproject.toml): started\n  Building wheel for scipy (pyproject.toml): finished with status 'done'\n  Created wheel for scipy: filename=scipy-1.15.0.dev0-cp311-cp311-linux_x86_64.whl size=33328694 sha256=cc384012c80fc8974494091618002ae29fdccc67f3abd32c308faf01721b96b5\n  Stored in directory: /tmp/pip-ephem-wheel-cache-whwgl6vs/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built scipy\nInstalling collected packages: scipy\nSuccessfully installed scipy-1.15.0.dev0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/scipy/__init__.py",
+          "build_requires": [
+            "meson-python>=0.15.0",
+            "Cython>=3.0.8",
+            "pybind11>=2.13.2",
+            "pythran>=0.14.0"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.1.3",
+            "pandas": "2.2.3",
+            "matplotlib": "3.9.3",
+            "pyparsing": "3.2.0",
+            "meson-python": "0.17.1",
+            "cython": "3.0.11",
+            "pybind11": "2.13.6",
+            "pythran": "0.17.0"
+          },
+          "test_extras": [
+            "pytest",
+            "pytest-cov",
+            "pytest-timeout",
+            "pytest-xdist",
+            "asv",
+            "mpmath",
+            "gmpy2",
+            "threadpoolctl",
+            "scikit-umfpack",
+            "pooch",
+            "hypothesis>=6.30",
+            "array-api-strict>=2.0,<2.1.1"
+          ],
+          "output": "--- end of build log ---\nProcessing /workspace/fixed\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): still running...\n  Preparing metadata (pyproject.toml): finished with status 'done'\nRequirement already satisfied: numpy>=1.23.5 in ./.venv/lib/python3.11/site-packages (from scipy==1.15.0.dev0) (2.1.3)\nBuilding wheels for collected packages: scipy\n  Building wheel for scipy (pyproject.toml): started\n  Building wheel for scipy (pyproject.toml): finished with status 'done'\n  Created wheel for scipy: filename=scipy-1.15.0.dev0-cp311-cp311-linux_x86_64.whl size=33328741 sha256=3d0499c8680b13488c04f9b61df75574cf5ffb9c3e5b3cbfa35cd5bcf75758ec\n  Stored in directory: /tmp/pip-ephem-wheel-cache-dlf8ob5n/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built scipy\nInstalling collected packages: scipy\nSuccessfully installed scipy-1.15.0.dev0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": [
+            "requirements/test.txt"
+          ],
+          "installed_whole": true,
+          "failed": []
+        },
+        "fixed": {
+          "files": [
+            "requirements/test.txt"
+          ],
+          "installed_whole": true,
+          "failed": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 7,
+    "history": [
+      {
+        "planner": {
+          "goal": "Reproduce the special_value bug in scipy.optimize.curve_fit with nan_policy='omit' where sigma is not correctly filtered, by showing a failing test on the buggy revision and passing on the fixed revision (and optionally confirming via the report examples).",
+          "milestones": [
+            "buggy_test_fails [buggy] \u2014 Build environment for the buggy revision and verify the targeted curve_fit omitnan test fails. (2 steps, verify: steps_succeeded, test_ran, test_fails)",
+            "fixed_test_passes [fixed] \u2014 Build environment for the fixed revision and verify the targeted curve_fit omitnan test passes. (2 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "reported_examples_reproduced [buggy] \u2014 Confirm the mined report examples show the sigma-shape error on buggy and match expected successful outputs on fixed, using the report's example inputs/outputs. (1 steps, verify: steps_succeeded, examples_reproduced)",
+            "reported_examples_reproduced_fixed [fixed] \u2014 Run the same report example evaluation in the fixed revision and ensure outputs match the expected (no sigma shape error). (1 steps, verify: steps_succeeded, examples_reproduced)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -m pip -q install -r requirements/build.txt build && python -m build -wnx",
+        "purpose": "build",
+        "exit_code": 0,
+        "runtime_s": 163.87
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs scipy.optimize.tests.test_minpack -k test_curvefit_omitnan --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 2.15
+      },
+      {
+        "verification": {
+          "milestone": "buggy_test_fails",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "`python -I -m pytest --pyargs scipy.optimize.tests.test_minpack -k test_curvefit_` exited 1: \nFAILED .venv/lib/python3.11/site-packages/scipy/optimize/tests/test_minpack.py::TestCurveFit::test_curvefit_omitnan[2]\n================== 2 failed, 1 passed, 95 deselected in 1.54s =================="
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the remaining milestones with direct curve_fit nan_policy='omit' sigma-filtering probes that distinguish buggy vs fixed without relying on the in-repo parametrized test selection.",
+          "milestones": [
+            "fixed_test_passes [fixed] \u2014 Verify that the targeted curve_fit omitnan test now passes on the fixed revision (baseline confirmation). (1 steps, verify: steps_succeeded, test_ran, test_passes)",
+            "probe_sigma_omitnan_bug [buggy] \u2014 Measure curve_fit outputs on a minimal reproducer matching the report/test scenario, showing the buggy behavior (sigma shape error or divergent results) and correct behavior on fixed. (1 steps, verify: steps_succeeded)",
+            "probe_sigma_omitnan_bug_confirm_fixed [fixed] \u2014 Run the exact same sigma-omit reproducer probe on fixed revision and verify it produces results without the buggy sigma-shape exception. (1 steps, verify: steps_succeeded, probe_ran, probe_clean, revisions_differ)",
+            "reported_examples_optional [buggy] \u2014 Optionally confirm report example behavior for buggy vs fixed; at minimum shows buggy raises the sigma-shape issue on at least one example and fixed does not. (1 steps, verify: steps_succeeded, examples_reproduced)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs scipy.optimize.tests.test_minpack -k test_curvefit_omitnan --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.35
+      },
+      {
+        "verification": {
+          "milestone": "fixed_test_passes",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on fixed"
+            },
+            {
+              "check": "test_passes",
+              "passed": true,
+              "detail": "test pass on fixed (milestone required pass)"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "curve_fit_omitnan_sigma2_probe",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(curve_fit_omitnan_sigma2_probe) \u2014 Run a probe that calls curve_fit with nan_policy='omit' and sigma_dim=2 case where buggy sigma filtering is expected to fail (2D sigma)."
+      },
+      {
+        "verification": {
+          "milestone": "probe_sigma_omitnan_bug",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(curve_fit_omitnan_sigma2_probe) \u2014 Run a probe that calls curve_fit with nan_policy='omit' and sigma_dim=2 case where buggy sigma filtering is expected to fail (2D sigma). did not execute"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "probe_sigma_omitnan_bug",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded"
+          ],
+          "attempts": 2,
+          "detail": [
+            "[buggy] run_numerical_probe(curve_fit_omitnan_sigma2_probe) \u2014 Run a probe that calls curve_fit with nan_policy='omit' and sigma_dim=2 case where buggy sigma filtering is expected to fail (2D sigma). did not execute"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "curve_fit_omitnan_sigma2_probe",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[fixed] run_numerical_probe(curve_fit_omitnan_sigma2_probe) \u2014 Run identical probe as buggy revision to show it no longer fails and instead returns stable parameters."
+      },
+      {
+        "verification": {
+          "milestone": "probe_sigma_omitnan_bug_confirm_fixed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[fixed] run_numerical_probe(curve_fit_omitnan_sigma2_probe) \u2014 Run identical probe as buggy revision to show it no longer fails and instead returns stable parameters. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_clean",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "revisions_differ",
+              "passed": true,
+              "detail": "the reproducing test goes FAIL -> PASS"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Reproduce the curve_fit nan_policy='omit' sigma-shape defect with direct probes (no in-repo test selection) and confirm buggy vs fixed behavior diverges as expected, then (optionally) validate report examples.",
+          "milestones": [
+            "build_env_confirmed [buggy] \u2014 Ensure both revisions can execute the built SciPy in their own virtualenv and the minimal curve_fit import works. (1 steps, verify: steps_succeeded)",
+            "curvefit_nan_sigma_probe_buggy [buggy] \u2014 Run a direct curve_fit reproducer probe (nan_policy='omit' with sigma_dim=1 and sigma_dim=2 cases) on buggy revision and record outputs/exceptions to demonstrate the defect. (1 steps, verify: steps_succeeded, probe_ran)",
+            "curvefit_nan_sigma_probe_fixed [fixed] \u2014 Run the same direct curve_fit reproducer probe on fixed revision and confirm sigma_dim=2 succeeds and matches the reference fit closely (and/or at least does not raise the buggy sigma-shape ValueError). (1 steps, verify: steps_succeeded, probe_ran)",
+            "report_examples_optional_probe [buggy] \u2014 Optionally confirm that the report example I/O behaviors (including 2D sigma ValueError on buggy and success on fixed) are reproduced using check_reported_examples harness. (2 steps, verify: steps_succeeded, examples_reproduced)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -c \"import scipy, numpy; import scipy.optimize as opt; print('scipy', scipy.__version__); print('curve_fit', opt.curve_fit)\"",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.54
+      },
+      {
+        "verification": {
+          "milestone": "build_env_confirmed",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "curve_fit_omitnan_sigma_reproducer_v1",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(curve_fit_omitnan_sigma_reproducer_v1) \u2014 Execute curve_fit with carefully constructed x/y containing NaNs and provided sigma (1D and 2D) under nan_policy='omit'; record whether a ValueError about sigma shape occurs and, if not, the resulting popt/pcov."
+      },
+      {
+        "verification": {
+          "milestone": "curvefit_nan_sigma_probe_buggy",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(curve_fit_omitnan_sigma_reproducer_v1) \u2014 Execute curve_fit with carefully constructed x/y containing NaNs and provided sigma (1D and 2D) under nan_policy='omit'; record whether a ValueError about sigma shape occurs and, if not, the resulting popt/pcov. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "Replace the failed curve_fit nan_policy='omit' sigma-shape probe milestone with direct, in-probe reproducer checks on both buggy and fixed revisions (without relying on the in-repo test), and then optionally validate the report examples via check_reported_examples if it can run.",
+          "milestones": [
+            "curvefit_nan_sigma_probe_buggy [buggy] \u2014 Run a direct curve_fit reproducer probe on the buggy revision and record whether nan_policy='omit' with 1D and 2D sigma triggers the sigma shape ValueError and/or produces mismatched results. (1 steps, verify: steps_succeeded, probe_ran)",
+            "curvefit_nan_sigma_probe_fixed [fixed] \u2014 Run the same direct curve_fit reproducer probe on the fixed revision and record that nan_policy='omit' with 2D sigma succeeds (no sigma-shape ValueError) and yields stable popt/pcov comparable to buggy probe outputs (divergent behavior). (1 steps, verify: steps_succeeded, probe_ran)",
+            "report_examples_optional_probe [buggy] \u2014 Optionally validate that the report's own I/O examples reproduce: on buggy, sigma-shape failure occurs; on fixed, sigma omission works and returns the expected values. (2 steps, verify: examples_reproduced, steps_succeeded)"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "curvefit_omitnan_sigma_shape_reproducer_v2",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(curvefit_omitnan_sigma_shape_reproducer_v2) \u2014 Run a Python probe that executes curve_fit with nan_policy='omit' for scalar sigma (baseline), 1D sigma (length N), and 2D sigma (NxN covariance), with NaNs placed in both x and y; record whether a ValueError about sigma shape is raised and, if not, record popt/pcov."
+      },
+      {
+        "verification": {
+          "milestone": "curvefit_nan_sigma_probe_buggy",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[buggy] run_numerical_probe(curvefit_omitnan_sigma_shape_reproducer_v2) \u2014 Run a Python probe that executes curve_fit with nan_policy='omit' for scalar sigma (baseline), 1D sigma (length N), and 2D sigma (NxN covariance), with NaNs placed in both x and y; record whether a ValueError about sigma shape is raised and, if not, record popt/pcov. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "abandoned_milestone": {
+          "milestone": "curvefit_nan_sigma_probe_buggy",
+          "revision": "buggy",
+          "failed": [
+            "steps_succeeded",
+            "probe_ran"
+          ],
+          "attempts": 2,
+          "detail": [
+            "[buggy] run_numerical_probe(curvefit_omitnan_sigma_shape_reproducer_v2) \u2014 Run a Python probe that executes curve_fit with nan_policy='omit' for scalar sigma (baseline), 1D sigma (length N), and 2D sigma (NxN covariance), with NaNs placed in both x and y; record whether a ValueError about sigma shape is raised and, if not, record popt/pcov. did not execute",
+            "the milestone ran no probe"
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "curvefit_omitnan_sigma_shape_reproducer_v2",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[fixed] run_numerical_probe(curvefit_omitnan_sigma_shape_reproducer_v2) \u2014 Run the identical Python probe code as in buggy revision to compare raised/success for scalar, 1D, and 2D sigma under nan_policy='omit'."
+      },
+      {
+        "verification": {
+          "milestone": "curvefit_nan_sigma_probe_fixed",
+          "verified": false,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": false,
+              "detail": "[fixed] run_numerical_probe(curvefit_omitnan_sigma_shape_reproducer_v2) \u2014 Run the identical Python probe code as in buggy revision to compare raised/success for scalar, 1D, and 2D sigma under nan_policy='omit'. did not execute"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 3,
+            "recorded": 3,
+            "error": null,
+            "could_not_evaluate": 3
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 3,
+            "recorded": 3,
+            "error": null,
+            "could_not_evaluate": 3
+          }
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.3,
+          2.0,
+          0.0,
+          -0.0,
+          -0.0,
+          0.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.3,
+          2.0,
+          0.0,
+          -0.0,
+          -0.0,
+          0.0,
+          0.19921477442446772,
+          0.5037603485432404,
+          4.297168387280522e-06,
+          -1.0785663142733298e-05
+        ]
+      },
+      {
+        "described_examples": {
+          "n_described": 3,
+          "buggy": {
+            "status": "ok",
+            "n_records": 3,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 3,
+            "target_reached": true
+          },
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "diverged",
+        "examples_verdict": "diverged",
+        "examples": "2/3"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, and 2/3 reported example(s) show the reported difference between the revisions; no probe is pathological, but the two revisions record different values"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "gpt-5.4-nano",
+      "calls": 7,
+      "input_tokens": 17724,
+      "output_tokens": 9368,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.015255
+    }
+  }
+]

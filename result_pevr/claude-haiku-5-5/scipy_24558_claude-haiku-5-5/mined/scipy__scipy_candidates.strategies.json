@@ -1,0 +1,122 @@
+{
+  "input": "pipeline-haiku-eradyn-inloop/scipy_24558_claude-haiku-5-5/mined/scipy__scipy_24558.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-23",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 24827,
+    "output_tokens": 8535,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 24558,
+      "reference": "https://github.com/scipy/scipy/pull/24558",
+      "buggy_commit": "dd01e7df62f0ebdbc25c3a59dd6c4d693c07bed9",
+      "fixed_commit": "95c67a9700ff2e1e0a3f5f48e39d209cb08d79b0",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7584,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce scipy.linalg.sqrtm on singular zero-diagonal inputs (gh-24508) at buggy commit dd01e7df62f0 by building SciPy from source with numpy 2.3.3 on Python 3.12, then running the developer's parametrized test_gh24508. On the buggy revision the test fails because sqrtm emits no LinAlgWarning (pytest.warns reports DID NOT WARN) and returns finite values near 1e291 instead of inf. On the fixed revision the warning is emitted and the top row is inf for all four dtypes.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "numpy==2.3.3",
+            "pytest",
+            "hypothesis",
+            "meson-python",
+            "meson",
+            "ninja",
+            "cython==3.0.11",
+            "pybind11==2.13.6",
+            "pythran==0.18.0",
+            "pooch",
+            "threadpoolctl",
+            "spin"
+          ],
+          "system_packages": [
+            "gcc (11.x, as in the reporter's show_config)",
+            "gfortran",
+            "pkg-config",
+            "libopenblas-dev (OpenBLAS 0.3.30 if obtainable, otherwise the distro build)"
+          ],
+          "build_commands": [
+            "git checkout dd01e7df62f0",
+            "git submodule update --init --recursive",
+            "python -m pip install -r requirements/build.txt",
+            "python -m pip install numpy==2.3.3",
+            "python -m pip install --no-build-isolation -e . -Csetup-args=-Dblas=openblas -Dlapack=openblas"
+          ],
+          "pinned_because": [
+            "numpy==2.3.3: era ceiling is numpy<=2.3 and the reporter ran 2.3.3; numerically relevant, so pinned to the era rather than latest.",
+            "scipy: not pinned, the SciPy version is the checked-out buggy commit built from source; the reporter's scipy 1.16.3 is not reproduced from PyPI.",
+            "cython==3.0.11: era ceiling <=3.0 (not numerically relevant); a 3.0.x release is chosen.",
+            "pybind11==2.13.6 and pythran==0.18.0: no documented constraint and no era entry (unbounded); chosen to match the versions the reporter's show_config listed, and stated as a choice.",
+            "OpenBLAS 0.3.30 with USE_64BITINT=0: taken from the reporter's show_config as the numerical backend; the Schur/Sylvester path goes through LAPACK, so the backend is decision-relevant."
+          ]
+        },
+        "test_command": "python -m pytest scipy/linalg/tests/test_matfuncs.py -k test_gh24508 -v",
+        "reproducing_test": "scipy/linalg/tests/test_matfuncs.py::TestSqrtm::test_gh24508 (class name assumed from the surrounding test_negative_strides method; confirm with grep for the class containing test_negative_strides)",
+        "success_criterion": "Transition: on buggy dd01e7df62f0, test_gh24508 FAILS for the parametrizations (at least the float64 one) because pytest.warns sees no LinAlgWarning matching 'Matrix is singular.' (DID NOT WARN), so the inf assertion is never reached. On the fixed revision (the PR#24558 commit), test_gh24508 PASSES for all four dtypes (float32, float64, complex64, complex128): the warning is emitted and res[0,1:] are all inf.",
+        "numerical_probe": "",
+        "input_output_examples": [
+          {
+            "input": "scipy.linalg.sqrtm(np.array([[0, 2, 2], [0, 0, 0], [0, 0, 0]]))",
+            "buggy_output": "array([[0.00000000e+000, 2.49480039e+291, 2.49480039e+291], [0.00000000e+000, 0.00000000e+000, 0.00000000e+000], [0.00000000e+000, 0.00000000e+000, 0.00000000e+000]])",
+            "expected_output": "A LinAlgWarning is issued and the entries that have no square root are inf rather than 2.49480039e+291"
+          },
+          {
+            "input": "scipy.linalg.sqrtm([[0, 1], [0, 0]])",
+            "buggy_output": "array([[ 0., inf], [ 0.,  0.]]) with no LinAlgWarning",
+            "expected_output": "A LinAlgWarning: Matrix is singular. The result might be inaccurate or the array might not have a square root. The returned array([[ 0., inf], [ 0.,  0.]]) is the expected inf-containing result"
+          }
+        ],
+        "risks": [
+          "Platform and LAPACK dependence: the garbage ~1e291 values come from LAPACK dtrsyl_ on zero-diagonal blocks, and the reporter's dlanv2_ hypothesis suggests the Schur-form values depend on the LAPACK implementation. The buggy behaviour is established only for OpenBLAS 0.3.30 with gcc 11; a reference-LAPACK or different-compiler build may not show the failure, and then the test would not transition. Verify the buggy build reproduces before trusting the transition.",
+          "The isSchur out-of-bounds access is undefined behaviour. Without a sanitizer the garbage may or may not appear; the bug is not shown to require ASan, and no sanitizer build is planned here.",
+          "The float32/complex64 paths use strsyl/ctrsyl rather than dtrsyl, so one of the four parametrizations may pass on the buggy revision. The transition is defined over the whole test, so any single dtype that still passes the buggy build does not make the test a valid reproducer by itself; the float64 case is the primary check.",
+          "Test assertion order: the warning check runs first (pytest.warns wraps sqrtm), so on the buggy revision the observed failure is the missing warning, not the inf assertion. The inf-value failure mode is therefore only observable if the warning is somehow emitted on buggy.",
+          "Build risk: scipy's meson build with -Dblas=openblas -Dlapack=openblas assumes the option names and OpenBLAS discovery via pkg-config; if the build fails or links reference LAPACK, the numerical path changes. spin build is an alternative, and a clean build directory is advised when switching between buggy and fixed commits.",
+          "Class name TestSqrtm is inferred, not confirmed by the evidence; a wrong class name makes -k select nothing and must be checked.",
+          "Tolerance: the test uses no numerical tolerance (exact isinf and warning match), so there is no 1-ULP-versus-tolerance concern for this transition.",
+          "Magnitude regime beyond the reproducer is unverified; the transition relies only on the zero-diagonal nilpotent inputs in the test."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "developer test test_gh24508 in scipy/linalg/tests/test_matfuncs.py (warning match 'Matrix is singular.' and np.isinf on res[0,1:])",
+          "why": "The assertion is a boolean warning match and an all-inf check, not an allclose comparison, so no numeric tolerance applies."
+        },
+        "fails_on_buggy": "pytest.warns(LinAlgWarning, match='Matrix is singular.') reports DID NOT WARN because the buggy sqrtm_recursion_d returns finite values near 1e291 without the singular-matrix warning, so the test fails before the inf assertion runs.",
+        "passes_on_fixed": "The fixed sqrtm_recursion_d sets INFINITY and info=1 on the sylvester12/sylvester21 conditions, so the LinAlgWarning with matching text is emitted and res[0,1:] are all inf for float32, float64, complex64 and complex128."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5417,
+        "output_tokens": 5050,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 19410,
+        "output_tokens": 3485,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

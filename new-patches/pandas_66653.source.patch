@@ -1,0 +1,90 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 3afeb60ceb5a3..beec4997d71e8 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -420,6 +420,8 @@ Datetimelike
+ - Bug in :meth:`DatetimeIndex.union` and :meth:`TimedeltaIndex.union` with ``sort=False`` silently dropping values from the other index that fell after the end of ``self`` (:issue:`66322`)
+ - Bug in :meth:`Series.dt.isocalendar` with a pyarrow-backed datetime or date dtype not preserving the original index, resetting it to a default :class:`RangeIndex` (:issue:`65894`)
+ - Bug in ``day_of_week``, :meth:`Timestamp.weekday` and :meth:`Timestamp.day_name` returning a wrong weekday, or raising ``OverflowError``, for second-resolution datetimes with a year beyond ``2**31`` (:issue:`66549`)
++- Bug in adding a :class:`BusinessDay` offset to a :class:`DatetimeIndex` or :class:`Series` where an out-of-bounds result silently wrapped to an unrelated date, and a result landing exactly on the ``NaT`` sentinel came back as a missing value, instead of raising ``OverflowError`` (:issue:`66552`)
++- Bug in adding a :class:`BusinessDay` offset with ``n`` of magnitude ``2**31`` or more to a :class:`DatetimeIndex` or :class:`Series` silently shifting by a wrapped number of business days, e.g. ``n=2**32`` behaving like ``n=0`` (:issue:`66549`)
+ - Bug in adding a :class:`DateOffset` with a ``milliseconds`` component to a :class:`Timestamp` returning a microsecond-resolution result, inconsistent with the millisecond-resolution result of the equivalent :class:`DatetimeIndex` and :class:`Series` operations (:issue:`64806`)
+ - Bug in adding a month-, quarter-, half-year-, year- or semi-month-based offset (e.g. :class:`MonthEnd`, :class:`QuarterEnd`, :class:`YearEnd`, :class:`SemiMonthEnd`) with ``n`` of magnitude ``2**31`` or more silently shifting by a wrapped number of periods, e.g. ``n=2**32`` behaving like ``n=0`` (:issue:`66549`)
+ - Bug in adding a month-, quarter-, year- or semi-month-based offset (e.g. :class:`MonthEnd`, :class:`QuarterEnd`, :class:`YearEnd`, :class:`SemiMonthEnd`) to a :class:`DatetimeIndex` or :class:`Series` where an out-of-bounds result raised a bare ``OverflowError`` naming a pandas C source file, instead of the :class:`OutOfBoundsDatetime` naming the offending date that the equivalent :class:`Timestamp` operation raises (:issue:`66549`)
+diff --git a/pandas/_libs/tslibs/offsets.pyx b/pandas/_libs/tslibs/offsets.pyx
+index 2f37ac949fe3c..bdc62a8a6c88c 100644
+--- a/pandas/_libs/tslibs/offsets.pyx
++++ b/pandas/_libs/tslibs/offsets.pyx
+@@ -100,6 +100,12 @@ from .timestamps cimport _Timestamp
+ 
+ from .timestamps import Timestamp
+ 
++
++cdef extern from "pandas/portable.h":
++    bint checked_add(int64_t a, int64_t b, int64_t *res) noexcept nogil
++    bint checked_mul(int64_t a, int64_t b, int64_t *res) noexcept nogil
++
++
+ # ---------------------------------------------------------------------
+ # day_opt enum: avoids repeated string comparisons in nogil loops
+ 
+@@ -2689,16 +2695,18 @@ cdef class BusinessDay(BusinessMixin):
+         ndarray[int64_t]
+         """
+         cdef:
+-            int periods = self._n
++            int64_t periods = self._n
+             Py_ssize_t _, count = i8other.size
+             ndarray result = cnp.PyArray_EMPTY(
+                 i8other.ndim, i8other.shape, cnp.NPY_INT64, 0
+             )
+-            int64_t val, res_val
+-            int wday, days, weeks
++            int64_t val, res_val, shift
++            int wday
++            int64_t days, weeks
+             npy_datetimestruct dts
+             int64_t DAY_PERIODS = periods_per_day(reso)
+             cnp.broadcast mi = cnp.PyArray_MultiIterNew2(result, i8other)
++            bint overflowed = False
+ 
+         weeks = periods // 5
+ 
+@@ -2714,19 +2722,33 @@ cdef class BusinessDay(BusinessMixin):
+                     wday = dayofweek(dts.year, dts.month, dts.day)
+ 
+                     days = self._adjust_ndays(wday, weeks)
+-                    res_val = val + (7 * weeks + days) * DAY_PERIODS
++                    # GH#66552 a result that wraps, or that lands exactly on
++                    #  NPY_NAT and so is indistinguishable from a missing value
++                    #  downstream, has to raise rather than be stored.
++                    if (
++                        checked_mul(weeks, 7, &shift)
++                        or checked_add(shift, days, &shift)
++                        or checked_mul(shift, DAY_PERIODS, &shift)
++                        or checked_add(val, shift, &res_val)
++                        or res_val == NPY_NAT
++                    ):
++                        overflowed = True
++                        break
+ 
+                 # Analogous to: out[i] = res_val
+                 (<int64_t*>cnp.PyArray_MultiIter_DATA(mi, 0))[0] = res_val
+ 
+                 cnp.PyArray_MultiIter_NEXT(mi)
+ 
++        if overflowed:
++            raise OverflowError("Overflow in int64 addition")
++
+         return result
+ 
+-    cdef int _adjust_ndays(self, int wday, int weeks) noexcept nogil:
++    cdef int64_t _adjust_ndays(self, int wday, int64_t weeks) noexcept nogil:
+         cdef:
+-            int n = self._n
+-            int days
++            int64_t n = self._n
++            int64_t days
+ 
+         if n <= 0 and wday > 4:
+             # roll forward

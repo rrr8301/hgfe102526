@@ -1,0 +1,106 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/pandas_68315_claude-haiku-5-5/mined/pandas-dev__pandas_68315.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 19010,
+    "output_tokens": 3950,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 68315,
+      "reference": "https://github.com/pandas-dev/pandas/pull/68315",
+      "buggy_commit": "7d79fc4499441ace8aa7bb79c385b8cfb642383d",
+      "fixed_commit": "a77f7cd865b78bb728d410d946a5ec20e9d8511c",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5708,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#68315 in pandas: convert_dtypes on float data outside int64 range (2.0**63, 1e30, inf) saturates via astype(int) and wrongly yields Int64 or emits a spurious RuntimeWarning; float16 bound casts overflow to inf in floats_fit_integer_dtype. Build pandas from source at the buggy commit 7d79fc449944 and run the three added test files; the transition is fail on buggy, pass on fixed.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "a C/C++ compiler (gcc or clang) with Python headers"
+          ],
+          "build_commands": [
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy, python-dateutil, tzdata and Cython have no documented constraint and no era table entry in the evidence; versions are unpinned and chosen by this strategy (latest compatible with the buggy revision's build), not inferred from an era ceiling",
+            "The bug depends on NumPy float16 scalar promotion and on np.iinfo(np.dtype(int)) width, so the NumPy version must be recent enough to match the fixed code's behaviour; this is a strategy choice, not a documented constraint"
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/dtypes/cast/test_downcast.py::test_downcast_float16_no_overflow_warning pandas/tests/series/indexing/test_setitem.py::test_setitem_enlarge_float16_no_overflow_warning pandas/tests/series/methods/test_convert_dtypes.py -k 'float_out_of_int64_range or float_one_past_max or float16_no_overflow_warning' -p no:cacheprovider",
+        "reproducing_test": "pandas/tests/dtypes/cast/test_downcast.py::test_downcast_float16_no_overflow_warning (plus pandas/tests/series/methods/test_convert_dtypes.py::TestSeriesConvertDtypes::test_convert_dtypes_float_out_of_int64_range, test_convert_dtypes_float_one_past_max, test_convert_dtypes_float16_no_overflow_warning, and pandas/tests/series/indexing/test_setitem.py::test_setitem_enlarge_float16_no_overflow_warning)",
+        "success_criterion": "On the buggy revision 7d79fc449944 the targeted tests fail: test_downcast_float16_no_overflow_warning raises a RuntimeWarning (float16 bounds overflow to inf) when warnings are set to error; the convert_dtypes tests for [1e30],[inf],[-inf] and float(INT_MAX+1) either emit a warning or return Int64 instead of Float64; the setitem float16 test emits a warning. On the fixed revision (the PR head) all of these pass: results are Float64 for out-of-range floats, int64 for in-range float16 values, and no warnings are emitted.",
+        "numerical_probe": "pd.Series([2.0**63]).convert_dtypes() should give Float64, not Int64 holding 9223372036854775807; pd.Series([1e30]).convert_dtypes() should give Float64 with no RuntimeWarning.",
+        "input_output_examples": [
+          {
+            "input": "pd.Series([2.0**63]).convert_dtypes()",
+            "buggy_output": "Int64 holding 9223372036854775807",
+            "expected_output": "Float64 (value 2**63 must not be saturated to int64 max)"
+          },
+          {
+            "input": "pd.Series([1e30]).convert_dtypes() (and inf)",
+            "buggy_output": "spurious RuntimeWarning before falling back to Float64",
+            "expected_output": "Float64 with no RuntimeWarning"
+          }
+        ],
+        "risks": [
+          "Platform-dependent C int width: the one-past-max test derives bounds from np.iinfo(np.dtype(int)); on Windows where default int is 32-bit the test exercises different values, so Linux/macOS 64-bit is required for the intended transition.",
+          "The float16 overflow is a NumPy scalar-promotion behaviour; the warning may not appear on NumPy versions that handle float16 comparisons differently, so an old or new NumPy could make the buggy revision pass the test and break the transition.",
+          "Spurious RuntimeWarning is only detected if warnings are promoted to errors (test_downcast uses warnings.simplefilter('error', RuntimeWarning)); running without that filter would hide the bug.",
+          "Setitem-with-expansion case ser.loc[2]=np.float16(3.0) depends on pandas version-specific upcasting rules; if the buggy commit's setitem path differs, the transition may not hold there.",
+          "Sanitisers or 32-bit architectures are not required by the evidence; no sanitiser-dependent behaviour is claimed, so none should be assumed.",
+          "Build time is substantial because pandas compiles Cython extensions; the editable build must succeed on the buggy commit before tests can be run.",
+          "The evidence does not state a Python version, so python_version is null and must be chosen from what the buggy commit supports."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "pandas test assertions: tm.assert_series_equal against ser.astype('Float64') or ser.astype('Int64'), and tm.assert_numpy_array_equal for int64 downcast results",
+          "why": "Integer-versus-float dtype outcomes and absence of warnings are exact checks; no numerical tolerance applies."
+        },
+        "fails_on_buggy": "On the buggy revision the float16 downcast test sees a RuntimeWarning raised as an error because np.float16 bounds overflow to inf, and the convert_dtypes tests see either a spurious warning (assert_produces_warning(None) fails) or an Int64 result where Float64 is expected, so assert_series_equal fails.",
+        "passes_on_fixed": "On the fixed revision the bounds are np.float64 scalars so float16 promotes safely, out-of-range floats are guarded by floats_fit_integer_dtype before the equality check, and the tests return Float64 or int64 with no warnings, so all assertions hold."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6032,
+        "output_tokens": 2105,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 12978,
+        "output_tokens": 1845,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

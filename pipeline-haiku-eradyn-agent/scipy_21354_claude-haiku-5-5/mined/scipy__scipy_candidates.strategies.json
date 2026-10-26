@@ -1,0 +1,109 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/scipy_21354_claude-haiku-5-5/mined/scipy__scipy_21354.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 18097,
+    "output_tokens": 5967,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 21354,
+      "reference": "https://github.com/scipy/scipy/pull/21354",
+      "buggy_commit": "4d2f88a166ab7be1f4b16ad3aec7cde9ecdb1fef",
+      "fixed_commit": "bcdcb51e92a3095a79a62d318b14c085cc9db110",
+      "bug_type": "convergence",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 6999,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce gh-20048: rv_discrete._drv2_ppfsingle bracketing never terminates on the buggy revision. The PR's custom test_gh20048 (a bounded cdf with b=np.inf, ppf(0.999)) should hang on the buggy commit and raise RuntimeError matching 'Arguments that bracket...' on the fixed commit. Build SciPy from source at the buggy commit, apply the test diff, and run that single test under a timeout so the hang is reported as a failure.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12.1",
+          "pip_packages": [
+            "numpy==1.26.4",
+            "pytest",
+            "pytest-timeout",
+            "meson-python",
+            "ninja",
+            "cython",
+            "pythran",
+            "pybind11"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "git checkout 4d2f88a166ab",
+            "python -m pip install -r requirements/build.txt",
+            "python -m pip install -e . --no-build-isolation",
+            "git apply the reproducing_test diff onto the buggy checkout (or copy the test_gh20048 function and the from scipy import stats line into scipy/stats/tests/test_discrete_distns.py)"
+          ],
+          "pinned_because": [
+            "numpy 1.26.4 is the version observed in issue 20048 system information; it is an observed value, not a documented or era-table constraint, so it is chosen here rather than required",
+            "scipy and build-tool versions are taken from the source tree build requirements; the issue's pythran 0.15.0 and cython 3.0.8 are not numerically relevant and are not pinned"
+          ]
+        },
+        "test_command": "timeout 600 python -m pytest scipy/stats/tests/test_discrete_distns.py::test_gh20048 -p no:cacheprovider --timeout=120 -x",
+        "reproducing_test": "scipy/stats/tests/test_discrete_distns.py::test_gh20048 defines test_dist_gen(stats.rv_discrete) with _cdf(k) returning min(k/100, 0.99), instantiates it with b=np.inf, and asserts that ppf(0.999) raises RuntimeError matching 'Arguments that bracket...'",
+        "success_criterion": "On the buggy revision 4d2f88a166ab with the test applied, test_gh20048 does not return on its own: the bracketing loop in _drv2_ppfsingle keeps stepping by a fixed increment and never raises, so the test fails only via the --timeout=120 pytest-timeout limit (or the outer timeout). On the fixed revision (the PR head), ppf(0.999) raises RuntimeError whose message contains 'Arguments that bracket', pytest.raises accepts it, and the test passes in well under a second.",
+        "numerical_probe": "python -c \"import numpy as np, scipy.stats as st; class D(st.rv_discrete):\n def _cdf(self,k): return min(k/100,0.99)\nd=D(b=np.inf)\ntry: d.ppf(0.999)\nexcept RuntimeError as e: print('RuntimeError', e)\"  (run with timeout 60; buggy hangs, fixed prints RuntimeError)",
+        "input_output_examples": [
+          {
+            "input": "import scipy.stats as st; st.logser(0.25739239425774363).ppf(0.9999999999999999)",
+            "buggy_output": "infinite loop (no return; interrupted with KeyboardInterrupt inside _pmf)",
+            "expected_output": "terminates; the ppf for the same quantile should not hang"
+          },
+          {
+            "input": "import scipy.stats as st; st.logser(0.25739239425774363).ppf(0.99999999999999999)",
+            "buggy_output": "not reported as a hang in the passage",
+            "expected_output": "inf"
+          }
+        ],
+        "risks": [
+          "The transition is decided by the custom test distribution, not by logser. The original logser hang was not reproducible in CI, so do not rely on logser to demonstrate the bug.",
+          "On the buggy revision the test hangs rather than failing. Without pytest-timeout (or an outer timeout) the run never returns, so the timeout is required to record a failure.",
+          "The fixed-revision test depends on the PR's source changes to _drv2_ppfsingle (float arguments and step doubling). The fixed commit must be checked out or the PR applied; the test diff alone does not fix anything.",
+          "Editable builds may not rebuild cleanly when switching between buggy and fixed commits; a clean rebuild may be needed between runs.",
+          "The exact iteration count at which the buggy loop would diverge is not stated, so the 120 s per-test timeout is a judgment call and may need raising on slow machines.",
+          "No platform-specific floating-point behaviour is required for the custom test, so it should reproduce on any platform that builds SciPy. The original logser trigger may depend on platform rounding and is not needed here.",
+          "The numerical characteristics mention overflow near the float64 maximum, but the custom test's bounded cdf means the overflow path is exercised rather than a normal root. A reproduction that instead hits a real root would not match the test's expected RuntimeError.",
+          "No dependency constraints are documented, so the numpy 1.26.4 choice is an inference from the issue report, not a stated requirement."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "PR test assertion: pytest.raises(RuntimeError, match='Arguments that bracket...')",
+          "why": "The assertion checks exception type and message pattern; no numeric tolerance applies."
+        },
+        "fails_on_buggy": "The buggy _drv2_ppfsingle keeps incrementing the bracket by a fixed step of 10 with integer arguments and never returns or raises, so test_gh20048 never reaches pytest.raises and is killed by the pytest-timeout limit, which counts as a failure.",
+        "passes_on_fixed": "The fixed code doubles the step and raises RuntimeError with a message starting 'Arguments that bracket' once bracketing overflows, so pytest.raises matches and the test passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5008,
+        "output_tokens": 3805,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 13089,
+        "output_tokens": 2162,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

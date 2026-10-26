@@ -1,0 +1,109 @@
+{
+  "input": "pipeline_no_historic/pandas_66185/mined/pandas-dev__pandas_66185.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 25111,
+    "output_tokens": 5918,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66185,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66185",
+      "buggy_commit": "dce860fccdf9994809c16146eaa7354bff598cb3",
+      "fixed_commit": "cc4813e776335e09abe7ca3e91d8f0925049d919",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7257,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas PR#66185 bug in cast_from_unit_vectorized: near-int64-boundary floats wrap negative-to-positive under errors=coerce and in-bounds floats near INT64_MAX spuriously raise for units D/W. Build pandas from source at buggy commit dce860fccdf9 and run the three added tests; they should fail on buggy and pass on fixed revision.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "a C/C++ compiler toolchain (gcc or clang)",
+            "git"
+          ],
+          "build_commands": [
+            "git checkout dce860fccdf9",
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy, python-dateutil, tzdata and Cython have no documented constraint and no era table entry in the evidence; versions are left unpinned and chosen by the installer, which is an unverified choice",
+            "Python version is not stated by the evidence, so it is left null"
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/tools/test_to_datetime.py::TestToDatetime::test_float_to_datetime_near_int64_boundary pandas/tests/tools/test_to_timedelta.py -k near_int64_boundary pandas/tests/tslibs/test_conversion.py -k near_int64_boundary -p no:cacheprovider -q",
+        "reproducing_test": "pandas/tests/tslibs/test_conversion.py::test_cast_from_unit_vectorized_near_int64_boundary (parametrized over us, ms, s, m, h, D, W) plus pandas/tests/tools/test_to_datetime.py::test_float_to_datetime_near_int64_boundary and pandas/tests/tools/test_to_timedelta.py::test_float_to_timedelta_near_int64_boundary",
+        "success_criterion": "On the buggy revision dce860fccdf9 the added tests fail: the negative near-bound wrap case does not raise OutOfBoundsDatetime or does not coerce to NaT, and the D/W in-bounds case spuriously raises or the array/scalar comparison mismatches. On the fixed revision (the PR head containing the int64 wrap detection) all added near-boundary tests pass, with array cast equal to scalar cast for every walked float.",
+        "numerical_probe": "Walk np.nextafter from -(2**63)/ns_per_unit and (2**63-1)/ns_per_unit by 60 ULP outward and across the bound for each unit, comparing cast_from_unit_vectorized to Timedelta(val, unit).value.",
+        "input_output_examples": [
+          {
+            "input": "wrapped = -(2**63+200)/1e9 with unit='s' (errors='coerce')",
+            "buggy_output": "large positive wrapped timestamp (garbage, not NaT); exact value not stated in passages",
+            "expected_output": "raises OutOfBoundsDatetime under default handling and coerces to NaT under errors='coerce'"
+          },
+          {
+            "input": "val = (2**63-1-100)/oneday_in_ns with unit='D'",
+            "buggy_output": "raises OutOfBoundsDatetime spuriously",
+            "expected_output": "converts without raising, equal to Timestamp(val, unit='D')"
+          }
+        ],
+        "risks": [
+          "The bug only manifests on the m != 1 path of cast_from_unit_vectorized where result_f is computed in float64; reproduction depends on the float64 rounding of bound/ns_per_unit, which is platform-independent IEEE behaviour but must not be replaced by coarse values.",
+          "The test file test_conversion.py references OutOfBoundsDatetime and Timedelta imports added by the PR; the buggy revision must include these imports or the module will fail at collection, which would be a false transition unrelated to the defect.",
+          "The test_to_datetime.py test does not select a class in the diff; the test_command uses a TestToDatetime class name that is assumed, and the selector must be verified against the file before running.",
+          "Commit message names Claude model versions in co-author tags; not numerical evidence and not used.",
+          "No whatsnew entry was added, so expected behaviour is taken only from the PR text and tests.",
+          "Platform: the evidence does not state an architecture or sanitiser requirement; the defect is expected to reproduce on x86_64 and aarch64 Linux with default float64 rounding, but this is not confirmed by the evidence.",
+          "Dependency versions (NumPy in particular) are unbounded in the evidence; a NumPy version whose np.nextafter or float64 scalar handling differs could change which floats are walked, so the transition is not guaranteed across NumPy versions.",
+          "The scalar reference Timedelta(val, unit) in the test raises OutOfBoundsTimedelta for some units rather than OutOfBoundsDatetime; the test handles both, but the pytest.raises in the else-branch only accepts OutOfBoundsDatetime, which may mask or create a failure on the fixed revision."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "scalar cast_from_unit path (Timedelta(val, unit).value) as stated in the test comments and PR text",
+          "why": "The developer test asserts the array result equals the scalar result exactly, so the oracle is exact integer equality rather than a tolerance."
+        },
+        "fails_on_buggy": "The negative near-bound case: the buggy integer base*m + int64(frac*m) wraps modulo 2**64 to a large positive value, so to_datetime with errors='coerce' returns that timestamp instead of NaT and the assertion comparing to NaT fails. Also the D/W in-bounds case raises OutOfBoundsDatetime on the buggy path, so the call inside the test errors out.",
+        "passes_on_fixed": "With the int64 wrap detection comparing the integer result against its float64 estimate, the negative case raises OutOfBoundsDatetime and coerces to NaT, the D/W in-bounds case converts without raising, and the vectorized walk matches the scalar cast for all units."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6828,
+        "output_tokens": 2054,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 18283,
+        "output_tokens": 3864,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

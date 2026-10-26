@@ -1,0 +1,74 @@
+diff --git a/numpy/random/src/distributions/distributions.c b/numpy/random/src/distributions/distributions.c
+index 4ce4b728584c..67d16e855a52 100644
+--- a/numpy/random/src/distributions/distributions.c
++++ b/numpy/random/src/distributions/distributions.c
+@@ -998,7 +998,7 @@ int64_t random_geometric(bitgen_t *bitgen_state, double p) {
+ }
+ 
+ RAND_INT_TYPE random_zipf(bitgen_t *bitgen_state, double a) {
+-  double am1, b;
++  double am1, b, Umin;
+ 
+   if (a >= 1025) {
+     /*
+@@ -1011,10 +1011,21 @@ RAND_INT_TYPE random_zipf(bitgen_t *bitgen_state, double a) {
+   }
+   am1 = a - 1.0;
+   b = pow(2.0, am1);
++  /*
++   * In the while loop, X is generated from the uniform distribution (Umin, 1].
++   * Values below Umin would result in X being rejected because it is too
++   * large, so there is no point in including them in the distribution of U.
++   */
++  Umin = pow(RAND_INT_MAX, -am1);
+   while (1) {
+-    double T, U, V, X;
++    double U01, T, U, V, X;
+ 
+-    U = 1.0 - next_double(bitgen_state);
++    /*
++     * U is sampled from (Umin, 1]. Note that Umin might be 0, and we don't
++     * want U to be 0.
++     */
++    U01 = next_double(bitgen_state);
++    U = U01*Umin + (1 - U01);
+     V = next_double(bitgen_state);
+     X = floor(pow(U, -1.0 / am1));
+     /*
+diff --git a/numpy/random/src/legacy/legacy-distributions.c b/numpy/random/src/legacy/legacy-distributions.c
+index b518b8a03994..14d9ce25f255 100644
+--- a/numpy/random/src/legacy/legacy-distributions.c
++++ b/numpy/random/src/legacy/legacy-distributions.c
+@@ -388,7 +388,31 @@ int64_t legacy_random_poisson(bitgen_t *bitgen_state, double lam) {
+ }
+ 
+ int64_t legacy_random_zipf(bitgen_t *bitgen_state, double a) {
+-  return (int64_t)random_zipf(bitgen_state, a);
++  double am1, b;
++
++  am1 = a - 1.0;
++  b = pow(2.0, am1);
++  while (1) {
++    double T, U, V, X;
++
++    U = 1.0 - next_double(bitgen_state);
++    V = next_double(bitgen_state);
++    X = floor(pow(U, -1.0 / am1));
++    /*
++     * The real result may be above what can be represented in a signed
++     * long. Since this is a straightforward rejection algorithm, we can
++     * just reject this value. This function then models a Zipf
++     * distribution truncated to sys.maxint.
++     */
++    if (X > (double)RAND_INT_MAX || X < 1.0) {
++      continue;
++    }
++
++    T = pow(1.0 + 1.0 / X, am1);
++    if (V * X * (T - 1.0) / (b - 1.0) <= T / b) {
++      return (RAND_INT_TYPE)X;
++    }
++  }
+ }
+ 
+ 

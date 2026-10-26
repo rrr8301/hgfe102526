@@ -1,0 +1,88 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 3da17e159d14c..b5747788461bf 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -400,6 +400,7 @@ Datetimelike
+ - Bug in :class:`Timestamp` constructor where a timezone-aware ``datetime`` near the implementation bounds raised ``OverflowError`` instead of :class:`OutOfBoundsDatetime` when shifted to UTC (:issue:`66510`)
+ - Bug in :class:`Timestamp` constructor where passing ``np.str_`` objects would fail in Cython string parsing (:issue:`48974`)
+ - Bug in :class:`Timestamp` constructor where strings with a negative year of fewer than 4 digits (e.g. ``"-111-01-01"``) silently dropped the leading ``"-"`` and were parsed as a positive year; BC dates with 1-4 digit years now parse correctly, matching :class:`numpy.datetime64` (:issue:`55954`)
++- Bug in :class:`Timestamp` constructor, :class:`Timedelta` constructor, :func:`to_datetime`, and :func:`to_timedelta` on scalar or object-dtype input, including plain lists of NumPy scalars, with a NumPy float narrower than 64 bits (e.g. ``np.float32``) and a ``unit``: results gained spurious sub-second digits, ``np.float16`` raised, a spurious ``RuntimeWarning`` was emitted, and ``np.float16("-inf")`` silently became ``NaT`` (:issue:`56996`)
+ - Bug in :class:`Timestamp` constructor, :class:`Timedelta` constructor, :func:`to_datetime`, and :func:`to_timedelta` with non-round ``float`` input and ``unit`` failing to raise when the value is just outside the representable bounds (:issue:`57366`)
+ - Bug in :class:`Timestamp` constructor, :meth:`Timestamp.replace`, :func:`to_datetime`, and :func:`read_csv` with ``parse_dates`` where a datetime landing on the ``NaT`` sentinel, either directly or after the shift to UTC, silently became ``NaT`` instead of raising :class:`OutOfBoundsDatetime` (:issue:`66510`)
+ - Bug in :func:`api.types.infer_dtype` returning ``"date"`` or ``"mixed"`` instead of ``"datetime"`` / ``"timedelta"`` for lists of :class:`Timestamp`/:class:`Timedelta` values mixed with ``pd.NA`` (:issue:`53023`)
+@@ -410,6 +411,7 @@ Datetimelike
+ - Bug in :func:`date_range` where passing ``end`` off the offset together with ``periods`` and an anchored offset (e.g. ``W-SUN``, ``ME``, ``MS``, ``QS``) silently returned fewer than ``periods`` dates (:issue:`64834`)
+ - Bug in :func:`to_datetime` and :class:`Timestamp` where a datetime near the implementation bounds with a fixed UTC offset silently wrapped when shifted to UTC instead of raising :class:`OutOfBoundsDatetime` (:issue:`65353`)
+ - Bug in :func:`to_datetime` and :func:`to_timedelta` on ARM platforms where round ``float`` values outside the int64 domain (e.g. ``float(2**63)``) could silently produce incorrect results instead of raising (:issue:`64619`)
++- Bug in :func:`to_datetime` and :func:`to_timedelta` on object-dtype input, including plain lists of NumPy scalars, with a NumPy integer and a ``unit``: values of a dtype narrower than 64 bits raised :class:`OutOfBoundsDatetime`/:class:`OutOfBoundsTimedelta` (or became ``NaT`` under ``errors="coerce"``), and with ``unit="Y"`` or ``unit="M"`` any NumPy integer, ``np.int64`` included, raised ``ValueError`` (:issue:`56996`)
+ - Bug in :func:`to_datetime` and :func:`to_timedelta` where ``uint64`` values greater than ``int64`` max silently overflowed instead of raising :class:`OutOfBoundsDatetime` or :class:`OutOfBoundsTimedelta` (:issue:`60677`)
+ - Bug in :func:`to_datetime` raising a bare ``AssertionError`` instead of ``ValueError`` when passed an invalid ``errors`` value (:issue:`66542`)
+ - Bug in :func:`to_datetime` when passed a :class:`DataFrame` of date/time field columns raising for years outside the range 1000-9999 (:issue:`65195`)
+diff --git a/pandas/_libs/tslib.pyx b/pandas/_libs/tslib.pyx
+index 67930e8e379ee..cf5faf6e9b487 100644
+--- a/pandas/_libs/tslib.pyx
++++ b/pandas/_libs/tslib.pyx
+@@ -496,6 +496,10 @@ cpdef array_to_datetime(
+             elif is_float_object(val):
+                 # these must be ns unit by-definition
+ 
++                # GH#56996 widen first: comparing e.g. a np.float16 against
++                #  NPY_NAT casts the sentinel down to float16 and warns about
++                #  the overflow.
++                val = float(val)
+                 if val != val or val == NPY_NAT:
+                     iresult[i] = NPY_NAT
+                 elif val.is_integer():
+diff --git a/pandas/_libs/tslibs/conversion.pyx b/pandas/_libs/tslibs/conversion.pyx
+index 21d44543e9da2..32d02785cac7d 100644
+--- a/pandas/_libs/tslibs/conversion.pyx
++++ b/pandas/_libs/tslibs/conversion.pyx
+@@ -221,6 +221,15 @@ cdef int64_t cast_from_unit(
+         int p
+         NPY_DATETIMEUNIT in_reso
+ 
++    # GH#56996 the base/frac arithmetic below stays in `ts`'s own dtype, so a
++    #  numpy scalar narrower than int64/float64 does it at that width: under
++    #  NEP 50 `frac * m` then overflows (int8) or rounds (float32/float16).
++    #  Widen to Python int/float up front so the math matches the builtin case.
++    if is_float_object(ts):
++        ts = float(ts)
++    elif is_integer_object(ts):
++        ts = int(ts)
++
+     if unit in ["Y", "M"]:
+         if is_float_object(ts) and not ts.is_integer():
+             # GH#47267 it is clear that 2 "M" corresponds to 1970-02-01,
+@@ -520,6 +529,9 @@ cdef _TSObject convert_to_tsobject(object ts, tzinfo tz, str unit,
+             obj.creso = reso
+             pandas_datetime_to_datetimestruct(ts, reso, &obj.dts)
+     elif is_float_object(ts):
++        # GH#56996 widen first: comparing e.g. a np.float16 against NPY_NAT
++        #  casts the sentinel down to float16 and warns about the overflow.
++        ts = float(ts)
+         if ts != ts or ts == NPY_NAT:
+             obj.value = NPY_NAT
+         else:
+diff --git a/pandas/_libs/tslibs/strptime.pyx b/pandas/_libs/tslibs/strptime.pyx
+index 37c12b0e7ce0f..756e5093b94bf 100644
+--- a/pandas/_libs/tslibs/strptime.pyx
++++ b/pandas/_libs/tslibs/strptime.pyx
+@@ -471,10 +471,14 @@ def array_strptime(
+                     creso = state.creso
+                 iresult[i] = get_datetime64_nanos(val, creso)
+                 continue
+-            elif (
+-                    (is_integer_object(val) or is_float_object(val))
+-                    and (val != val or val == NPY_NAT)
+-            ):
++            elif is_float_object(val) and (val != val or float(val) == NPY_NAT):
++                # GH#56996 widen before the sentinel comparison: a np.float16
++                #  would otherwise cast NPY_NAT down to float16 and warn about
++                #  the overflow. `val` itself must stay un-widened, since the
++                #  numeric branch below stringifies it.
++                iresult[i] = NPY_NAT
++                continue
++            elif is_integer_object(val) and val == NPY_NAT:
+                 iresult[i] = NPY_NAT
+                 continue
+             elif is_integer_object(val) or is_float_object(val):

@@ -1,0 +1,101 @@
+{
+  "input": "pipeline-gpt-5.4-nano/scipy_23253_gpt-5.4-nano/mined/scipy__scipy_23253.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 10126,
+    "output_tokens": 3016,
+    "cost_usd": 0.005795,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 23253,
+      "reference": "https://github.com/scipy/scipy/pull/23253",
+      "buggy_commit": "6f1dac31620c69c63ba26a6f2216fc7616824ffc",
+      "fixed_commit": "a6d7f373b5542f4aa1effced6038a8420c302943",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 7034,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce SciPy interpolate RegularGridInterpolator correctness bug (gh-23171 via PR #23253) where method='linear' returns NaN for a 2D degenerate grid (length-1 axes) with float64 values. Ensure SciPy is built from the specified buggy commit and run the added test that asserts non-NaN behavior; it should fail on buggy and pass on fixed.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.13",
+          "pip_packages": [
+            "numpy",
+            "pybind11==2.13.6",
+            "pytest"
+          ],
+          "system_packages": [
+            "BLAS/LAPACK vendor (Accelerate on macOS)"
+          ],
+          "build_commands": [
+            "# Choose platform/arch where Accelerate is used (macOS). Example flow:\npython -m pip install -U pip setuptools wheel\npython -m pip install numpy pytest pybind11==2.13.6\n\n# Build SciPy from the provided revision (buggy):\n# 1) checkout SciPy at buggy commit\n# git clone https://github.com/scipy/scipy.git\n# cd scipy\n# git checkout 6f1dac31620c\n\n# 2) install build deps\npython -m pip install -U cython meson ninja pybind11==2.13.6\n\n# 3) build/install in editable or wheel mode\n# (exact invocation depends on SciPy's current build system for that date)\npython -m pip install -ve ."
+          ],
+          "pinned_because": [
+            "SciPy must be exactly at commit 6f1dac31620c to transition buggy->fixed as described in the issue/PR context.",
+            "pybind11 is explicitly constrained to 2.13.6 in the provided environment evidence.",
+            "Python 3.13 is explicitly given in the provided environment evidence.",
+            "BLAS/LAPACK must be Accelerate to match the evidenced numerical backend (no other constraint/version is provided; Accelerate selection is therefore part of the environment reconstruction)."
+          ]
+        },
+        "test_command": "python -m pytest scipy/interpolate/tests/test_rgi.py -k test_length_one_axis_all",
+        "reproducing_test": "test_length_one_axis_all(dtype, ndim, method) in scipy/interpolate/tests/test_rgi.py (added by the PR diff).",
+        "success_criterion": "On the buggy SciPy revision (6f1dac31620c), the parametrized instance with ndim=2, method='linear', dtype=np.float64 causes the test assertion `xp_assert_equal(result, wanted)` to fail because `interp_fill(sample)` (or `interp_err(sample)` for the in-bounds sample) returns NaN instead of the expected value (the test expects val=1/7 promoted to float64 for linear). On the fixed SciPy revision (the commit containing PR #23253 changes, described as fixing the NaN path for 2D float64 single-point grids), the same test instance passes and `interp_fill(sample)`/`interp_err(sample)` return the expected non-NaN value.",
+        "numerical_probe": "The test\u2019s core check: for a fully degenerate grid with all axes length 1, sample point `sample = np.asarray([x0])` where x0 has coordinates exactly equal to the single grid coordinates (in-bounds), the interpolator result must equal `wanted = np.asarray([val], dtype=promoted_dtype)` with val=1/7 and promoted_dtype=float64 when method='linear'. The buggy revision fails this equality for the specific dtype/method/ndim combination (float64, linear, ndim=2) due to producing NaN.",
+        "input_output_examples": [
+          {
+            "input": "RegularGridInterpolator(points=(array([0.]), array([1.])? etc)) example not provided in full by evidence; use the test construction. Specifically: dtype=np.float64, ndim=2, method='linear' -> x0=np.arange(2,dtype=float64)=[0.,1.], points=(array([0.]),array([1.])), val=np.asarray(1/7,dtype=float64), values=np.full((1,1),val), sample=np.asarray([x0])",
+            "buggy_output": "The assertion fails because the interpolator returns NaN for the in-bounds sample in the buggy revision for the 2D float64 single-point grid case (test expects wanted=array([val],dtype=float64)).",
+            "expected_output": "The interpolator returns exactly wanted=array([val],dtype=float64) (non-NaN) for the same in-bounds sample on the fixed revision."
+          },
+          {
+            "input": "RegularGridInterpolator(points=([0],[0]), values=np.array([[0]]), method='linear'); xi=[[0,0]]",
+            "buggy_output": "array([nan])",
+            "expected_output": "Not NaN; should return the interpolated value (the grid value at the single point, per PR description)."
+          }
+        ],
+        "risks": [
+          "This defect is reported for SciPy built with Accelerate; because BLAS/LAPACK vendor/version/config is not otherwise pinned, ensure you run on macOS where Accelerate is detected (as in the provided evidence).",
+          "No explicit build flags or compiler are provided in the evidence; different toolchains may change code paths. To maximize transition probability, build with the same platform conventions as the reported environment (macOS + Accelerate).",
+          "NumPy is unbounded (no version constraint). While the test uses only basic numpy array creation and dtype casting, a major NumPy version difference could affect dtype promotion or NaN propagation; if the failure does not reproduce, try the NumPy version range used by SciPy CI for that timeframe.",
+          "The evidence says the float32 variant returns 0. and float64 returns NaN; the test checks val=1/7, so the specific numeric magnitude is not the key\u2014only the NaN vs non-NaN correctness relative to wanted. The failure mode must manifest as an inequality/NaN mismatch in `xp_assert_equal`."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "The test itself is the oracle: it constructs wanted deterministically (val=1/7 with dtype promotion rules in the test) and asserts exact equality using xp_assert_equal.",
+          "why": "The provided test does not specify tolerances; it expects exact equality between interpolator output and the deterministically constructed wanted array."
+        },
+        "fails_on_buggy": "The test instance (ndim=2, method='linear', dtype=np.float64) fails at `xp_assert_equal(result, wanted)` because `interp_fill(sample)` and/or `interp_err(sample)` returns NaN instead of `wanted` (val cast/promoted to float64).",
+        "passes_on_fixed": "The same parametrized instance passes: `interp_fill(sample)` and `interp_err(sample)` return the expected non-NaN `wanted` value (val=1/7 promoted to float64 for method='linear')."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3544,
+        "output_tokens": 1530,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002621
+      },
+      "miner_usage": {
+        "input_tokens": 6582,
+        "output_tokens": 1486,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0031739999999999997,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

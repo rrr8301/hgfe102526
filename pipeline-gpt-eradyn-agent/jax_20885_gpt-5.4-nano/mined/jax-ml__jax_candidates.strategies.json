@@ -1,0 +1,98 @@
+{
+  "input": "pipeline-gpt-5.4-nano/jax_20885_gpt-5.4-nano/mined/jax-ml__jax_20885.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 9071,
+    "output_tokens": 2958,
+    "cost_usd": 0.005511,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "jax-ml/jax",
+      "pr_number": 20885,
+      "reference": "https://github.com/jax-ml/jax/pull/20885",
+      "buggy_commit": "8ead2df7bb3b1dc8103b77404bb6d55a7a519982",
+      "fixed_commit": "8b1418244b8599c56b4a530f09b34529c82c1750",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 6212,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce correctness regression in `jax.scipy.stats.beta.logpdf` (PR jax-ml/jax#20885) where negative beta parameters `a`/`b` incorrectly produce a finite value instead of `nan`, and ensure the project\u2019s own test fails on the buggy revision and passes on the fixed one.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "jax",
+            "numpy",
+            "scipy"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "# Use the repo's own test environment via pip-installed wheels or local build.\n# If building from source is required for the target commit:\n#   python -m pip install -e .[test]\n# Otherwise install the exact jax/jaxlib wheels matching your platform.\n# See risks about platform/toolchain requirements."
+          ],
+          "pinned_because": [
+            "Pinned behavior depends on JAX implementation details in `jax.scipy.stats.beta.logpdf`; reproducing requires installing the exact buggy commit (8ead2df7bb3b) and then the fixed revision from PR #20885.",
+            "SciPy is used as the reference oracle (SciPy returns `nan` for negative beta shape parameters); install a consistent SciPy version that matches the oracle behavior."
+          ]
+        },
+        "test_command": "pytest -q tests/scipy_stats_test.py -k \"testBetaLogPdfNegativeConstants or testBetaLogPdfNegativeScale\"",
+        "reproducing_test": "tests/scipy_stats_test.py::TestScipyStats::testBetaLogPdfNegativeConstants\n(and also:: tests/scipy_stats_test.py::TestScipyStats::testBetaLogPdfNegativeScale)",
+        "success_criterion": "On the buggy revision, `testBetaLogPdfNegativeConstants` fails because `lsp_stats.beta.logpdf(x, a, b)` produces a finite value for `a=b=-1.1` (while SciPy returns `nan`, so the `assertAllClose` comparison fails). On the fixed revision (containing the change described in PR #20885 that sets results to `nan` when `a<=0` or `b<=0`, and when `scale<=0`), the same tests pass because `lsp_stats.beta.logpdf` returns `nan` to match SciPy.",
+        "numerical_probe": "Do not add separate numeric checks; rely on the repository test assertions against SciPy (`osp_stats.beta.logpdf` vs `lax_fun = jax.scipy.stats.beta.logpdf`) within `assertAllClose` to detect the finite-vs-nan discrepancy. The specific reproducer inputs are `x=jnp.array([0., 0.5, 1.])`, `a=b=-1.1`, and for scale test `a=b=1.`, `loc=0`, `scale=-1`.",
+        "input_output_examples": [
+          {
+            "input": "x=jnp.array([0., 0.5, 1.]), a=b=-1.1, default scale",
+            "buggy_output": "Some element(s) of `jax.scipy.stats.beta.logpdf(x, a, b)` are finite instead of `nan`; example given: `jax.scipy.stats.beta.logpdf(x=0.5, a=-1.1, b=-1.1) -> Array(-0.845366, dtype=float32, weak_type=True)`",
+            "expected_output": "SciPy returns `nan` for the same invalid parameters; example given: `scipy.stats.beta.logpdf(x=0.5, a=-1.1, b=-1.1) -> nan`"
+          },
+          {
+            "input": "x=jnp.array([0., 0.5, 1.]), a=b=1., loc=0, scale=-1",
+            "buggy_output": "Before fix, `jax.scipy.stats.beta.logpdf` does not emulate SciPy for invalid scale and may not return `nan` as expected",
+            "expected_output": "After fix, `jax.scipy.stats.beta.logpdf` returns `nan` for `scale<=0` to emulate SciPy"
+          }
+        ],
+        "risks": [
+          "Version/commit risk: the failure only occurs on the buggy revision identified as `8ead2df7bb3b`. The fixed revision is not explicitly given in the provided context; you must check out PR #20885\u2019s merge commit (or the commit that includes the `jnp.nan` conditioning for `a<=0`, `b<=0`, `scale<=0`) so that the test transitions from fail->pass.",
+          "Toolchain risk: JAX builds may require matching `jaxlib` binaries for your platform (CPU/GPU/TPU). If you cannot build from source, install exact prebuilt `jaxlib` wheels matching the target commit and your hardware/OS.",
+          "SciPy version risk: the oracle uses SciPy\u2019s behavior (returning `nan`). Very old/new SciPy versions could potentially vary in edge-case handling (especially around invalid parameters). Keep SciPy version consistent between the buggy and fixed runs.",
+          "NaN comparison risk: the test uses `assertAllClose` (which typically treats `nan` specially, but behavior can depend on implementation). Ensure you run the test suite from the same JAX revision so that `assertAllClose` semantics match the intended failure mode.",
+          "Platform precision risk: the described wrong value is float32/weak_type. The test as written compares against SciPy using tolerances, so it should fail on finite-vs-nan without needing float32 exactness; however, running on different default dtypes (e.g., float64) could affect whether additional parameters trigger the same discrepancy."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "scipy.stats.beta.logpdf (osp_stats.beta.logpdf)",
+          "why": "SciPy is documented/observed to return `nan` when `a<0` and `b<0` (beta distribution undefined). The JAX bug returns a finite value for those inputs; therefore the correct oracle for the failing transition is NaN-ness matching, not a numeric tolerance."
+        },
+        "fails_on_buggy": "`testBetaLogPdfNegativeConstants` fails because for `a=b=-1.1` and `x=[0.,0.5,1.]`, JAX\u2019s `beta.logpdf` returns finite values for at least one element (example: at `x=0.5` it returns `Array(-0.845366, dtype=float32, weak_type=True)`), whereas SciPy returns `nan`. The test\u2019s `assertAllClose(osp_beta.pdf, lsp_beta.pdf, ...)` comparison (using NaN-aware all-close semantics) therefore fails on the buggy revision.",
+        "passes_on_fixed": "On the fixed revision from PR #20885, `jax.scipy.stats.beta.logpdf` returns `nan` when `a<=0` or `b<=0` (and similarly `nan` when `scale<=0`), matching SciPy; therefore both `testBetaLogPdfNegativeConstants` and `testBetaLogPdfNegativeScale` pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3029,
+        "output_tokens": 1448,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002416
+      },
+      "miner_usage": {
+        "input_tokens": 6042,
+        "output_tokens": 1510,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0030949999999999997,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

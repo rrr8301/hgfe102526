@@ -1,0 +1,370 @@
+{
+  "repo": "pandas-dev/pandas",
+  "pr_number": 66394,
+  "reference": "https://github.com/pandas-dev/pandas/pull/66394",
+  "buggy_commit": "389c06f9d7d9a5695552e2f152f7155fefcc3a69",
+  "fixed_commit": "76bac9e32eeee63f003ffecd431e8463a35e9b3c",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "numpy",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "readme:README.md"
+      },
+      {
+        "name": "python-dateutil",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md"
+      },
+      {
+        "name": "tzdata",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md"
+      },
+      {
+        "name": "cython",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md"
+      }
+    ],
+    "installation_commands": [
+      "pip install cython",
+      "pip install .",
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "build_commands": [
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: numpy \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: python-dateutil \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: tzdata \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: cython \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": "NumPy (float64 casting and np.allclose behaviour on aarch64 vs x86_64); no BLAS/LAPACK documented",
+    "dependency_constraints": [
+      {
+        "package": "numpy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "readme:README.md"
+      },
+      {
+        "package": "python-dateutil",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md"
+      },
+      {
+        "package": "tzdata",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md"
+      },
+      {
+        "package": "cython",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md"
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "pandas.core.dtypes.cast.maybe_downcast_numeric",
+    "observed_behavior": "On arm64, ser = pd.Series([1, 2], dtype='int64'); ser.loc[2] = 2**63 gives dtype int64 with values [1, 2, 9223372036854775807], so 2**63 is silently corrupted to 2**63 - 1. On x86_64 the dtype is float64 with the value preserved. Both platforms leak a numpy RuntimeWarning 'invalid value encountered in cast'. Separately, df1.combine(df2, lambda s1, s2: pd.Series([2**64, 2**64], dtype=object)) raises OverflowError: Python int too large to convert to C long.",
+    "expected_behavior": "The out-of-range value must not be cast to int64. The downcast is skipped, so the Series stays float64 with the value 2**63 preserved, on every platform, with no RuntimeWarning",
+    "manifestation": null,
+    "trigger_conditions": [],
+    "input_output_examples": [],
+    "oracle_clues": []
+  },
+  "numerical_characteristics": {
+    "dtype": "int64",
+    "precision": null,
+    "magnitude": "values at or just above 2**63 (2**63 = 9223372036854775808 versus int64 max 2**63 - 1 = 9223372036854775807)",
+    "tolerance": "rtol=0 in the losslessness check np.allclose(new_result, result, rtol=0) (the check itself is described as float64-space comparison, not a stated tolerance for the fix)",
+    "category_specific_evidence": [
+      "Reproducer: ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = 2**63 gives on arm64 dtype int64 with values [1, 2, 9223372036854775807], i.e. 2**63 - 1 corrupted; on x86_64 dtype float64 with value preserved",
+      "Both platforms leaked numpy RuntimeWarning \"invalid value encountered in cast\"",
+      "Root cause: maybe_downcast_numeric performed trans(result).astype(dtype) with no range check; out-of-range float->int cast is undefined behavior, platform-dependent (aarch64 FCVTZS saturates to int64 max, x86 typically yields int64 min)",
+      "Losslessness check np.allclose(new_result, result, rtol=0) compares in float64 space where 2**63 and 2**63 - 1 round to the same double, so corrupted cast passed as lossless on aarch64",
+      "float64(np.iinfo(np.int64).max) == 2**63, so the fix uses strict upper bound: values >= iinfo.min and values < float(int(iinfo.max)+1); NaN and +/-inf rejected",
+      "Test expectations: 2.0**63 with int64, 2.0**64 with uint64, -1.0 with uint64, 2.0**31 with int32, +/-inf with int64 must not be downcast; in-range values such as 2.0**62 (int64), 2.0**63 (uint64), 2.0**31 - 1 (int32), 1.0 (int64) must downcast exactly",
+      "Object-dtype entries out of int64 range (2**63, 2**64, -(2**64), 2.0**64, inf) previously raised OverflowError from astype; now a failed cast means no downcast",
+      "Test test_setitem_enlarge_out_of_int64_range expects Series([1.0, 2.0, value], dtype=\"float64\") for values 2**63, inf, -inf"
+    ],
+    "reproduction_risks": [
+      "Platform-dependent behavior: result differs between arm64 (saturation) and x86_64 (wrap / float64 preserved), so reproduction outcome depends on hardware",
+      "Out-of-range float-to-int cast is undefined behavior; the bug may not reproduce identically on every platform or numpy version",
+      "float64 cannot represent 2**63 - 1, so comparisons in float64 space conflate adjacent int64 values",
+      "Passages do not state a numpy version or exact magnitude threshold for the fix beyond the 2**63 boundary"
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.numerical_backend",
+      "value": "NumPy (float64 casting and np.allclose behaviour on aarch64 vs x86_64); no BLAS/LAPACK documented",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "pip install cython",
+        "pip install .",
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.build_commands",
+      "value": [
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "numpy",
+      "source": "readme:README.md",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "python-dateutil",
+      "source": "readme:README.md",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "tzdata",
+      "source": "readme:README.md",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "cython",
+      "source": "readme:README.md",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "pandas.core.dtypes.cast.maybe_downcast_numeric",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "On arm64, ser = pd.Series([1, 2], dtype='int64'); ser.loc[2] = 2**63 gives dtype int64 with values [1, 2, 9223372036854775807], so 2**63 is silently corrupted to 2**63 - 1. On x86_64 the dtype is float64 with the value preserved. Both platforms leak a numpy RuntimeWarning 'invalid value encountered in cast'. Separately, df1.combine(df2, lambda s1, s2: pd.Series([2**64, 2**64], dtype=object)) raises OverflowError: Python int too large to convert to C long.",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "The out-of-range value must not be cast to int64. The downcast is skipped, so the Series stays float64 with the value 2**63 preserved, on every platform, with no RuntimeWarning",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_characteristics.dtype",
+      "value": "int64",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "values at or just above 2**63 (2**63 = 9223372036854775808 versus int64 max 2**63 - 1 = 9223372036854775807)",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_characteristics.tolerance",
+      "value": "rtol=0 in the losslessness check np.allclose(new_result, result, rtol=0) (the check itself is described as float64-space comparison, not a stated tolerance for the fix)",
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 8,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 4,
+      "source": "pr_body",
+      "evidence_location": "pr_body:PR#66394"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "readme:README.md",
+        "pr_body:PR#66394",
+        "diff:pandas/core/dtypes/cast.py:349-369",
+        "commit:commits",
+        "pr_body:PR#66394",
+        "pr_body:PR#66394",
+        "readme:README.md"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "pr_body:PR#66394",
+        "commit:commits",
+        "diff:pandas/core/dtypes/cast.py:349-369",
+        "pr_body:PR#66394",
+        "pr_body:PR#66394",
+        "pr_body:PR#66394",
+        "diff:pandas/core/dtypes/cast.py:273-295",
+        "pr_body:PR#66394"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "pr_body:PR#66394",
+        "test_diff:pandas/tests/dtypes/cast/test_downcast.py:48-132",
+        "diff:pandas/core/dtypes/cast.py:273-295",
+        "commit:commits",
+        "test_diff:pandas/tests/dtypes/cast/test_downcast.py:1-13",
+        "test_diff:pandas/tests/dtypes/cast/test_downcast.py:48-132",
+        "test_diff:pandas/tests/series/indexing/test_setitem.py:1868-1893",
+        "pr_body:PR#66394"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          }
+        ],
+        "present": [
+          "environment.dependencies",
+          "environment.build_commands"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 0.6,
+        "required_total": 5,
+        "required_present": 3,
+        "required_missing": [
+          {
+            "path": "numerical_failure.trigger_conditions",
+            "why": "an input that misses the defective path reproduces nothing"
+          },
+          {
+            "path": "numerical_failure.input_output_examples",
+            "why": "a concrete (input, buggy output, expected output) triple IS the oracle; without one the generated test can only assert a property vague enough to hold on both revisions"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "numerical_failure.manifestation",
+            "why": "a probe looking for a wrong value cannot see a raised exception"
+          }
+        ],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "budget": {
+      "max_calls": 1,
+      "max_rung": "widened",
+      "spent": 1,
+      "log": [
+        {
+          "rung": "targeted",
+          "note": "failure: The first pass left these REQUIRED fields empty. Search the ",
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cost_usd": 0.0
+        }
+      ]
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 12277,
+    "output_tokens": 2690,
+    "cache_read_tokens": 0,
+    "cost_usd": 0,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": [
+    {
+      "rung": "targeted",
+      "question": "failure",
+      "error": "ValueError: could not parse JSON from response: ",
+      "n_passages": 8,
+      "fields_added": []
+    }
+  ]
+}

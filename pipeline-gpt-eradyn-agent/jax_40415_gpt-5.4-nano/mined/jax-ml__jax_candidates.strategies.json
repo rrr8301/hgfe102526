@@ -1,0 +1,99 @@
+{
+  "input": "pipeline-gpt-5.4-nano/jax_40415_gpt-5.4-nano/mined/jax-ml__jax_40415.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 10589,
+    "output_tokens": 3297,
+    "cost_usd": 0.00624,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "jax-ml/jax",
+      "pr_number": 40415,
+      "reference": "https://github.com/jax-ml/jax/pull/40415",
+      "buggy_commit": "cc95c6c81dc9e1384375dc0e4c4d5245a72f8313",
+      "fixed_commit": "6af60b85a2e49341bcfa8c219b02bc119bd55256",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 7549,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce an accuracy regression in JAX\u2019s default tanh JVP rule where forward- and reverse-mode derivative symmetry fails bit-for-bit when the cotangent/tangent multiplier g != 1. The reproduction targets the exact test `testTanhGradSymmetry` that asserts bit-for-bit equality between derivatives at x and -x.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "jax",
+            "jaxlib"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install --upgrade pip",
+            "python -m pip install -e .",
+            "python -m pip install pytest absl-py"
+          ],
+          "pinned_because": [
+            "jax and jaxlib must correspond to the buggy commit cc95c6c81dc9 and the fixed revision for the test to transition. The evidence does not provide exact version pins, so versions must be selected by checking out the repository at the specified commit(s).",
+            "jaxlib is required for XLA backend execution; evidence states XLA is used but does not specify platform/toolchain constraints, so ensure the installed jaxlib matches the build platform."
+          ]
+        },
+        "test_command": "python -m pytest tests/lax_test.py -k testTanhGradSymmetry",
+        "reproducing_test": "tests/lax_test.py::LaxTest::testTanhGradSymmetry",
+        "success_criterion": "On the buggy revision (commit cc95c6c81dc9), the test\u2019s two `assertArraysEqual` checks fail: (1) `jax.jvp(lax.tanh, (x,), (g,))` at `x` vs `-x` are not bit-for-bit identical, and/or (2) `vmap(grad(1.3 * tanh(z)))` at `x` vs `-x` are not bit-for-bit identical. On the fixed revision, both symmetry checks pass bit-for-bit.",
+        "numerical_probe": "None; the test relies on bit-for-bit equality assertions (`assertArraysEqual`) between derivative arrays at x and -x under forward- and reverse-mode.",
+        "input_output_examples": [
+          {
+            "input": "x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); g = jnp.full_like(x, 1.3); compute jvp_pos = jax.jvp(lax.tanh, (x,), (g,)) and jvp_neg = jax.jvp(lax.tanh, (-x,), (g,))",
+            "buggy_output": "jvp_pos and jvp_neg may differ bit-for-bit under the old default tanh JVP rule `(g + g * ans) * (1 - ans)` when `g != 1`.",
+            "expected_output": "jvp_pos equals jvp_neg bit-for-bit."
+          },
+          {
+            "input": "x = jnp.linspace(0.1, 8.9, 100, dtype=jnp.float32); grad_fn = jax.vmap(jax.grad(lambda z: jnp.float32(1.3) * lax.tanh(z))); evaluate grad_fn(x) and grad_fn(-x)",
+            "buggy_output": "grad_fn(x)` and `grad_fn(-x)` may differ bit-for-bit under the old default JVP rule when the symmetry guarantee fails when `g != 1`.",
+            "expected_output": "grad_fn(x) equals grad_fn(-x) bit-for-bit."
+          }
+        ],
+        "risks": [
+          "The evidence does not specify the exact fixed commit SHA; you must identify the PR\u2019s merge commit or the commit that includes the change from `(g + g * ans) * (1 - ans)` to `g * ((1 + ans) * (1 - ans))` for the symmetry guarantee. Without that, you cannot guarantee the test transitions.",
+          "Behavior is stated for dtype float32; the failure may not reproduce for other dtypes or if float32 is not used.",
+          "This is an XLA-backed numerical issue; running on an environment where JAX falls back to a different backend (or a misbuilt/unsupported jaxlib) may prevent the bug from manifesting.",
+          "The test uses bit-for-bit equality; if hardware/toolchain (e.g., different CPU SIMD paths, GPU vs CPU, or different XLA compiler versions) changes rounding behavior, the buggy revision may or may not fail. Ensure you run on the same class of platform (CPU is the safest baseline) and with the jaxlib version that supports that commit\u2019s requirements.",
+          "If the repository test suite at the selected commit does not yet contain `testTanhGradSymmetry`, you must ensure you checkout a revision that includes the test (the evidence shows it was added in `tests/lax_test.py` alongside the bugfix; align test+code revisions)."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": null,
+          "why": "The test uses `self.assertArraysEqual` for both JVP and gradient outputs at x and -x, so the oracle is bit-for-bit equality (exact match)."
+        },
+        "fails_on_buggy": "`tests/lax_test.py::LaxTest::testTanhGradSymmetry` should fail because the buggy default tanh JVP rule computes derivatives with `(g + g * ans) * (1 - ans)` and, when g != 1, this introduces premature rounding that breaks even symmetry: derivatives at x and -x are not bit-for-bit identical. The failure occurs on one or both `assertArraysEqual` lines.",
+        "passes_on_fixed": "On the fixed revision (the one containing the JVP rule change to compute `g * ((1 + ans) * (1 - ans))`), the test passes because even symmetry is guaranteed bit-for-bit for both forward-mode JVP and reverse-mode gradients: `jvp_pos == jvp_neg` and `grad_fn(x) == grad_fn(-x)` exactly."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3451,
+        "output_tokens": 1208,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0022
+      },
+      "miner_usage": {
+        "input_tokens": 7138,
+        "output_tokens": 2089,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.00404,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

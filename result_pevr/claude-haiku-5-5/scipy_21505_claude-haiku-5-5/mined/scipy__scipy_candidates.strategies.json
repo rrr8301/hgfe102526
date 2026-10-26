@@ -1,0 +1,110 @@
+{
+  "input": "pipeline-haiku-eradyn-inloop/scipy_21505_claude-haiku-5-5/mined/scipy__scipy_21505.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-23",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 25188,
+    "output_tokens": 8712,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 21505,
+      "reference": "https://github.com/scipy/scipy/pull/21505",
+      "buggy_commit": "28709e534336cc8b898c028bb67903356bed2c3d",
+      "fixed_commit": "cc9a0a87f3f65d9ec63f5e5bf23f8f6c4606919b",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5934,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce PR #21505 by building scipy at the buggy commit 28709e534336 (the parent of the PR) and running the PR's new mpmath-referenced test test_cdflib.py::test_ncfdtr. That test calls sp.ncfdtr on 12 parametrized (dfn,dfd,nc,f) cases and asserts rtol=1e-13 against mpmath values. On the buggy revision ncfdtr is the legacy cdflib Fortran path and at least one case should miss the tolerance; on the fixed revision, where ncfdtr uses the vendored Boost wrapper, all 12 should pass. The environment is an era-matched scipy source build (numpy<=2.1, scipy~1.14 era) with gfortran and a C++ compiler. Boost is the vendored copy in scipy/_lib, so no system Boost is planned. mpmath is only needed to regenerate references, not to run the test.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.11 (era-inferred: scipy 1.14 supports 3.10-3.12; not stated by evidence)",
+          "pip_packages": [
+            "numpy<=2.1 (era ceiling, numerically relevant, not documented)",
+            "pytest",
+            "cython",
+            "meson-python",
+            "ninja",
+            "pythran",
+            "pybind11"
+          ],
+          "system_packages": [
+            "gfortran (cdflib Fortran path is the buggy legacy kernel)",
+            "g++ with C++17 support (Boost-wrapped ncfdtr in the fixed revision)",
+            "BLAS/LAPACK dev package (e.g. libopenblas-dev) as scipy build requires"
+          ],
+          "build_commands": [
+            "git checkout 28709e534336 (buggy revision) then apply the PR test diff for scipy/special/tests/test_cdflib.py only",
+            "python -m pip install -r requirements/build.txt (or equivalent) then python dev.py build, or pip install -e . --no-build-isolation",
+            "run the test from the built tree (dev.py test or pytest against the in-tree build)",
+            "repeat on the fixed (PR merge) revision for the pass side, keeping the same build flags"
+          ],
+          "pinned_because": [
+            "numpy <=2.1: era ceiling at PR date 2024-09-07, numerically relevant per evidence but not documented",
+            "scipy checkout at 28709e534336: the revision under test; version string in issue #8344 is historical only and not used",
+            "boost: NOT pinned. Chosen to be the Boost vendored in scipy/_lib at the checked-out commit, since the evidence gives no version and the fixed code uses that vendored wrapper",
+            "mpmath: NOT pinned. Not needed to run the test; reference values are hard-coded in the test and mpmath only appears in the regeneration script comment"
+          ]
+        },
+        "test_command": "python dev.py test -t scipy.special.tests.test_cdflib::test_ncfdtr (equivalently: pytest scipy/special/tests/test_cdflib.py -k test_ncfdtr -v)",
+        "reproducing_test": "scipy/special/tests/test_cdflib.py::test_ncfdtr, parametrized over 12 (dfn,dfd,nc,f,expected) tuples, asserting assert_allclose(sp.ncfdtr(dfn,dfd,nc,f), expected, rtol=1e-13, atol=0)",
+        "success_criterion": "Transition: on the buggy revision (cdflib ncfdtr), test_cdflib.py::test_ncfdtr FAILS because at least one of the 12 parametrized cases misses rtol=1e-13 against the mpmath reference. On the fixed revision (Boost ncfdtr), all 12 parametrized cases PASS. The xfail markers added to test_basic.py ncfdtri/ncfdtridfd/ncfdtridfn/ncfdtrinc tests are not part of the transition and only need to not error.",
+        "numerical_probe": "sp.ncfdtr(6, 33, 30.4, 20) should be approximately 0.9989 (cross-check against R/Matlab 0.998921); use only as a sanity check, not as the pass/fail criterion, since the R/Matlab value has about six digits and the test's 1e-13 tolerance is the real gate",
+        "input_output_examples": [
+          {
+            "input": "stats.ncf.cdf(20, 6, 33, 30.4)",
+            "buggy_output": "0.998868",
+            "expected_output": "0.998921"
+          }
+        ],
+        "risks": [
+          "The fail side depends on the buggy cdflib ncfdtr producing an error above 1e-13 on at least one of the 12 cases; the evidence does not give the buggy per-case values, so which case fails is unverified until the run.",
+          "Boost is unbounded in the evidence. The plan relies on the vendored Boost at the commit, which is an era-inferred choice, not a documented constraint.",
+          "The 0.998868 vs 0.998921 discrepancy is in stats.ncf.cdf; the evidence does not say whether scipy.special.ncfdtr or the stats wrapper produced it. The target test calls scipy.special directly, so the stats path is not what is being reproduced.",
+          "Behaviour may depend on platform: the cdflib error and the Boost result are both floating-point sensitive, and the evidence names no architecture. If the buggy error is only seen on one architecture or with a specific compiler/optimization level, the fail side may not transition on x86_64 Linux with a different compiler. Record the platform and compiler used.",
+          "Sanitizer or debug builds are not planned; a defect visible only under sanitizers would not transition in a normal build.",
+          "nc domain was widened from (0,1e4) to [0,inf); the 12 test cases use nc<=100 so this should not matter, but avoid inputs above 1e4.",
+          "Issue #8344 concerns nctdtr (cumtnc.f), not ncfdtr; do not assume its reproduction applies.",
+          "The test_basic.py xfail markers are strict-free by default; if the Boost path makes the inverse tests pass, they XPASS and do not fail the run, so they are not part of the transition.",
+          "The test_distributions.py change removes a 32-bit skipif; the target test is not 32-bit specific, but a 32-bit build would be a different environment and is not planned."
+        ],
+        "oracle": {
+          "kind": "tolerance",
+          "tolerance": "rtol=1e-13, atol=0",
+          "reference_source": "mpmath with mp.dps=100 using formula 26.2.20 from Abramowitz and Stegun (script in test comment)",
+          "why": "The test hard-codes mpmath values and compares with rtol 1e-13; the tolerance is stated in the test itself, so it is grounded rather than invented. The R/Matlab reference 0.998921 is only about 6 digits and is used as a cross-check."
+        },
+        "fails_on_buggy": "On the buggy revision sp.ncfdtr dispatches to the legacy cdflib implementation. assert_allclose(..., rtol=1e-13, atol=0) compares its array output with the mpmath expected array, and at least one parametrized case exceeds the 1e-13 relative error, so the test reports a failure.",
+        "passes_on_fixed": "On the fixed revision sp.ncfdtr uses the Boost wrapper and every one of the 12 parametrized cases matches the mpmath reference within rtol=1e-13, so the test passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 7110,
+        "output_tokens": 4377,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 18078,
+        "output_tokens": 4335,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

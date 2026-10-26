@@ -1,0 +1,63 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index fcc25fbf2a592..0e6a6da6caf40 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -293,6 +293,7 @@ Timedelta
+ ^^^^^^^^^
+ - Bug in :attr:`TimedeltaIndex.resolution` raising when the index has no frequency (:issue:`65186`)
+ - Bug in :class:`DateOffset` where ``DateOffset(1)`` and ``DateOffset(days=1)`` returned different results near daylight saving time transitions (:issue:`61862`)
++- Bug in :class:`Timedelta` constructor and :func:`to_timedelta` raising a bare ``OverflowError`` instead of :class:`OutOfBoundsTimedelta` for infinite or overflowing float input, which also prevented ``errors="coerce"`` from returning ``NaT`` (:issue:`63275`)
+ - Bug in :class:`Timedelta` constructor and :func:`to_timedelta` where passing ``np.str_`` objects would fail in Cython string parsing (:issue:`48974`)
+ - Bug in :class:`Timedelta` constructor where keyword arguments (e.g. ``days=365000``) that exceeded nanosecond int64 bounds raised ``OutOfBoundsTimedelta`` instead of falling back to a coarser resolution (:issue:`46587`)
+ - Bug in :meth:`Series.sum` on an overflowing ``timedelta64`` series raising a plain ``ValueError`` instead of :class:`OutOfBoundsTimedelta` (:issue:`43178`)
+diff --git a/pandas/_libs/tslibs/timedeltas.pyx b/pandas/_libs/tslibs/timedeltas.pyx
+index 08bcc06eccd83..90c61e909b18d 100644
+--- a/pandas/_libs/tslibs/timedeltas.pyx
++++ b/pandas/_libs/tslibs/timedeltas.pyx
+@@ -498,11 +498,13 @@ def array_to_timedelta64(
+                     ival = _numeric_to_td64ns(item, parsed_unit, creso)
+ 
+             elif is_float_object(item):
+-                int_item = int(item)
+-                if item == int_item:
++                # GH#63275 use is_integer() (not int(item)) so that non-finite
++                #  floats fall through to _numeric_to_td64ns, which raises a
++                #  clear OutOfBoundsTimedelta rather than a bare OverflowError.
++                if item.is_integer():
+                     # round float -> treat this like an int, giving
+                     #  int_reso where possible
+-                    item = int_item
++                    item = int(item)
+ 
+                     if item == NPY_NAT:
+                         ival = NPY_NAT
+@@ -2348,15 +2350,25 @@ class Timedelta(_Timedelta):
+                 if unit != "ns":
+                     # Return with the closest-to-supported unit by going through
+                     #  the timedelta64 path
+-                    td = np.timedelta64(value, unit)
++                    try:
++                        td = np.timedelta64(value, unit)
++                    except OverflowError as err:
++                        # GH#63275 e.g. Timedelta(10**19, unit="s"); numpy
++                        #  raises a bare OverflowError, so re-raise as
++                        #  OutOfBoundsTimedelta for consistency.
++                        raise OutOfBoundsTimedelta(
++                            f"Cannot cast {value} from '{unit}' without overflow."
++                        ) from err
+                     return cls(td)
+                 value = _numeric_to_td64ns(value, unit)
+ 
+         elif is_float_object(value):
+-            int_item = int(value)
+-            if value == int_item:
++            # GH#63275 use is_integer() (not int(value)) so that non-finite
++            #  floats fall through to _numeric_to_td64ns, which raises a clear
++            #  OutOfBoundsTimedelta rather than a bare OverflowError.
++            if value.is_integer():
+                 # round float -> treat like an int, try to preserve unit
+-                return cls(int_item, unit=unit)
++                return cls(int(value), unit=unit)
+ 
+             # unit=None is de-facto 'ns'
+             unit = parse_timedelta_unit(unit)

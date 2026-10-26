@@ -1,0 +1,86 @@
+diff --git a/.github/workflows/test_nlp_solvers.yml b/.github/workflows/test_nlp_solvers.yml
+index 7d58a0c760..b235f335be 100644
+--- a/.github/workflows/test_nlp_solvers.yml
++++ b/.github/workflows/test_nlp_solvers.yml
+@@ -31,8 +31,10 @@ jobs:
+           uv venv
+           uv pip install -e ".[testing]"
+           uv pip install cyipopt
++      - name: Install COPT solver
++        run: uv pip install -e ".[COPT]"
+       - name: Install Uno solver
+-        run: uv pip install unopy
++        run: uv pip install -e ".[UNO]"
+       - name: Verify Uno import
+         run: uv run python -c "import unopy; print('unopy imported successfully')"
+       - name: Install KNITRO solver
+diff --git a/.github/workflows/test_optional_solvers.yml b/.github/workflows/test_optional_solvers.yml
+index e18a9fa01c..103b1f313b 100644
+--- a/.github/workflows/test_optional_solvers.yml
++++ b/.github/workflows/test_optional_solvers.yml
+@@ -43,8 +43,11 @@ jobs:
+       - name: Install SuiteSparse (macOS)
+         if: runner.os == 'macOS'
+         run: brew install suite-sparse
++      # Uno (unopy) is exercised by test_nlp_solvers, which installs it on its
++      # own with the IPOPT/OpenMP toolchain it needs. The conic and QP tests
++      # run here don't use it, so skip the extra to avoid a from-source build.
+       - name: Install cvxpy dependencies and all optional solvers
+-        run: uv sync --all-extras --dev
++        run: uv sync --all-extras --no-extra uno --dev
+       - name: Install Moreau
+         if: runner.os == 'Linux' && env.FURY_TOKEN != ''
+         run: uv pip install moreau --extra-index-url https://${FURY_TOKEN}:@pypi.fury.io/optimalintellect/
+diff --git a/cvxpy/tests/nlp_tests/derivative_checker.py b/cvxpy/tests/nlp_tests/derivative_checker.py
+index c4f7eab953..59c41ce35b 100644
+--- a/cvxpy/tests/nlp_tests/derivative_checker.py
++++ b/cvxpy/tests/nlp_tests/derivative_checker.py
+@@ -136,8 +136,13 @@ def check_hessian(self, x=None, duals=None, obj_factor=1.0, epsilon=1e-8):
+         if duals is None:
+             duals = np.random.rand(len(self.cl))
+ 
+-        # must run gradient because for logistic it fills some values
++        # Establish the evaluation point at x: eval_hessian_vals_coo_lower_tri
++        # reads back whatever point the last forward passes were run at, so it
++        # must be pinned here rather than inherited from a previous check.
+         self._init_coo()
++        self.c_problem.objective_forward(x)
++        self.c_problem.constraint_forward(x)
++        # must run gradient because for logistic it fills some values
+         self.c_problem.gradient()
+         c_hess_vals = self.c_problem.eval_hessian_vals_coo_lower_tri(obj_factor, duals)
+         n_vars = len(x)
+@@ -204,8 +209,16 @@ def check_objective_value(self, x=None):
+ 
+         return match
+ 
+-    def check_gradient(self, x=None, epsilon=1e-8):
+-        """ Compare C-based gradient with numerical approximation using finite differences. """
++    def check_gradient(self, x=None, epsilon=1e-6):
++        """ Compare C-based gradient with numerical approximation using finite differences.
++
++        The central-difference step is ~eps_machine**(1/3), which balances
++        truncation error (O(epsilon**2)) against floating-point cancellation
++        (O(eps_machine * |objective| / epsilon)). A smaller step such as 1e-8
++        makes the cancellation term dominate: for problems with a large
++        objective value it swamps small gradient components and the check
++        fails spuriously.
++        """
+         if x is None:
+             x = self.x0
+         # Get gradient from C implementation
+diff --git a/cvxpy/tests/test_conic_solvers.py b/cvxpy/tests/test_conic_solvers.py
+index c7a0caf4f6..aecf457f53 100644
+--- a/cvxpy/tests/test_conic_solvers.py
++++ b/cvxpy/tests/test_conic_solvers.py
+@@ -3017,7 +3017,9 @@ def test_copt_expcone_1(self) -> None:
+         StandardTestECPs.test_expcone_1(solver='COPT')
+ 
+     def test_copt_exp_soc_1(self) -> None:
+-        StandardTestMixedCPs.test_exp_soc_1(solver='COPT')
++        # Tighten tolerances so the exponential-cone dual values converge
++        # to the 3 decimal places the test checks.
++        StandardTestMixedCPs.test_exp_soc_1(solver='COPT', FeasTol=1e-9, DualTol=1e-9)
+ 
+     def test_copt_mi_lp_0(self) -> None:
+         StandardTestLPs.test_mi_lp_0(solver='COPT')

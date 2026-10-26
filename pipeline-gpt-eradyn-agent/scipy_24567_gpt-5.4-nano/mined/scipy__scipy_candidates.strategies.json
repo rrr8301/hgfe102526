@@ -1,0 +1,118 @@
+{
+  "input": "pipeline-gpt-5.4-nano/scipy_24567_gpt-5.4-nano/mined/scipy__scipy_24567.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 18026,
+    "output_tokens": 4627,
+    "cost_usd": 0.009389,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "scipy/scipy",
+      "pr_number": 24567,
+      "reference": "https://github.com/scipy/scipy/pull/24567",
+      "buggy_commit": "8b304446741a485944b0f4956b52a81fa61657c1",
+      "fixed_commit": "80199e68a73bc4764297bf7c486b770a0601f3ff",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 9189,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce scipy accuracy regression for scipy.stats.norminvgauss deep-tail CDF/SF (gh-23196/gh-24567) by building SciPy from the buggy commit and running the newly added tests in scipy/stats/tests/test_distributions.py for the deep right tail (cdf at x=100/1500) and deep left tail (sf(-x)), using OpenBLAS-based builds with the documented OpenBLAS configuration from the provided environment.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12",
+          "pip_packages": [
+            "numpy",
+            "pytest"
+          ],
+          "system_packages": [
+            "build-essential",
+            "python3-dev",
+            "gfortran",
+            "openblas (dev headers optional if building via SciPy's packaged BLAS/LAPACK)"
+          ],
+          "build_commands": [
+            "# Use a clean venv",
+            "python3.12 -m venv .venv && source .venv/bin/activate",
+            "python -m pip install -U pip setuptools wheel numpy pytest",
+            "export FC=gfortran",
+            "export CC=cc",
+            "export CXX=c++",
+            "# (1) Get SciPy source at buggy commit",
+            "git clone https://github.com/scipy/scipy.git",
+            "cd scipy",
+            "git checkout 8b304446741a",
+            "# (2) Build SciPy with scipy-openblas/OpenBLAS 0.3.29.dev using the documented config",
+            "# IMPORTANT: The evidence only specifies scipy-openblas/OpenBLAS config values, not the exact Meson/CMake flags.\n# Use SciPy's standard build mechanism for linking to scipy-openblas and ensure OpenBLAS config matches:\n# OpenBLAS 0.3.29.dev DYNAMIC_ARCH NO_AFFINITY Haswell MAX_THREADS=64\n# Example pattern (may vary by SciPy version):\n#   python -m pip install . -v --no-build-isolation \\\n#     --config-settings=setup-args=\"--openblas=<...>\"\n# or with Meson: \\\n#   python -m pip install . -v --no-build-isolation -Csetup-args=\"...\"\n# Keep this step aligned to how your CI/build scripts select scipy-openblas/OpenBLAS.",
+            "python -m pip install . -v --no-build-isolation"
+          ],
+          "pinned_because": [
+            "OpenBLAS configuration is explicitly documented as numerically relevant: OpenBLAS 0.3.29.dev DYNAMIC_ARCH NO_AFFINITY Haswell MAX_THREADS=64; the defect is an accuracy issue in deep tails which can be sensitive to BLAS/LAPACK/math implementation details.",
+            "scipy-openblas is the documented numerical backend (via scipy-openblas)."
+          ]
+        },
+        "test_command": "python -m pytest scipy/stats/tests/test_distributions.py -k \"gh23196_tails_cdf_sf\"",
+        "reproducing_test": "Two tests added in scipy/stats/tests/test_distributions.py:\n1) test_gh23196_tails_cdf_sf: asserts cdf(300)\u22481 and sf(-300)\u22481 within atol=1e-2 for multiple (a, b_a) combinations.\n2) test_gh23196_tails_cdf_sf_accuracy: asserts strict deep-tail accuracy with rtol=1e-14 for cdf(100,a=1,b=0) against ref=1.0 and cdf(1500,a=0.1,b=0.09) against ref=0.9999999999418577, plus the analogous sf relation via sf(-x) with (a,-b).",
+        "success_criterion": "On the buggy revision 8b304446741a, running the test command makes the deep-tail checks fail (at least one assert_allclose in test_gh23196_tails_cdf_sf or test_gh23196_tails_cdf_sf_accuracy fails), because norminvgauss.cdf in the far right tail drops to ~0 instead of being close to 1 and the sf(-x) symmetry/relationship is likewise wrong. On the fixed revision introduced by PR#24567, the same tests pass because cdf/sf computations use the corrected deep-tail strategy (notably 1 - SF for right-tail CDF) and thus cdf(100)\u22481, cdf(1500) matches the provided reference, and sf(-x) matches the same reference within rtol=1e-14.",
+        "numerical_probe": "stats.norminvgauss(a=a, b=b).cdf(100) for (a=1,b=0) and stats.norminvgauss(a=0.1,b=0.09).cdf(1500) plus stats.norminvgauss(a=a,b=-b).sf(-x) for the paired reference checks; additionally, cdf(300) and sf(-300) are used as a coarse deep-tail regression guard with atol=1e-2.",
+        "input_output_examples": [
+          {
+            "input": "norminvgauss(a=1, b=0).cdf(100)",
+            "buggy_output": "value near 0.0",
+            "expected_output": "near 1.0"
+          },
+          {
+            "input": "norminvgauss(a=1, b=0).cdf(10)",
+            "buggy_output": "near 1.0",
+            "expected_output": "near 1.0"
+          },
+          {
+            "input": "norminvgauss(a=0.1, b=0.09).cdf(1500)",
+            "buggy_output": "not provided in evidence (test expects a specific reference)",
+            "expected_output": "0.9999999999418577"
+          }
+        ],
+        "risks": [
+          "The evidence does not provide the exact build flags needed to force the specified OpenBLAS config (OpenBLAS 0.3.29.dev DYNAMIC_ARCH NO_AFFINITY Haswell MAX_THREADS=64). You must use SciPy's documented build mechanism for selecting scipy-openblas/OpenBLAS and ensure the configuration matches, otherwise the transition might not reproduce.",
+          "The failure may depend on the specific BLAS/LAPACK backend and threading behavior (MAX_THREADS=64 is documented as part of the OpenBLAS build config). If your runtime overrides thread counts (e.g., OMP_NUM_THREADS, OPENBLAS_NUM_THREADS), results may differ.",
+          "If your platform/toolchain differs (different CPU architecture than Haswell, or different compiler), the deep-tail numerical path may change and the failure may not occur.",
+          "If running only one of the tests, you might miss a failure mode if the regression manifests only in either the coarse (atol=1e-2) guard or the strict (rtol=1e-14) reference check."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "The added tests embed reference targets directly in the test file: ref=1.0 for (x=100,a=1,b=0) and ref=0.9999999999418577 for (x=1500,a=0.1,b=0.09). They also check the deep-tail regression guard with atol=1e-2 against 1.",
+          "why": "The provided test uses assert_allclose with either atol=1e-2 (near 1) or rtol=1e-14 with fixed numeric references. The transition is therefore decided by these assertions, without additional inspection of intermediate values."
+        },
+        "fails_on_buggy": "When run on commit 8b304446741a, at least one of the following assertions fails: cdf(300)\u22481 (atol=1e-2), sf(-300)\u22481 (atol=1e-2), cdf(100,a=1,b=0) equals ref=1.0 within rtol=1e-14, or cdf(1500,a=0.1,b=0.09) equals ref=0.9999999999418577 within rtol=1e-14 (and the paired sf(-x) checks fail similarly). This is consistent with the reported behavior that the far-right CDF drops near 0.0 instead of staying near 1.0 for sufficiently large x.",
+        "passes_on_fixed": "On the fixed revision from PR#24567, the deep-tail CDF/SF computations no longer drop to ~0 in the far tails; the same tests pass with the expected references (rtol=1e-14 for the strict checks, atol=1e-2 for the coarse guard)."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 4498,
+        "output_tokens": 1740,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.003075
+      },
+      "miner_usage": {
+        "input_tokens": 13528,
+        "output_tokens": 2887,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.006314,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

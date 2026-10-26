@@ -1,0 +1,103 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_66587_gpt-5.4-nano/mined/pandas-dev__pandas_66587.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 12385,
+    "output_tokens": 3309,
+    "cost_usd": 0.006613,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66587,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66587",
+      "buggy_commit": "eac34231b720d3f9fa2130bc87dcfc607f2138c2",
+      "fixed_commit": "8fc770484c6bac9cc7adee691278d0743c9dde62",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 5154,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas#66587 (groupby sum on timedelta64) where overflowing intermediate totals wrap instead of raising OutOfBoundsTimedelta, and where skipna=False can incorrectly truncate to NaT due to sentinel (NPY_NAT) handling. The reproduction should make the added tests in pandas/tests/groupby/test_reductions.py fail on the buggy revision and pass on the fixed revision.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "cython",
+            "python-dateutil",
+            "tzdata"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip setuptools wheel",
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy is numerically relevant; pandas' datetimelike arithmetic and overflow checks depend on its dtype/behavior around int64/timedelta kernels. No specific version constraint is documented in the provided evidence, so keep NumPy available and consistent between buggy/fixed runs.",
+            "Cython is documented as required to build pandas from source; use the same build tooling between buggy/fixed runs. No specific version constraint is documented in the provided evidence."
+          ]
+        },
+        "test_command": "python -m pytest -q pandas/tests/groupby/test_reductions.py -k \"groupby_sum_timedelta_overflow or groupby_sum_timedelta_overflow_sentinel or groupby_sum_timedelta_overflow_na_result\"",
+        "reproducing_test": "pandas/tests/groupby/test_reductions.py::test_groupby_sum_timedelta_overflow\npandas/tests/groupby/test_reductions.py::test_groupby_sum_timedelta_overflow_sentinel\npandas/tests/groupby/test_reductions.py::test_groupby_sum_timedelta_overflow_na_result",
+        "success_criterion": "On buggy revision eac34231b720, at least one of the above tests fails: (a) `ser.groupby(...).sum()` does NOT raise `pd.errors.OutOfBoundsTimedelta(\"overflow in timedelta operation\")` for the overflow case and instead returns a wrapped/taken-from-sentinel Timedelta/NaT value, and/or (b) for skipna=False the result is incorrectly `NaT` instead of the expected non-missing `-1 ns`/`mx + mn + mx` behavior depending on the scenario. On the fixed revision, all selected tests pass (exceptions are raised where expected; otherwise the group result is the correct in-range timedelta and not misclassified as missing).",
+        "numerical_probe": "Run the groupby-timedelta sum edge cases encoded in the reproduction tests; the assertion failure is the oracle (exception vs non-NaT Timedelta and exact expected Series equality), not manual numeric inspection.",
+        "input_output_examples": [
+          {
+            "input": "Series([pd.Timedelta.max, pd.Timedelta.max, pd.Timedelta(\"1D\")]).groupby([0, 0, 1]).sum()",
+            "buggy_output": "No `pd.errors.OutOfBoundsTimedelta` is raised (bug manifests as a wrong value due to int64 wrapping; exact wrapped value depends on the buggy implementation).",
+            "expected_output": "Raises `pd.errors.OutOfBoundsTimedelta` with message matching \"overflow in timedelta operation\"."
+          },
+          {
+            "input": "Series([pd.Timedelta.min, pd.Timedelta(-1, \"ns\")]).groupby([0, 0]).sum()",
+            "buggy_output": "May return a value that is treated as missing/truncated incorrectly (e.g., `NaT`) or otherwise fails to raise the correct overflow exception for that particular group.",
+            "expected_output": "Raises `pd.errors.OutOfBoundsTimedelta` with message matching \"overflow\"."
+          }
+        ],
+        "risks": [
+          "This is a correctness bug in pandas datetimelike/groupby reduction code; it may depend on build configuration (C extensions compiled) and possibly the NumPy version. The evidence does not specify exact version pins, so you must keep the same dependency set for both buggy and fixed runs.",
+          "If a platform/toolchain differs (CPU architecture, SIMD, 32-bit builds) the overflow/sentinel behavior might differ or the failure might not reproduce. Use the same OS/arch for buggy vs fixed.",
+          "Threading/backends are not specified in the evidence; run with default threading settings to avoid variability.",
+          "The evidence does not provide the exact fixed commit SHA; you must checkout the pandas fixed revision corresponding to PR #66587\u2019s merge (or the commit mentioned in that PR) to observe the passing transition."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": "pandas' own regression tests in pandas/tests/groupby/test_reductions.py (the diff provided) encode the expected exceptions and exact Series outputs; the transition is judged by test pass/fail rather than a standalone numeric comparison.",
+          "why": "The task requires no separate numeric inspection; the success/failure is determined by whether these tests raise or assert equality exactly as written."
+        },
+        "fails_on_buggy": {
+          "description": "For buggy eac34231b720, the test(s) should fail because the groupby sum reduction on timedelta64 overflows by wrapping instead of raising OutOfBoundsTimedelta, and/or skipna=False/NPY_NAT sentinel logic can cause a group result to be misidentified as missing (NaT) when the running total passes through the sentinel rather than representing a true missing value. In the evidence example, a related case produces a wrapped Timedelta and a NaT where the expected is an in-range timedelta like -1 ns.",
+          "what_the_assertion_sees": "Either (1) `pytest.raises(pd.errors.OutOfBoundsTimedelta, match=msg)` does not trigger, or (2) `tm.assert_series_equal(res, expected)` sees `res` mismatched (e.g., NaT vs a real Timedelta, or a different wrapped Timedelta)."
+        },
+        "passes_on_fixed": "After checking out the fixed revision for pandas#66587, the overflow cases raise the correct OutOfBoundsTimedelta and the sentinel/skipna=False cases produce the expected non-missing Timedelta results; the same pytest -k selection passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3043,
+        "output_tokens": 1268,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002194
+      },
+      "miner_usage": {
+        "input_tokens": 9342,
+        "output_tokens": 2041,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.004418999999999999,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

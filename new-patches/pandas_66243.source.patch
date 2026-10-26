@@ -1,0 +1,76 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index fcc25fbf2a592..7ec60b8cd8648 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -464,6 +464,7 @@ Groupby/resample/rolling
+ - Bug in :meth:`.GroupBy.any` and :meth:`.GroupBy.all` returning ``NaN`` with ``float64`` dtype for unobserved categorical groups on NumPy ``bool`` data instead of the boolean identity value with ``bool`` dtype (:issue:`65100`)
+ - Bug in :meth:`.Resampler.agg` raising ``ValueError`` with a dict of aggregations when applied to a :meth:`DataFrame.groupby` with ``as_index=False`` (:issue:`52397`)
+ - Bug in :meth:`.Rolling.corr` and :meth:`.Rolling.cov` computing incorrect results on degenerate windows (:issue:`24019`)
++- Bug in :meth:`.Rolling.corr` and :meth:`.Rolling.cov` returning ``NaN`` for all later windows once a window contained no valid pairs, e.g. due to ``NaN`` values (:issue:`65739`)
+ - Bug in :meth:`.Rolling.skew` and :meth:`.Rolling.kurt` (and their :class:`GroupBy` counterparts) returning ``0.0`` and ``-3.0`` respectively for degenerate windows or groups; these now return ``NaN`` (:issue:`62864`)
+ - Bug in :meth:`.Rolling.skew` and :meth:`.Rolling.kurt` returning ``NaN`` for low-variance windows (:issue:`62946`)
+ - Bug in :meth:`.Rolling.sum`, :meth:`.Rolling.mean`, :meth:`.Rolling.median`, :meth:`.Rolling.min`, and :meth:`.Rolling.max` with ``method="table"``, ``engine="numba"``, and ``engine_kwargs={"parallel": True}`` could cause a segfault (:issue:`40454`)
+diff --git a/pandas/_libs/window/aggregations.pyx b/pandas/_libs/window/aggregations.pyx
+index 49402dc318fb7..26c1f5bb6a6fb 100644
+--- a/pandas/_libs/window/aggregations.pyx
++++ b/pandas/_libs/window/aggregations.pyx
+@@ -801,13 +801,20 @@ cdef void remove_cov(
+     dy = val_y - mean_y[0]
+ 
+     nobs[0] -= 1
+-    mean_x[0] -= dx / nobs[0]
+-    mean_y[0] -= dy / nobs[0]
+-    ssqdm_xy[0] -= (val_x - mean_x[0]) * dy
++    if nobs[0]:
++        mean_x[0] -= dx / nobs[0]
++        mean_y[0] -= dy / nobs[0]
++        ssqdm_xy[0] -= (val_x - mean_x[0]) * dy
+ 
+-    if fabs(old_ssqdm_xy) * InvCondTol > fabs(ssqdm_xy[0]):
+-        # possible catastrophic cancellation
+-        numerically_unstable[0] = True
++        if fabs(old_ssqdm_xy) * InvCondTol > fabs(ssqdm_xy[0]):
++            # possible catastrophic cancellation
++            numerically_unstable[0] = True
++    else:
++        # GH#65739 avoid 0/0 -> NaN poisoning subsequent windows
++        mean_x[0] = 0
++        mean_y[0] = 0
++        ssqdm_xy[0] = 0
++        numerically_unstable[0] = False
+ 
+ 
+ def roll_cov(const float64_t[:] x, const float64_t[:] y, ndarray[int64_t] start,
+@@ -946,15 +953,24 @@ cdef void remove_corr(
+     dy = val_y - mean_y[0]
+ 
+     nobs[0] -= 1
+-    mean_x[0] -= dx / nobs[0]
+-    mean_y[0] -= dy / nobs[0]
+-    ssqdm_xy[0] -= (val_x - mean_x[0]) * dy
+-    ssqdm_x[0] -= (val_x - mean_x[0]) * dx
+-    ssqdm_y[0] -= (val_y - mean_y[0]) * dy
++    if nobs[0]:
++        mean_x[0] -= dx / nobs[0]
++        mean_y[0] -= dy / nobs[0]
++        ssqdm_xy[0] -= (val_x - mean_x[0]) * dy
++        ssqdm_x[0] -= (val_x - mean_x[0]) * dx
++        ssqdm_y[0] -= (val_y - mean_y[0]) * dy
+ 
+-    if fabs(old_ssqdm_xy) * InvCondTol > fabs(ssqdm_xy[0]):
+-        # possible catastrophic cancellation
+-        numerically_unstable[0] = True
++        if fabs(old_ssqdm_xy) * InvCondTol > fabs(ssqdm_xy[0]):
++            # possible catastrophic cancellation
++            numerically_unstable[0] = True
++    else:
++        # GH#65739 avoid 0/0 -> NaN poisoning subsequent windows
++        mean_x[0] = 0
++        mean_y[0] = 0
++        ssqdm_xy[0] = 0
++        ssqdm_x[0] = 0
++        ssqdm_y[0] = 0
++        numerically_unstable[0] = False
+ 
+ 
+ def roll_corr(const float64_t[:] x, const float64_t[:] y, ndarray[int64_t] start,

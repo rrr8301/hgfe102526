@@ -1,0 +1,74 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 3a7d2ed501a74..4802f7bff3602 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -457,6 +457,8 @@ Timedelta
+ - Bug in :class:`Timedelta` constructor and :func:`to_timedelta` raising a bare ``OverflowError`` instead of :class:`OutOfBoundsTimedelta` for infinite or overflowing float input, which also prevented ``errors="coerce"`` from returning ``NaT`` (:issue:`63275`)
+ - Bug in :class:`Timedelta` constructor and :func:`to_timedelta` where passing ``np.str_`` objects would fail in Cython string parsing (:issue:`48974`)
+ - Bug in :class:`Timedelta` constructor where keyword arguments (e.g. ``days=365000``) that exceeded nanosecond int64 bounds raised ``OutOfBoundsTimedelta`` instead of falling back to a coarser resolution (:issue:`46587`)
++- Bug in :func:`to_timedelta`, :class:`TimedeltaIndex`, and :class:`Series`/:class:`DataFrame` construction or ``astype`` on object-dtype input, where a ``numpy.timedelta64`` ``NaT`` whose unit differed from the array's inferred resolution raised :class:`OutOfBoundsTimedelta` instead of being preserved as ``NaT``, e.g. ``to_timedelta([np.timedelta64("NaT", "D")])`` (:issue:`63018`)
++- Bug in :func:`to_timedelta`, :class:`TimedeltaIndex`, and :class:`Series`/:class:`DataFrame` construction or ``astype`` on object-dtype input, where a timedelta string such as ``"1 days"`` silently became a value 1000 times too small if an earlier element carried nanosecond resolution, e.g. ``to_timedelta([Timedelta(1, "ns"), "1 days"])`` (:issue:`63196`)
+ - Bug in :meth:`Series.cumsum` and :meth:`DataFrame.cumsum` on ``timedelta64`` data where a running total that left the representable range silently wrapped to an unrelated value instead of raising :class:`OutOfBoundsTimedelta` (:issue:`66551`)
+ - Bug in :meth:`Series.sum` and :meth:`DataFrame.sum` on ``timedelta64`` data returning a rounded result for totals above 2\ :sup:`53` nanoseconds, and returning ``NaT`` instead of the exact total for a few representable values such as ``Timedelta.min`` (:issue:`66551`)
+ - Bug in :meth:`Series.sum` and :meth:`DataFrame.sum` on an overflowing ``timedelta64`` object where :meth:`Series.sum` raised a plain ``ValueError`` and :meth:`DataFrame.sum` silently returned a saturated result instead of raising :class:`OutOfBoundsTimedelta` (:issue:`43178`)
+diff --git a/pandas/_libs/tslibs/timedeltas.pyx b/pandas/_libs/tslibs/timedeltas.pyx
+index fdbfb48f6ad22..0bfd97bc2c840 100644
+--- a/pandas/_libs/tslibs/timedeltas.pyx
++++ b/pandas/_libs/tslibs/timedeltas.pyx
+@@ -430,7 +430,11 @@ def array_to_timedelta64(
+                 state.update_creso(item_reso)
+                 if infer_reso:
+                     creso = state.creso
+-                if dt64_reso != NPY_DATETIMEUNIT.NPY_FR_GENERIC:
++                # GH#63018 skip the NaT sentinel: it is the same int64 in every
++                #  reso, so converting it would spuriously overflow. A unitless
++                #  item is already in ns, and get_supported_reso pins creso to
++                #  ns for it, so it needs no conversion either.
++                if ival != NPY_NAT and dt64_reso != NPY_DATETIMEUNIT.NPY_FR_GENERIC:
+                     try:
+                         ival = convert_reso(
+                             ival,
+@@ -440,9 +444,6 @@ def array_to_timedelta64(
+                         )
+                     except (OverflowError, OutOfBoundsDatetime) as err:
+                         raise OutOfBoundsTimedelta(item) from err
+-                else:
+-                    # e.g. NaT
+-                    pass
+ 
+             elif isinstance(item, _Timedelta):
+                 item_reso = item._creso
+@@ -471,20 +472,23 @@ def array_to_timedelta64(
+                     ival = parse_iso_format_string(item)
+                 else:
+                     ival = parse_timedelta_string(item)
+-                if (
+-                    (infer_reso or creso == NPY_DATETIMEUNIT.NPY_FR_us)
+-                    and not needs_nano_unit(ival, item)
+-                ):
+-                    item_reso = NPY_DATETIMEUNIT.NPY_FR_us
+-                    ival = ival // 1000
+-                else:
+-                    item_reso = NPY_FR_ns
+-
+                 if ival != NPY_NAT:
+-                    state.update_creso(item_reso)
+                     if infer_reso:
++                        # only the inferring pass reads item_reso/state, and
++                        #  needs_nano_unit runs a regex, so skip it otherwise
++                        if needs_nano_unit(ival, item):
++                            item_reso = NPY_FR_ns
++                        else:
++                            item_reso = NPY_DATETIMEUNIT.NPY_FR_us
++                        state.update_creso(item_reso)
+                         creso = state.creso
+ 
++                    if creso != NPY_FR_ns:
++                        # GH#63196 the string parsers give nanoseconds; express
++                        #  that in the array's current reso, which may already
++                        #  be finer than this element needs (ns is a no-op)
++                        ival = convert_reso(ival, NPY_FR_ns, creso, round_ok=True)
++
+             elif is_tick_object(item):
+                 item_reso = get_supported_reso(item._creso)
+                 state.update_creso(item_reso)

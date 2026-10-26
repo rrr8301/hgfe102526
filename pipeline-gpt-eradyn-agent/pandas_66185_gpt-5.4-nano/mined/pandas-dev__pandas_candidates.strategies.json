@@ -1,0 +1,112 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_66185_gpt-5.4-nano/mined/pandas-dev__pandas_66185.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 11581,
+    "output_tokens": 3539,
+    "cost_usd": 0.006741,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66185,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66185",
+      "buggy_commit": "dce860fccdf9994809c16146eaa7354bff598cb3",
+      "fixed_commit": "cc4813e776335e09abe7ca3e91d8f0925049d919",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 8774,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas GH#66185 (PR#66185; buggy commit dce860fccdf9): vectorized cast_from_unit boundary checks mis-handle float64 values near \u00b12**63 ns, causing either silent wrap-to-positive for negative near INT64_MIN (errors=\"coerce\" returns garbage instead of NaT) or spurious OutOfBoundsDatetime for in-bounds just-shy of INT64_MAX (diverges from scalar path). Use the exact added regression tests, ensuring the same build with Cython extensions and NumPy float64 behavior.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "cython",
+            "python-dateutil",
+            "tzdata",
+            "pytest"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -U pip",
+            "pip install numpy cython pytest python-dateutil tzdata",
+            "pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "This defect is specifically about float64 (NumPy float64) rounding/ULP behavior near exactly representable \u00b12**63 ns boundaries; the tests assume IEEE-754 float64 behavior and NumPy provides the float64 inputs for the Cythonized vectorized conversion path.",
+            "Cython build is required so that pandas._libs.tslibs.conversion.cast_from_unit_vectorized is the compiled buggy/fixed implementation, not a pure-Python fallback (README.md explicitly requires Cython for building from source).",
+            "Test correctness depends on using the compiled pandas revision under test (buggy vs fixed); hence build from that git commit with editable install."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/tools/test_to_datetime.py::TestToDatetime::test_float_to_datetime_near_int64_boundary pandas/tests/tools/test_to_timedelta.py::TestToTimedelta::test_float_to_timedelta_near_int64_boundary pandas/tests/tslibs/test_conversion.py::test_cast_from_unit_vectorized_near_int64_boundary -q",
+        "reproducing_test": "The exact regression tests added/modified by the PR:\n- pandas/tests/tools/test_to_datetime.py::test_float_to_datetime_near_int64_boundary\n- pandas/tests/tools/test_to_timedelta.py::test_float_to_timedelta_near_int64_boundary\n- pandas/tests/tslibs/test_conversion.py::test_cast_from_unit_vectorized_near_int64_boundary",
+        "success_criterion": "On buggy revision dce860fccdf9, the regression tests fail: (1) to_datetime(np.array([-(2**63+200)/1e9],float64), unit='s', errors='coerce')[0] is not NaT and/or errors='raise' does not raise OutOfBoundsDatetime with message containing 'cannot convert input'; and/or (2) to_datetime(np.array([(2**63-1-100)/oneday_in_ns],float64), unit='D')[0] raises OutOfBoundsDatetime instead of equaling Timestamp(val, unit='D'); and/or (3) test_cast_from_unit_vectorized_near_int64_boundary finds at least one value where cast_from_unit_vectorized(arr, unit)[0] != Timedelta(val, unit=unit).value or mismatches the expected exception behavior. On the fixed revision (the commit that includes PR#66185 fix), all three tests pass.",
+        "numerical_probe": "Use the boundary-adjacent float64 values hard-coded in the added tests:\n- wrapped = np.array([-(2**63 + 200) / 1e9], dtype='float64')\n- in-bounds val = (2**63 - 1 - 100) / oneday_in_ns where oneday_in_ns = 1e9*60*60*24\nAnd additionally, the straddling-walk enumerated in test_cast_from_unit_vectorized_near_int64_boundary, which uses np.nextafter to generate representable float64 values around bound/ns_per_unit for each unit in [\"us\",\"ms\",\"s\",\"m\",\"h\",\"D\",\"W\"].",
+        "input_output_examples": [
+          {
+            "input": "wrapped = np.array([-(2**63 + 200) / 1e9], dtype='float64')",
+            "buggy_output": "For to_datetime(wrapped, unit='s', errors='coerce')[0], returns a non-NaT timestamp value (large positive timestamp due to int64 wrap) instead of NaT; for errors='raise' it may not raise OutOfBoundsDatetime with message 'cannot convert input'.",
+            "expected_output": "For to_datetime(wrapped, unit='s', errors='coerce')[0] is NaT; for errors='raise' it raises OutOfBoundsDatetime (match 'cannot convert input')."
+          },
+          {
+            "input": "val = (2**63 - 1 - 100) / oneday_in_ns where oneday_in_ns = 1e9*60*60*24; arr = np.array([val], dtype='float64')",
+            "buggy_output": "to_datetime(arr, unit='D')[0] raises OutOfBoundsDatetime (spurious raise) instead of matching scalar cast.",
+            "expected_output": "to_datetime(arr, unit='D')[0] == Timestamp(val, unit='D')"
+          },
+          {
+            "input": "wrapped = np.array([-(2**63 + 200) / 1e9], dtype='float64')",
+            "buggy_output": "to_timedelta(wrapped, unit='s') does not match expected exception behavior (may not raise OutOfBoundsTimedelta as in the test).",
+            "expected_output": "With to_timedelta(wrapped, unit='s') it raises OutOfBoundsTimedelta (match 'cannot convert input')."
+          },
+          {
+            "input": "val = (2**63 - 1 - 100) / oneday_in_ns; arr = np.array([val], dtype='float64')",
+            "buggy_output": "to_timedelta(arr, unit='D')[0] may raise OutOfBoundsTimedelta spuriously or differ from scalar.",
+            "expected_output": "to_timedelta(arr, unit='D')[0] == pd.Timedelta(val, unit='D')"
+          }
+        ],
+        "risks": [
+          "Because the bug depends on float64 rounding/ULP behavior near exactly representable \u00b12**63 ns, using non-standard float behavior or a different numerical stack could change whether the buggy path triggers. Keep NumPy float64 and IEEE-754 semantics by running on mainstream x86_64/ARM64 Linux/macOS/Windows CI; do not run under emulated/soft-float environments.",
+          "The symptom includes divergence between vectorized and scalar paths inside pandas._libs; you must install/build pandas from the exact buggy commit and ensure the compiled extension is used (hence editable install from source with Cython).",
+          "If the fixed revision is not the one containing the PR#66185 fix, the tests may still fail; you must bisect or use the known fixed commit that corrects wrap detection / spurious raise handling.",
+          "If you only run the scalar-style tests and not the vectorized one (test_cast_from_unit_vectorized_near_int64_boundary), you may miss the mismatch check that guarantees failure on buggy builds."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": null,
+          "reference_source": "Scalar path (Timedelta(val, unit=unit).value or pd.Timedelta(val, unit='D')) and expected exception/NaT behavior are treated as the oracle by the tests.",
+          "why": "The regression tests assert exact equality for in-bounds results and explicit exception/NaT outcomes for out-of-bounds; they do not use numeric tolerance checks."
+        },
+        "fails_on_buggy": "Assertions in the added tests will fail because the buggy vectorized conversion either (a) fails to detect the negative near-INT64_MIN wrap and therefore returns a large positive timestamp/timedelta instead of raising (errors='raise') or returning NaT (errors='coerce'), and/or (b) performs an unreliable analytic overflow check using the rounded float result_f, placing some in-bounds just-shy-of-INT64_MAX values on the wrong side and spuriously raising OutOfBoundsDatetime/Timedelta for those inputs. The vectorized-vs-scalar comparison over nextafter-generated boundary-adjacent float64 values will find a mismatch.",
+        "passes_on_fixed": "The fixed implementation correctly detects int64 wrap directly and makes the vectorized cast_from_unit path agree with the scalar cast_from_unit path, so all added assertions (raise/NaT and exact equality for in-bounds cases) pass across all units."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 4302,
+        "output_tokens": 1753,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.003052
+      },
+      "miner_usage": {
+        "input_tokens": 7279,
+        "output_tokens": 1786,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0036889999999999996,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

@@ -1,0 +1,389 @@
+{
+  "repo": "pandas-dev/pandas",
+  "pr_number": 66652,
+  "reference": "https://github.com/pandas-dev/pandas/pull/66652",
+  "buggy_commit": "d8659d45c49d09f2f207b002d172e1af1a7555a7",
+  "fixed_commit": "3ac4ba16373ec2d25839b49f425a26864e86f0a1",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": null,
+    "dependencies": [
+      {
+        "name": "NumPy",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "readme:README.md Dependencies section"
+      },
+      {
+        "name": "python-dateutil",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md Dependencies section"
+      },
+      {
+        "name": "tzdata",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md Dependencies section (only required on Windows/Emscripten)"
+      },
+      {
+        "name": "Cython",
+        "constraint": null,
+        "documented": true,
+        "numerically_relevant": false,
+        "source": "readme:README.md Installation from sources section"
+      }
+    ],
+    "installation_commands": [
+      "pip install cython",
+      "pip install .",
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "build_commands": [
+      "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+    ],
+    "test_commands": [],
+    "system_packages": [],
+    "era_constraints": [
+      "unbounded: NumPy \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: python-dateutil \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: tzdata \u2014 no documented constraint and no era table entry; the strategy must choose and say so",
+      "unbounded: Cython \u2014 no documented constraint and no era table entry; the strategy must choose and say so"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "NumPy",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "unbounded",
+        "source": "readme:README.md Dependencies section"
+      },
+      {
+        "package": "python-dateutil",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md Dependencies section"
+      },
+      {
+        "package": "tzdata",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md Dependencies section (only required on Windows/Emscripten)"
+      },
+      {
+        "package": "Cython",
+        "documented_constraint": null,
+        "era_ceiling": null,
+        "numerically_relevant": false,
+        "kind": "unbounded",
+        "source": "readme:README.md Installation from sources section"
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "pandas._libs.tslibs.offsets.Week._apply_array",
+    "observed_behavior": "Adding a Week offset to a datetime64 array silently wraps on int64 overflow or stores a result equal to NaT (indistinguishable from missing). Week(2**32) on an array behaves like Week(0) because n was truncated to 32 bits.",
+    "expected_behavior": "Overflowing or NaT-landing results should raise OverflowError('Overflow in int64 addition') instead of being stored. Week(2**32) should not be truncated to 32 bits and should not behave like Week(0).",
+    "manifestation": "wrong_value",
+    "trigger_conditions": [
+      "Week offset added to a datetime64 array (DatetimeIndex) rather than a scalar Timestamp",
+      "Shift sum fits in int64 but equals i"
+    ],
+    "input_output_examples": [],
+    "oracle_clues": []
+  },
+  "numerical_characteristics": {
+    "dtype": "datetime64[ns] and datetime64[s] (DatetimeIndex arrays; int64 underlying storage)",
+    "precision": null,
+    "magnitude": "Values near int64 limits: iNaT + 7*86400*10**9 (sum fits in int64 but equals iNaT); Timestamp.max plus Week(1) wraps; n = 2**32 (32-bit truncation to no-op)",
+    "tolerance": null,
+    "category_specific_evidence": [
+      "Violated property: a result of Week(n) addition to a datetime64 array must not wrap around int64 nor silently land on the NaT sentinel (iNaT/NPY_NAT); overflow must raise OverflowError instead.",
+      "Concrete value 1: DatetimeIndex([Timestamp(iNaT + 7*86400*10**9)]) + Week(-1) returns NaT, indistinguishable from missing; a sum fitting in int64 that equals iNaT must raise OverflowError('Overflow in int64 addition').",
+      "Concrete value 2: DatetimeIndex([Timestamp.max]) + Week(1) returns '1677-09-28 00:12:43.145224191' (wrapped); the scalar equivalent raises OutOfBoundsDatetime, so the array path must raise OverflowError.",
+      "Concrete value 3: date_range('2000-01-03', periods=1, unit='s') + Week(2**32, weekday=0) returns '2000-01-03', equal to Week(0); n was truncated to 32 bits (GH#66549) and must be int64.",
+      "Root causes per commit: Week._apply_array built shift through a Python timedelta then raw numpy add; _end_apply_index held n in a C int with unchecked add inside nogil loop.",
+      "Fix uses checked_mul/checked_add from pandas/portable.h and checks res_val == NPY_NAT before storing.",
+      "Tests referenced: test_week_apply_array_lands_on_nat_sentinel (weekday None,1), test_week_apply_array_out_of_bounds (weekday None,0), test_week_apply_array_large_n (weekday None,0); GH#66552 and GH#66549."
+    ],
+    "reproduction_risks": [
+      "Reproducer examples in PR body show outputs that are inconsistent with the fixed behavior (they show silent NaT/wrap results), so they describe the pre-fix bug and the expected post-fix result is OverflowError.",
+      "Test for large_n is truncated in the passage, so its exact assertions are unknown.",
+      "Behavior depends on unit (ns vs s); the range of overflow thresholds for unit='s' is not stated."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.installation_commands",
+      "value": [
+        "pip install cython",
+        "pip install .",
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.build_commands",
+      "value": [
+        "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+      ],
+      "source": "readme",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "NumPy",
+      "source": "readme:README.md Dependencies section",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "python-dateutil",
+      "source": "readme:README.md Dependencies section",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "tzdata",
+      "source": "readme:README.md Dependencies section (only required on Windows/Emscripten)",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "Cython",
+      "source": "readme:README.md Installation from sources section",
+      "evidence_location": "readme:README.md"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "pandas._libs.tslibs.offsets.Week._apply_array",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/offsets.pyx:74-80"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "Adding a Week offset to a datetime64 array silently wraps on int64 overflow or stores a result that equals NaT (indistinguishable from missing). Week(2**32) on an array behaves like Week(0) because n was truncated to 32 bits.",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/offsets.pyx:74-80"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "Overflowing or NaT-landing results should raise OverflowError instead of being stored. Week(2**32)",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/offsets.pyx:74-80"
+    },
+    {
+      "field": "numerical_characteristics.dtype",
+      "value": "datetime64[ns] and datetime64[s] (DatetimeIndex arrays; int64 underlying storage)",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/offsets.pyx:74-80"
+    },
+    {
+      "field": "numerical_characteristics.magnitude",
+      "value": "Values near int64 limits: iNaT + 7*86400*10**9 (sum fits in int64 but equals iNaT); Timestamp.max plus Week(1) wraps; n = 2**32 (32-bit truncation to no-op)",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/offsets.pyx:74-80"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 7,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/offsets.pyx:74-80"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/offsets.pyx:74-80"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "pandas._libs.tslibs.offsets.Week._apply_array",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/offsets.pyx"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "Adding a Week offset to a datetime64 array silently wraps on int64 overflow or stores a result equal to NaT (indistinguishable from missing). Week(2**32) on an array behaves like Week(0) because n was truncated to 32 bits.",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/offsets.pyx"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "Overflowing or NaT-landing results should raise OverflowError('Overflow in int64 addition') instead of being stored. Week(2**32) should not be truncated to 32 bits and should not behave like Week(0).",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/offsets.pyx"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "wrong_value",
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/offsets.pyx"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 2,
+      "source": "diff",
+      "evidence_location": "diff:pandas/_libs/tslibs/offsets.pyx"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "readme:README.md",
+        "readme:README.md",
+        "diff:pandas/_libs/tslibs/offsets.pyx:74-80",
+        "pr_body:PR#66652",
+        "commit:commits",
+        "readme:README.md",
+        "readme:README.md",
+        "readme:README.md"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "diff:pandas/_libs/tslibs/offsets.pyx:74-80",
+        "commit:commits",
+        "pr_body:PR#66652",
+        "diff:pandas/_libs/tslibs/offsets.pyx:5296-5322",
+        "diff:pandas/_libs/tslibs/offsets.pyx:101-112",
+        "diff:pandas/_libs/tslibs/offsets.pyx:5271-5282",
+        "diff:pandas/_libs/tslibs/offsets.pyx:5296-5322",
+        "diff:doc/source/whatsnew/v3.1.0.rst:421-428"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "diff:pandas/_libs/tslibs/offsets.pyx:74-80",
+        "pr_body:PR#66652",
+        "test_diff:pandas/tests/tseries/offsets/test_week.py:346-379",
+        "commit:commits",
+        "diff:pandas/_libs/tslibs/offsets.pyx:5271-5282",
+        "diff:pandas/_libs/tslibs/offsets.pyx:101-112",
+        "diff:pandas/_libs/tslibs/offsets.pyx:5296-5322",
+        "diff:pandas/_libs/tslibs/offsets.pyx:5296-5322"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 0.5,
+        "required_total": 2,
+        "required_present": 1,
+        "required_missing": [
+          {
+            "path": "environment.test_commands",
+            "why": "without the test command the harness cannot run the oracle at all"
+          }
+        ],
+        "expected_missing": [
+          {
+            "path": "environment.language_version",
+            "why": "the interpreter version decides whether the revision builds"
+          }
+        ],
+        "present": [
+          "environment.dependencies",
+          "environment.build_commands"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 0.8,
+        "required_total": 5,
+        "required_present": 4,
+        "required_missing": [
+          {
+            "path": "numerical_failure.input_output_examples",
+            "why": "a concrete (input, buggy output, expected output) triple IS the oracle; without one the generated test can only assert a property vague enough to hold on both revisions"
+          }
+        ],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "budget": {
+      "max_calls": 1,
+      "max_rung": "widened",
+      "spent": 1,
+      "log": [
+        {
+          "rung": "targeted",
+          "note": "failure: The first pass left these REQUIRED fields empty. Search the ",
+          "input_tokens": 5455,
+          "output_tokens": 1400,
+          "cost_usd": 0.0
+        }
+      ]
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 15893,
+    "output_tokens": 3970,
+    "cache_read_tokens": 0,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "errors": {},
+  "expansions": [
+    {
+      "rung": "targeted",
+      "question": "failure",
+      "error": "",
+      "n_passages": 8,
+      "fields_added": [
+        "_truncated",
+        "affected_api",
+        "expected_behavior",
+        "manifestation",
+        "observed_behavior",
+        "trigger_conditions"
+      ]
+    }
+  ]
+}

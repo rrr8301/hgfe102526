@@ -1,0 +1,2520 @@
+[
+  {
+    "slug": "cvxpy_3338",
+    "bug_type": "special_value",
+    "image": "python:3.11",
+    "status": "SETUP_FAILURE",
+    "reasoning": "pevr",
+    "rationale": "every selected test was SKIPPED on fixed (COPT is not installed.)",
+    "transition": "pass->no_tests",
+    "fail_to_pass": false,
+    "numeric_verdict": "diverged",
+    "examples_verdict": "diverged",
+    "setup_cause": {
+      "cause": "tests_skipped",
+      "detail": "fixed: COPT is not installed."
+    },
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import os, sys, ast, inspect, importlib, subprocess\n\nROOT = os.getcwd()\nSKIP_DIRS = {'.git', '__pycache__', '.tox', 'build', '.eggs', '.mypy_cache', 'node_modules'}\n\nE1 = \"pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)\"\nE2 = \"check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)\"\nE3 = \"eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)\"\n\n\ndef P(name, fn):\n    try:\n        val = fn()\n    except BaseException as e:\n        val = \"__error__: \" + type(e).__name__ + \": \" + str(e)\n    try:\n        probe(name, val)\n    except BaseException:\n        pass\n\n\ndef read_text(path):\n    with open(path, 'r', encoding='utf-8', errors='replace') as fh:\n        return fh.read()\n\n\ndef iter_py_files():\n    for root, dirs, files in os.walk(ROOT):\n        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]\n        for f in files:\n            if f.endswith('.py'):\n                yield os.path.join(root, f)\n\n\ndef rel(p):\n    try:\n        return os.path.relpath(p, ROOT)\n    except BaseException:\n        return p\n\n\ndef find_files(needle):\n    hits = []\n    for p in iter_py_files():\n        try:\n            t = read_text(p)\n        except BaseException:\n            continue\n        if needle in t:\n            hits.append(rel(p))\n    return sorted(hits)\n\n\ndef find_named_files(sub):\n    out = []\n    for root, dirs, files in os.walk(ROOT):\n        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]\n        for f in files:\n            if f.endswith('.py') and sub in f.lower():\n                out.append(rel(os.path.join(root, f)))\n    return sorted(out)\n\n\ndef extract_defs(path, name, maxlen=5000):\n    try:\n        full = path if os.path.isabs(path) else os.path.join(ROOT, path)\n        src = read_text(full)\n        tree = ast.parse(src)\n        lines = src.splitlines()\n    except BaseException as e:\n        return \"__error__: \" + type(e).__name__ + \": \" + str(e)\n    out = []\n    for node in ast.walk(tree):\n        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:\n            start = node.lineno - 1\n            end = getattr(node, 'end_lineno', start + 1)\n            seg = \"\\n\".join(lines[start:end])\n            out.append({\"lineno\": node.lineno, \"source\": seg[:maxlen]})\n    return out\n\n\ndef defs_containing(path, needle, maxlen=6000):\n    try:\n        full = path if os.path.isabs(path) else os.path.join(ROOT, path)\n        src = read_text(full)\n        tree = ast.parse(src)\n        lines = src.splitlines()\n    except BaseException as e:\n        return \"__error__: \" + type(e).__name__ + \": \" + str(e)\n    out = []\n    for node in ast.walk(tree):\n        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):\n            start = node.lineno - 1\n            end = getattr(node, 'end_lineno', start + 1)\n            seg = \"\\n\".join(lines[start:end])\n            if needle in seg:\n                out.append({\"name\": node.name, \"lineno\": node.lineno, \"source\": seg[:maxlen]})\n    return out\n\n\ndef grep_lines(path, needles, maxlines=60):\n    try:\n        full = path if os.path.isabs(path) else os.path.join(ROOT, path)\n        out = []\n        for i, line in enumerate(read_text(full).splitlines(), 1):\n            if any(nd in line for nd in needles):\n                out.append(\"%d: %s\" % (i, line.strip()))\n                if len(out) >= maxlines:\n                    break\n        return out\n    except BaseException as e:\n        return \"__error__: \" + type(e).__name__ + \": \" + str(e)\n\n\ndef module_name_for(relpath):\n    r = relpath\n    if r.endswith('.py'):\n        r = r[:-3]\n    parts = r.replace('\\\\', '/').split('/')\n    if parts and parts[-1] == '__init__':\n        parts = parts[:-1]\n    return '.'.join([p for p in parts if p not in ('', '.')])\n\n\ndef sig_info(path, fname):\n    try:\n        modname = module_name_for(path)\n        mod = sys.modules.get(modname)\n        if mod is None:\n            mod = importlib.import_module(modname)\n        fn = getattr(mod, fname, None)\n        owner = modname\n        if fn is None:\n            for an, av in vars(mod).items():\n                if inspect.isclass(av) and hasattr(av, fname):\n                    fn = getattr(av, fname)\n                    owner = modname + '.' + an\n                    break\n        if fn is None:\n            return {\"module\": modname, \"found\": False}\n        sig = inspect.signature(fn)\n        defaults = {}\n        for k, v in sig.parameters.items():\n            if v.default is not inspect.Parameter.empty:\n                defaults[k] = repr(v.default)\n        return {\"module\": modname, \"owner\": owner, \"found\": True,\n                \"signature\": str(sig), \"defaults\": defaults}\n    except BaseException as e:\n        return \"__error__: \" + type(e).__name__ + \": \" + str(e)\n\n\ndef def_name_usage(path, fname):\n    try:\n        full = path if os.path.isabs(path) else os.path.join(ROOT, path)\n        src = read_text(full)\n        tree = ast.parse(src)\n    except BaseException as e:\n        return \"__error__: \" + type(e).__name__ + \": \" + str(e)\n    res = {}\n    for node in ast.walk(tree):\n        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == fname:\n            used = set()\n            for n in ast.walk(node):\n                if isinstance(n, ast.Attribute):\n                    used.add(n.attr)\n                elif isinstance(n, ast.Name):\n                    used.add(n.id)\n            res[fname] = {\n                \"uses_objective_forward\": 'objective_forward' in used,\n                \"uses_constraint_forward\": 'constraint_forward' in used,\n                \"mentions_epsilon\": 'epsilon' in used,\n            }\n    return res\n\n\ndef run_pytest(args, timeout=600):\n    cmd = [sys.executable, '-m', 'pytest', '-q', '--no-header', '-p', 'no:cacheprovider'] + list(args)\n    try:\n        r = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,\n                           stderr=subprocess.STDOUT, timeout=timeout)\n        out = r.stdout.decode('utf-8', 'replace')\n        return {\"returncode\": r.returncode, \"tail\": out[-7000:]}\n    except subprocess.TimeoutExpired as e:\n        raw = e.stdout or b''\n        if isinstance(raw, str):\n            raw = raw.encode('utf-8', 'replace')\n        return {\"returncode\": \"__timeout__\", \"tail\": raw.decode('utf-8', 'replace')[-7000:]}\n    except BaseException as e:\n        return \"__error__: \" + type(e).__name__ + \": \" + str(e)\n\n\n# ---------------- Example 1: COPT exp_soc test ----------------\nP(E1, lambda: run_pytest([\"cvxpy/tests/test_conic_solvers.py\", \"-k\", \"copt_exp_soc_1\"], timeout=600))\n\n\ndef _coptpy():\n    try:\n        import coptpy  # noqa\n        return {\"importable\": True, \"file\": getattr(coptpy, '__file__', None)}\n    except BaseException as e:\n        return {\"importable\": False, \"error\": type(e).__name__ + \": \" + str(e)}\n\n\nP(E1 + \" :: coptpy\", _coptpy)\nP(E1 + \" :: test file exists\", lambda: os.path.exists(os.path.join(ROOT, \"cvxpy/tests/test_conic_solvers.py\")))\nP(E1 + \" :: files mentioning copt_exp_soc_1\", lambda: find_files(\"copt_exp_soc_1\"))\nP(E1 + \" :: files defining test_exp_soc_1\", lambda: find_files(\"def test_exp_soc_1\"))\nP(E1 + \" :: enclosing defs of copt_exp_soc_1\", lambda: defs_containing(\"cvxpy/tests/test_conic_solvers.py\", \"copt_exp_soc_1\"))\nP(E1 + \" :: test_exp_soc_1 def source\", lambda: [extract_defs(p, \"test_exp_soc_1\") for p in find_files(\"def test_exp_soc_1\")])\nP(E1 + \" :: copt files\", lambda: find_named_files(\"copt\"))\nP(E1 + \" :: copt tolerance/bound lines\", lambda: {p: grep_lines(p, [\"FeasTol\", \"DualTol\", \"bound\", \"1e-9\", \"infinity\"]) for p in find_named_files(\"copt\")})\n\n# ---------------- Example 2: check_gradient ----------------\nP(E2 + \" :: files defining check_gradient\", lambda: find_files(\"def check_gradient\"))\nP(E2 + \" :: files mentioning check_gradient\", lambda: find_files(\"check_gradient\"))\nP(E2 + \" :: definitions source\", lambda: {p: extract_defs(p, \"check_gradient\") for p in find_files(\"def check_gradient\")})\nP(E2 + \" :: signatures/defaults\", lambda: {p: sig_info(p, \"check_gradient\") for p in find_files(\"def check_gradient\")})\nP(E2 + \" :: forward-pinning usage\", lambda: {p: def_name_usage(p, \"check_gradient\") for p in find_files(\"def check_gradient\")})\n\n\ndef _cg_test_files():\n    return [p for p in find_files(\"check_gradient\") if \"test\" in p.lower()]\n\n\nP(E2 + \" :: test files mentioning check_gradient\", _cg_test_files)\n\n_cg_pytest_targets = []\ntry:\n    _cg_pytest_targets = _cg_test_files()[:1]\nexcept BaseException:\n    _cg_pytest_targets = []\n\nfor _t in _cg_pytest_targets:\n    P(E2 + \" :: pytest \" + _t, (lambda t=_t: run_pytest([t], timeout=600)))\n\n# ---------------- Example 3: eval_hessian_vals_coo_lower_tri ----------------\nP(E3 + \" :: files defining eval_hessian_vals_coo_lower_tri\",\n  lambda: find_files(\"def eval_hessian_vals_coo_lower_tri\"))\nP(E3 + \" :: definitions source\",\n  lambda: {p: extract_defs(p, \"eval_hessian_vals_coo_lower_tri\") for p in find_files(\"def eval_hessian_vals_coo_lower_tri\")})\nP(E3 + \" :: forward-pinning usage\",\n  lambda: {p: def_name_usage(p, \"eval_hessian_vals_coo_lower_tri\") for p in find_files(\"def eval_hessian_vals_coo_lower_tri\")})\nP(E3 + \" :: signatures/defaults\",\n  lambda: {p: sig_info(p, \"eval_hessian_vals_coo_lower_tri\") for p in find_files(\"def eval_hessian_vals_coo_lower_tri\")})"
+      },
+      "fixed": {
+        "reported_examples": "import os, sys, ast, inspect, importlib, subprocess\n\nROOT = os.getcwd()\nSKIP_DIRS = {'.git', '__pycache__', '.tox', 'build', '.eggs', '.mypy_cache', 'node_modules'}\n\nE1 = \"pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)\"\nE2 = \"check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)\"\nE3 = \"eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)\"\n\n\ndef P(name, fn):\n    try:\n        val = fn()\n    except BaseException as e:\n        val = \"__error__: \" + type(e).__name__ + \": \" + str(e)\n    try:\n        probe(name, val)\n    except BaseException:\n        pass\n\n\ndef read_text(path):\n    with open(path, 'r', encoding='utf-8', errors='replace') as fh:\n        return fh.read()\n\n\ndef iter_py_files():\n    for root, dirs, files in os.walk(ROOT):\n        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]\n        for f in files:\n            if f.endswith('.py'):\n                yield os.path.join(root, f)\n\n\ndef rel(p):\n    try:\n        return os.path.relpath(p, ROOT)\n    except BaseException:\n        return p\n\n\ndef find_files(needle):\n    hits = []\n    for p in iter_py_files():\n        try:\n            t = read_text(p)\n        except BaseException:\n            continue\n        if needle in t:\n            hits.append(rel(p))\n    return sorted(hits)\n\n\ndef find_named_files(sub):\n    out = []\n    for root, dirs, files in os.walk(ROOT):\n        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]\n        for f in files:\n            if f.endswith('.py') and sub in f.lower():\n                out.append(rel(os.path.join(root, f)))\n    return sorted(out)\n\n\ndef extract_defs(path, name, maxlen=5000):\n    try:\n        full = path if os.path.isabs(path) else os.path.join(ROOT, path)\n        src = read_text(full)\n        tree = ast.parse(src)\n        lines = src.splitlines()\n    except BaseException as e:\n        return \"__error__: \" + type(e).__name__ + \": \" + str(e)\n    out = []\n    for node in ast.walk(tree):\n        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:\n            start = node.lineno - 1\n            end = getattr(node, 'end_lineno', start + 1)\n            seg = \"\\n\".join(lines[start:end])\n            out.append({\"lineno\": node.lineno, \"source\": seg[:maxlen]})\n    return out\n\n\ndef defs_containing(path, needle, maxlen=6000):\n    try:\n        full = path if os.path.isabs(path) else os.path.join(ROOT, path)\n        src = read_text(full)\n        tree = ast.parse(src)\n        lines = src.splitlines()\n    except BaseException as e:\n        return \"__error__: \" + type(e).__name__ + \": \" + str(e)\n    out = []\n    for node in ast.walk(tree):\n        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):\n            start = node.lineno - 1\n            end = getattr(node, 'end_lineno', start + 1)\n            seg = \"\\n\".join(lines[start:end])\n            if needle in seg:\n                out.append({\"name\": node.name, \"lineno\": node.lineno, \"source\": seg[:maxlen]})\n    return out\n\n\ndef grep_lines(path, needles, maxlines=60):\n    try:\n        full = path if os.path.isabs(path) else os.path.join(ROOT, path)\n        out = []\n        for i, line in enumerate(read_text(full).splitlines(), 1):\n            if any(nd in line for nd in needles):\n                out.append(\"%d: %s\" % (i, line.strip()))\n                if len(out) >= maxlines:\n                    break\n        return out\n    except BaseException as e:\n        return \"__error__: \" + type(e).__name__ + \": \" + str(e)\n\n\ndef module_name_for(relpath):\n    r = relpath\n    if r.endswith('.py'):\n        r = r[:-3]\n    parts = r.replace('\\\\', '/').split('/')\n    if parts and parts[-1] == '__init__':\n        parts = parts[:-1]\n    return '.'.join([p for p in parts if p not in ('', '.')])\n\n\ndef sig_info(path, fname):\n    try:\n        modname = module_name_for(path)\n        mod = sys.modules.get(modname)\n        if mod is None:\n            mod = importlib.import_module(modname)\n        fn = getattr(mod, fname, None)\n        owner = modname\n        if fn is None:\n            for an, av in vars(mod).items():\n                if inspect.isclass(av) and hasattr(av, fname):\n                    fn = getattr(av, fname)\n                    owner = modname + '.' + an\n                    break\n        if fn is None:\n            return {\"module\": modname, \"found\": False}\n        sig = inspect.signature(fn)\n        defaults = {}\n        for k, v in sig.parameters.items():\n            if v.default is not inspect.Parameter.empty:\n                defaults[k] = repr(v.default)\n        return {\"module\": modname, \"owner\": owner, \"found\": True,\n                \"signature\": str(sig), \"defaults\": defaults}\n    except BaseException as e:\n        return \"__error__: \" + type(e).__name__ + \": \" + str(e)\n\n\ndef def_name_usage(path, fname):\n    try:\n        full = path if os.path.isabs(path) else os.path.join(ROOT, path)\n        src = read_text(full)\n        tree = ast.parse(src)\n    except BaseException as e:\n        return \"__error__: \" + type(e).__name__ + \": \" + str(e)\n    res = {}\n    for node in ast.walk(tree):\n        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == fname:\n            used = set()\n            for n in ast.walk(node):\n                if isinstance(n, ast.Attribute):\n                    used.add(n.attr)\n                elif isinstance(n, ast.Name):\n                    used.add(n.id)\n            res[fname] = {\n                \"uses_objective_forward\": 'objective_forward' in used,\n                \"uses_constraint_forward\": 'constraint_forward' in used,\n                \"mentions_epsilon\": 'epsilon' in used,\n            }\n    return res\n\n\ndef run_pytest(args, timeout=600):\n    cmd = [sys.executable, '-m', 'pytest', '-q', '--no-header', '-p', 'no:cacheprovider'] + list(args)\n    try:\n        r = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,\n                           stderr=subprocess.STDOUT, timeout=timeout)\n        out = r.stdout.decode('utf-8', 'replace')\n        return {\"returncode\": r.returncode, \"tail\": out[-7000:]}\n    except subprocess.TimeoutExpired as e:\n        raw = e.stdout or b''\n        if isinstance(raw, str):\n            raw = raw.encode('utf-8', 'replace')\n        return {\"returncode\": \"__timeout__\", \"tail\": raw.decode('utf-8', 'replace')[-7000:]}\n    except BaseException as e:\n        return \"__error__: \" + type(e).__name__ + \": \" + str(e)\n\n\n# ---------------- Example 1: COPT exp_soc test ----------------\nP(E1, lambda: run_pytest([\"cvxpy/tests/test_conic_solvers.py\", \"-k\", \"copt_exp_soc_1\"], timeout=600))\n\n\ndef _coptpy():\n    try:\n        import coptpy  # noqa\n        return {\"importable\": True, \"file\": getattr(coptpy, '__file__', None)}\n    except BaseException as e:\n        return {\"importable\": False, \"error\": type(e).__name__ + \": \" + str(e)}\n\n\nP(E1 + \" :: coptpy\", _coptpy)\nP(E1 + \" :: test file exists\", lambda: os.path.exists(os.path.join(ROOT, \"cvxpy/tests/test_conic_solvers.py\")))\nP(E1 + \" :: files mentioning copt_exp_soc_1\", lambda: find_files(\"copt_exp_soc_1\"))\nP(E1 + \" :: files defining test_exp_soc_1\", lambda: find_files(\"def test_exp_soc_1\"))\nP(E1 + \" :: enclosing defs of copt_exp_soc_1\", lambda: defs_containing(\"cvxpy/tests/test_conic_solvers.py\", \"copt_exp_soc_1\"))\nP(E1 + \" :: test_exp_soc_1 def source\", lambda: [extract_defs(p, \"test_exp_soc_1\") for p in find_files(\"def test_exp_soc_1\")])\nP(E1 + \" :: copt files\", lambda: find_named_files(\"copt\"))\nP(E1 + \" :: copt tolerance/bound lines\", lambda: {p: grep_lines(p, [\"FeasTol\", \"DualTol\", \"bound\", \"1e-9\", \"infinity\"]) for p in find_named_files(\"copt\")})\n\n# ---------------- Example 2: check_gradient ----------------\nP(E2 + \" :: files defining check_gradient\", lambda: find_files(\"def check_gradient\"))\nP(E2 + \" :: files mentioning check_gradient\", lambda: find_files(\"check_gradient\"))\nP(E2 + \" :: definitions source\", lambda: {p: extract_defs(p, \"check_gradient\") for p in find_files(\"def check_gradient\")})\nP(E2 + \" :: signatures/defaults\", lambda: {p: sig_info(p, \"check_gradient\") for p in find_files(\"def check_gradient\")})\nP(E2 + \" :: forward-pinning usage\", lambda: {p: def_name_usage(p, \"check_gradient\") for p in find_files(\"def check_gradient\")})\n\n\ndef _cg_test_files():\n    return [p for p in find_files(\"check_gradient\") if \"test\" in p.lower()]\n\n\nP(E2 + \" :: test files mentioning check_gradient\", _cg_test_files)\n\n_cg_pytest_targets = []\ntry:\n    _cg_pytest_targets = _cg_test_files()[:1]\nexcept BaseException:\n    _cg_pytest_targets = []\n\nfor _t in _cg_pytest_targets:\n    P(E2 + \" :: pytest \" + _t, (lambda t=_t: run_pytest([t], timeout=600)))\n\n# ---------------- Example 3: eval_hessian_vals_coo_lower_tri ----------------\nP(E3 + \" :: files defining eval_hessian_vals_coo_lower_tri\",\n  lambda: find_files(\"def eval_hessian_vals_coo_lower_tri\"))\nP(E3 + \" :: definitions source\",\n  lambda: {p: extract_defs(p, \"eval_hessian_vals_coo_lower_tri\") for p in find_files(\"def eval_hessian_vals_coo_lower_tri\")})\nP(E3 + \" :: forward-pinning usage\",\n  lambda: {p: def_name_usage(p, \"eval_hessian_vals_coo_lower_tri\") for p in find_files(\"def eval_hessian_vals_coo_lower_tri\")})\nP(E3 + \" :: signatures/defaults\",\n  lambda: {p: sig_info(p, \"eval_hessian_vals_coo_lower_tri\") for p in find_files(\"def eval_hessian_vals_coo_lower_tri\")})"
+      }
+    },
+    "report": {
+      "status": "SETUP_FAILURE",
+      "rationale": "every selected test was SKIPPED on fixed (COPT is not installed.)",
+      "transition": "pass->no_tests",
+      "fail_to_pass": false,
+      "numeric_verdict": "diverged",
+      "examples_verdict": "diverged",
+      "success_criterion": "At buggy commit a918e45f, `pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1` FAILS (exp-cone dual values miss the 3-decimal assertion) and/or the NLP derivative check_gradient returns False spuriously; the same test(s) PASS at fixed commit 74e1506400b3412a26548dcb122c52030e60d61a.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 1,
+            "failed": null,
+            "errors": null
+          },
+          "fixed": {
+            "status": "no_tests",
+            "exit_code": 0,
+            "failure_kind": "skipped",
+            "passed": null,
+            "failed": null,
+            "errors": null,
+            "skip_reason": "COPT is not installed."
+          }
+        },
+        "probes": [
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)": {
+                "returncode": 0,
+                "tail": ".                                                                        [100%]\n1 passed, 505 deselected in 1.74s\n"
+              },
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: coptpy": {
+                "importable": true,
+                "file": "/workspace/buggy/.venv/lib/python3.11/site-packages/coptpy/__init__.py"
+              },
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: test file exists": true,
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: files mentioning copt_exp_soc_1": [
+                "cvxpy/tests/test_conic_solvers.py"
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: files defining test_exp_soc_1": [
+                "cvxpy/tests/solver_test_helpers.py"
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: enclosing defs of copt_exp_soc_1": [
+                {
+                  "name": "test_copt_exp_soc_1",
+                  "lineno": 3019,
+                  "source": "    def test_copt_exp_soc_1(self) -> None:\n        # Tighten tolerances so the exponential-cone dual values converge\n        # to the 3 decimal places the test checks.\n        StandardTestMixedCPs.test_exp_soc_1(solver='COPT', FeasTol=1e-9, DualTol=1e-9)"
+                }
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: test_exp_soc_1 def source": [
+                [
+                  {
+                    "lineno": 1472,
+                    "source": "    def test_exp_soc_1(solver, places: int = 3, duals: bool = True, **kwargs) -> SolverTestHelper:\n        sth = expcone_socp_1()\n        sth.solve(solver, **kwargs)\n        sth.verify_objective(places)\n        sth.verify_primal_values(places)\n        if duals:\n            sth.check_complementarity(places)\n            sth.verify_dual_values(places)\n        return sth"
+                  }
+                ]
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: copt files": [
+                "cvxpy/reductions/solvers/conic_solvers/copt_conif.py",
+                "cvxpy/reductions/solvers/nlp_solvers/copt_nlpif.py",
+                "cvxpy/reductions/solvers/qp_solvers/copt_qpif.py",
+                "cvxpy/tests/test_copt_write.py"
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: copt tolerance/bound lines": {
+                "cvxpy/reductions/solvers/conic_solvers/copt_conif.py": [
+                  "43: 3: s.UNBOUNDED,           # unbounded",
+                  "44: 4: s.INF_OR_UNB,          # infeasible or unbounded",
+                  "180: # For PSD path (dualized), variable bounds must be added as",
+                  "181: # explicit constraints since loadConeMatrix doesn't support bounds."
+                ],
+                "cvxpy/reductions/solvers/nlp_solvers/copt_nlpif.py": [
+                  "33: 3: s.UNBOUNDED,           # unbounded",
+                  "34: 4: s.INF_OR_UNB,          # infeasible or unbounded",
+                  "92: - \"lb\": Lower bounds on the primal variables",
+                  "93: - \"ub\": Upper bounds on the primal variables",
+                  "94: - \"cl\": Lower bounds on the constraints",
+                  "95: - \"cu\": Upper bounds on the constraints",
+                  "122: bounds = data[\"_bounds\"]",
+                  "128: oracles = Oracles(bounds.new_problem, verbose=verbose, use_hessian=use_hessian)",
+                  "131: if bounds.new_problem.parameters():",
+                  "132: oracles.update_params(bounds.new_problem)",
+                  "134: oracles = Oracles(bounds.new_problem, verbose=verbose, use_hessian=use_hessian)",
+                  "249: lb, ub,                             # Variable bounds",
+                  "250: cl, cu,                             # Constraint bounds"
+                ],
+                "cvxpy/reductions/solvers/qp_solvers/copt_qpif.py": [
+                  "29: 3: s.UNBOUNDED,           # unbounded",
+                  "30: 4: s.INF_OR_UNB,          # infeasible or unbounded"
+                ],
+                "cvxpy/tests/test_copt_write.py": []
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: files defining check_gradient": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: files mentioning check_gradient": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: definitions source": {
+                "cvxpy/tests/nlp_tests/derivative_checker.py": [
+                  {
+                    "lineno": 212,
+                    "source": "    def check_gradient(self, x=None, epsilon=1e-6):\n        \"\"\" Compare C-based gradient with numerical approximation using finite differences.\n\n        The central-difference step is ~eps_machine**(1/3), which balances\n        truncation error (O(epsilon**2)) against floating-point cancellation\n        (O(eps_machine * |objective| / epsilon)). A smaller step such as 1e-8\n        makes the cancell\u2026"
+                  }
+                ]
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: signatures/defaults": {
+                "cvxpy/tests/nlp_tests/derivative_checker.py": {
+                  "module": "cvxpy.tests.nlp_tests.derivative_checker",
+                  "owner": "cvxpy.tests.nlp_tests.derivative_checker.DerivativeChecker",
+                  "found": true,
+                  "signature": "(self, x=None, epsilon=1e-06)",
+                  "defaults": {
+                    "x": "None",
+                    "epsilon": "1e-06"
+                  }
+                }
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: forward-pinning usage": {
+                "cvxpy/tests/nlp_tests/derivative_checker.py": {
+                  "check_gradient": {
+                    "uses_objective_forward": true,
+                    "uses_constraint_forward": false,
+                    "mentions_epsilon": true
+                  }
+                }
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: test files mentioning check_gradient": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: pytest cvxpy/tests/nlp_tests/derivative_checker.py": {
+                "returncode": 5,
+                "tail": "\nno tests ran in 1.12s\n"
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: files defining eval_hessian_vals_coo_lower_tri": [
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py"
+              ],
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: definitions source": {
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py": [
+                  {
+                    "lineno": 118,
+                    "source": "    def eval_hessian_vals_coo_lower_tri(\n        self, obj_factor: float, lagrange: np.ndarray\n    ) -> np.ndarray:\n        \"\"\"Evaluate the lower-triangular Lagrangian Hessian and return its nonzero values.\n\n        Computes obj_factor * hess_f + sum(lagrange[i] * hess_gi), where f is the objective\n        and gi are the constraints. The values correspond to the sparsity pattern from\n        get_p\u2026"
+                  }
+                ]
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: forward-pinning usage": {
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py": {
+                  "eval_hessian_vals_coo_lower_tri": {
+                    "uses_objective_forward": false,
+                    "uses_constraint_forward": false,
+                    "mentions_epsilon": false
+                  }
+                }
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: signatures/defaults": {
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py": {
+                  "module": "cvxpy.reductions.solvers.nlp_solvers.diff_engine.c_problem",
+                  "owner": "cvxpy.reductions.solvers.nlp_solvers.diff_engine.c_problem.C_problem",
+                  "found": true,
+                  "signature": "(self, obj_factor: float, lagrange: numpy.ndarray) -> numpy.ndarray",
+                  "defaults": {}
+                }
+              }
+            },
+            "fixed_values": {
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)": {
+                "returncode": 0,
+                "tail": "s                                                                        [100%]\n1 skipped, 504 deselected in 1.65s\n"
+              },
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: coptpy": {
+                "importable": false,
+                "error": "ModuleNotFoundError: No module named 'coptpy'"
+              },
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: test file exists": true,
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: files mentioning copt_exp_soc_1": [
+                "cvxpy/tests/test_conic_solvers.py"
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: files defining test_exp_soc_1": [
+                "cvxpy/tests/solver_test_helpers.py"
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: enclosing defs of copt_exp_soc_1": [
+                {
+                  "name": "test_copt_exp_soc_1",
+                  "lineno": 3019,
+                  "source": "    def test_copt_exp_soc_1(self) -> None:\n        # Tighten tolerances so the exponential-cone dual values converge\n        # to the 3 decimal places the test checks.\n        StandardTestMixedCPs.test_exp_soc_1(solver='COPT', FeasTol=1e-9, DualTol=1e-9)"
+                }
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: test_exp_soc_1 def source": [
+                [
+                  {
+                    "lineno": 1472,
+                    "source": "    def test_exp_soc_1(solver, places: int = 3, duals: bool = True, **kwargs) -> SolverTestHelper:\n        sth = expcone_socp_1()\n        sth.solve(solver, **kwargs)\n        sth.verify_objective(places)\n        sth.verify_primal_values(places)\n        if duals:\n            sth.check_complementarity(places)\n            sth.verify_dual_values(places)\n        return sth"
+                  }
+                ]
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: copt files": [
+                "cvxpy/reductions/solvers/conic_solvers/copt_conif.py",
+                "cvxpy/reductions/solvers/nlp_solvers/copt_nlpif.py",
+                "cvxpy/reductions/solvers/qp_solvers/copt_qpif.py",
+                "cvxpy/tests/test_copt_write.py"
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: copt tolerance/bound lines": {
+                "cvxpy/reductions/solvers/conic_solvers/copt_conif.py": [
+                  "19: def _add_psd_bound_rows(A, b, dims, lb, ub):",
+                  "20: \"\"\"Add finite variable bounds as explicit inequality rows.",
+                  "34: extra_rows.append(_bound_selector(n_ub, n, np.flatnonzero(finite_ub), 1.0))",
+                  "41: extra_rows.append(_bound_selector(n_lb, n, np.flatnonzero(finite_lb), -1.0))",
+                  "46: bound_block = sp.vstack(extra_rows, format='csr')",
+                  "47: A = sp.vstack([A[:insert_at], bound_block, A[insert_at:]], format='csc')",
+                  "49: dims[s.LEQ_DIM] += bound_block.shape[0]",
+                  "54: def _bound_selector(num_rows, num_cols, cols, value):",
+                  "83: 3: s.UNBOUNDED,           # unbounded",
+                  "84: 4: s.INF_OR_UNB,          # infeasible or unbounded",
+                  "222: # For PSD path (dualized), variable bounds must be added as",
+                  "223: # explicit constraints since loadConeMatrix doesn't support bounds.",
+                  "227: A, b = _add_psd_bound_rows(A, b, dims, psd_lb, psd_ub)"
+                ],
+                "cvxpy/reductions/solvers/nlp_solvers/copt_nlpif.py": [
+                  "33: 3: s.UNBOUNDED,           # unbounded",
+                  "34: 4: s.INF_OR_UNB,          # infeasible or unbounded",
+                  "92: - \"lb\": Lower bounds on the primal variables",
+                  "93: - \"ub\": Upper bounds on the primal variables",
+                  "94: - \"cl\": Lower bounds on the constraints",
+                  "95: - \"cu\": Upper bounds on the constraints",
+                  "122: bounds = data[\"_bounds\"]",
+                  "128: oracles = Oracles(bounds.new_problem, verbose=verbose, use_hessian=use_hessian)",
+                  "131: if bounds.new_problem.parameters():",
+                  "132: oracles.update_params(bounds.new_problem)",
+                  "134: oracles = Oracles(bounds.new_problem, verbose=verbose, use_hessian=use_hessian)",
+                  "249: lb, ub,                             # Variable bounds",
+                  "250: cl, cu,                             # Constraint bounds"
+                ],
+                "cvxpy/reductions/solvers/qp_solvers/copt_qpif.py": [
+                  "29: 3: s.UNBOUNDED,           # unbounded",
+                  "30: 4: s.INF_OR_UNB,          # infeasible or unbounded"
+                ],
+                "cvxpy/tests/test_copt_write.py": []
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: files defining check_gradient": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: files mentioning check_gradient": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: definitions source": {
+                "cvxpy/tests/nlp_tests/derivative_checker.py": [
+                  {
+                    "lineno": 212,
+                    "source": "    def check_gradient(self, x=None, epsilon=1e-6):\n        \"\"\" Compare C-based gradient with numerical approximation using finite differences.\n\n        The central-difference step is ~eps_machine**(1/3), which balances\n        truncation error (O(epsilon**2)) against floating-point cancellation\n        (O(eps_machine * |objective| / epsilon)). A smaller step such as 1e-8\n        makes the cancell\u2026"
+                  }
+                ]
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: signatures/defaults": {
+                "cvxpy/tests/nlp_tests/derivative_checker.py": {
+                  "module": "cvxpy.tests.nlp_tests.derivative_checker",
+                  "owner": "cvxpy.tests.nlp_tests.derivative_checker.DerivativeChecker",
+                  "found": true,
+                  "signature": "(self, x=None, epsilon=1e-06)",
+                  "defaults": {
+                    "x": "None",
+                    "epsilon": "1e-06"
+                  }
+                }
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: forward-pinning usage": {
+                "cvxpy/tests/nlp_tests/derivative_checker.py": {
+                  "check_gradient": {
+                    "uses_objective_forward": true,
+                    "uses_constraint_forward": false,
+                    "mentions_epsilon": true
+                  }
+                }
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: test files mentioning check_gradient": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: pytest cvxpy/tests/nlp_tests/derivative_checker.py": {
+                "returncode": 5,
+                "tail": "\nno tests ran in 1.11s\n"
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: files defining eval_hessian_vals_coo_lower_tri": [
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py"
+              ],
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: definitions source": {
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py": [
+                  {
+                    "lineno": 118,
+                    "source": "    def eval_hessian_vals_coo_lower_tri(\n        self, obj_factor: float, lagrange: np.ndarray\n    ) -> np.ndarray:\n        \"\"\"Evaluate the lower-triangular Lagrangian Hessian and return its nonzero values.\n\n        Computes obj_factor * hess_f + sum(lagrange[i] * hess_gi), where f is the objective\n        and gi are the constraints. The values correspond to the sparsity pattern from\n        get_p\u2026"
+                  }
+                ]
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: forward-pinning usage": {
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py": {
+                  "eval_hessian_vals_coo_lower_tri": {
+                    "uses_objective_forward": false,
+                    "uses_constraint_forward": false,
+                    "mentions_epsilon": false
+                  }
+                }
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: signatures/defaults": {
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py": {
+                  "module": "cvxpy.reductions.solvers.nlp_solvers.diff_engine.c_problem",
+                  "owner": "cvxpy.reductions.solvers.nlp_solvers.diff_engine.c_problem.C_problem",
+                  "found": true,
+                  "signature": "(self, obj_factor: float, lagrange: numpy.ndarray) -> numpy.ndarray",
+                  "defaults": {}
+                }
+              }
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)",
+            "expected_output": "Test passes when called as StandardTestMixedCPs.test_exp_soc_1(solver='COPT', FeasTol=1e-9, DualTol=1e-9)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Test fails: exp-cone dual values do not converge to the 3 decimal places the test asserts",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)",
+              "observed": {
+                "returncode": 0,
+                "tail": ".                                                                        [100%]\n1 passed, 505 deselected in 1.74s\n"
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)",
+              "observed": {
+                "returncode": 0,
+                "tail": "s                                                                        [100%]\n1 skipped, 504 deselected in 1.65s\n"
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)",
+            "expected_output": "True; gradient match when epsilon=1e-6, the balanced central-difference step ~ eps_machine**(1/3)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "False; spurious gradient mismatch due to floating-point cancellation O(eps_machine*|objective|/epsilon)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: files defining check_gradient",
+              "observed": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: files defining check_gradient",
+              "observed": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)",
+            "expected_output": "Hessian values at x once objective_forward(x) and constraint_forward(x) pin the evaluation point",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Hessian values correspond to the stale point, not to x",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: files defining eval_hessian_vals_coo_lower_tri",
+              "observed": [
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: files defining eval_hessian_vals_coo_lower_tri",
+              "observed": [
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 5,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 2,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "setup_cause": {
+        "cause": "tests_skipped",
+        "detail": "fixed: COPT is not installed."
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-05-24T22:30:12-07:00",
+        "fixed_commit_date": "2026-05-26T11:12:07-07:00",
+        "reproducing_test_present": true,
+        "build_detected": "build-requires:pybind11|setup.py:ext_modules",
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-05-26T11:12:07-07:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/cvxpy/__init__.py",
+            "build_requires": [
+              "scipy >= 1.13.0",
+              "setuptools >= 68.1.0",
+              "wheel",
+              "pybind11"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "pandas": "3.0.3",
+              "matplotlib": "3.10.9",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.47.0",
+              "scipy": "1.17.1",
+              "setuptools": "82.0.1",
+              "wheel": "0.47.0",
+              "pybind11": "3.0.4"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest",
+              "hypothesis"
+            ],
+            "output": "--- end of build log ---\ncp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (43.2 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 43.2/43.2 MB 103.9 MB/s eta 0:00:00\nDownloading sparsediffpy-0.3.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (12.1 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 12.1/12.1 MB 122.2 MB/s eta 0:00:00\nDownloading cffi-2.1.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (217 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 217.8/217.8 kB 100.1 MB/s eta 0:00:00\nDownloading jinja2-3.1.6-py3-none-any.whl (134 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 134.9/134.9 kB 97.1 MB/s eta 0:00:00\nDownloading joblib-1.6.0-py3-none-any.whl (306 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 306.1/306.1 kB 105.2 MB/s eta 0:00:00\nDownloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nDownloading markupsafe-3.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 48.2/48.2 kB 84.0 MB/s eta 0:00:00\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.10.0-cp311-cp311-linux_x86_64.whl size=4287725 sha256=91675059df395a241dad44cf5d7e38f03e5b0249cb9ccf938eba167aa51c6f9d\n  Stored in directory: /tmp/pip-ephem-wheel-cache-m2gzjkg8/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, qdldl, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.10.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 qdldl-0.1.9.post1 scs-3.3.1 sparsediffpy-0.3.0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/cvxpy/__init__.py",
+            "build_requires": [
+              "scipy >= 1.13.0",
+              "setuptools >= 68.1.0",
+              "wheel",
+              "pybind11"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.6",
+              "pandas": "3.0.3",
+              "matplotlib": "3.10.9",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.47.0",
+              "scipy": "1.17.1",
+              "setuptools": "82.0.1",
+              "wheel": "0.47.0",
+              "pybind11": "3.0.4"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest",
+              "hypothesis"
+            ],
+            "output": "--- end of build log ---\n311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (43.2 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 43.2/43.2 MB 117.0 MB/s eta 0:00:00\nDownloading sparsediffpy-0.3.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (12.1 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 12.1/12.1 MB 123.0 MB/s eta 0:00:00\nDownloading cffi-2.1.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (217 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 217.8/217.8 kB 48.8 MB/s eta 0:00:00\nDownloading jinja2-3.1.6-py3-none-any.whl (134 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 134.9/134.9 kB 97.6 MB/s eta 0:00:00\nDownloading joblib-1.6.0-py3-none-any.whl (306 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 306.1/306.1 kB 103.7 MB/s eta 0:00:00\nDownloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nDownloading markupsafe-3.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 48.2/48.2 kB 79.4 MB/s eta 0:00:00\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.10.0-cp311-cp311-linux_x86_64.whl size=4288193 sha256=f0d9f992b883f1caf204695079be87fbc7f3be8603d9b0b408d04ac832413ae1\n  Stored in directory: /tmp/pip-ephem-wheel-cache-wpwzy6v9/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, qdldl, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.10.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 qdldl-0.1.9.post1 scs-3.3.1 sparsediffpy-0.3.0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 1,
+        "failed": null,
+        "errors": null
+      },
+      "fixed": {
+        "status": "no_tests",
+        "exit_code": 0,
+        "failure_kind": "skipped",
+        "passed": null,
+        "failed": null,
+        "errors": null,
+        "skip_reason": "COPT is not installed."
+      },
+      "transition": "pass->no_tests",
+      "fail_to_pass": false,
+      "numeric": {
+        "n_pairs": 1,
+        "verdict": "diverged",
+        "pairs": [
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)": {
+                "returncode": 0,
+                "tail": ".                                                                        [100%]\n1 passed, 505 deselected in 1.74s\n"
+              },
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: coptpy": {
+                "importable": true,
+                "file": "/workspace/buggy/.venv/lib/python3.11/site-packages/coptpy/__init__.py"
+              },
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: test file exists": true,
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: files mentioning copt_exp_soc_1": [
+                "cvxpy/tests/test_conic_solvers.py"
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: files defining test_exp_soc_1": [
+                "cvxpy/tests/solver_test_helpers.py"
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: enclosing defs of copt_exp_soc_1": [
+                {
+                  "name": "test_copt_exp_soc_1",
+                  "lineno": 3019,
+                  "source": "    def test_copt_exp_soc_1(self) -> None:\n        # Tighten tolerances so the exponential-cone dual values converge\n        # to the 3 decimal places the test checks.\n        StandardTestMixedCPs.test_exp_soc_1(solver='COPT', FeasTol=1e-9, DualTol=1e-9)"
+                }
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: test_exp_soc_1 def source": [
+                [
+                  {
+                    "lineno": 1472,
+                    "source": "    def test_exp_soc_1(solver, places: int = 3, duals: bool = True, **kwargs) -> SolverTestHelper:\n        sth = expcone_socp_1()\n        sth.solve(solver, **kwargs)\n        sth.verify_objective(places)\n        sth.verify_primal_values(places)\n        if duals:\n            sth.check_complementarity(places)\n            sth.verify_dual_values(places)\n        return sth"
+                  }
+                ]
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: copt files": [
+                "cvxpy/reductions/solvers/conic_solvers/copt_conif.py",
+                "cvxpy/reductions/solvers/nlp_solvers/copt_nlpif.py",
+                "cvxpy/reductions/solvers/qp_solvers/copt_qpif.py",
+                "cvxpy/tests/test_copt_write.py"
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: copt tolerance/bound lines": {
+                "cvxpy/reductions/solvers/conic_solvers/copt_conif.py": [
+                  "43: 3: s.UNBOUNDED,           # unbounded",
+                  "44: 4: s.INF_OR_UNB,          # infeasible or unbounded",
+                  "180: # For PSD path (dualized), variable bounds must be added as",
+                  "181: # explicit constraints since loadConeMatrix doesn't support bounds."
+                ],
+                "cvxpy/reductions/solvers/nlp_solvers/copt_nlpif.py": [
+                  "33: 3: s.UNBOUNDED,           # unbounded",
+                  "34: 4: s.INF_OR_UNB,          # infeasible or unbounded",
+                  "92: - \"lb\": Lower bounds on the primal variables",
+                  "93: - \"ub\": Upper bounds on the primal variables",
+                  "94: - \"cl\": Lower bounds on the constraints",
+                  "95: - \"cu\": Upper bounds on the constraints",
+                  "122: bounds = data[\"_bounds\"]",
+                  "128: oracles = Oracles(bounds.new_problem, verbose=verbose, use_hessian=use_hessian)",
+                  "131: if bounds.new_problem.parameters():",
+                  "132: oracles.update_params(bounds.new_problem)",
+                  "134: oracles = Oracles(bounds.new_problem, verbose=verbose, use_hessian=use_hessian)",
+                  "249: lb, ub,                             # Variable bounds",
+                  "250: cl, cu,                             # Constraint bounds"
+                ],
+                "cvxpy/reductions/solvers/qp_solvers/copt_qpif.py": [
+                  "29: 3: s.UNBOUNDED,           # unbounded",
+                  "30: 4: s.INF_OR_UNB,          # infeasible or unbounded"
+                ],
+                "cvxpy/tests/test_copt_write.py": []
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: files defining check_gradient": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: files mentioning check_gradient": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: definitions source": {
+                "cvxpy/tests/nlp_tests/derivative_checker.py": [
+                  {
+                    "lineno": 212,
+                    "source": "    def check_gradient(self, x=None, epsilon=1e-6):\n        \"\"\" Compare C-based gradient with numerical approximation using finite differences.\n\n        The central-difference step is ~eps_machine**(1/3), which balances\n        truncation error (O(epsilon**2)) against floating-point cancellation\n        (O(eps_machine * |objective| / epsilon)). A smaller step such as 1e-8\n        makes the cancell\u2026"
+                  }
+                ]
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: signatures/defaults": {
+                "cvxpy/tests/nlp_tests/derivative_checker.py": {
+                  "module": "cvxpy.tests.nlp_tests.derivative_checker",
+                  "owner": "cvxpy.tests.nlp_tests.derivative_checker.DerivativeChecker",
+                  "found": true,
+                  "signature": "(self, x=None, epsilon=1e-06)",
+                  "defaults": {
+                    "x": "None",
+                    "epsilon": "1e-06"
+                  }
+                }
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: forward-pinning usage": {
+                "cvxpy/tests/nlp_tests/derivative_checker.py": {
+                  "check_gradient": {
+                    "uses_objective_forward": true,
+                    "uses_constraint_forward": false,
+                    "mentions_epsilon": true
+                  }
+                }
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: test files mentioning check_gradient": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: pytest cvxpy/tests/nlp_tests/derivative_checker.py": {
+                "returncode": 5,
+                "tail": "\nno tests ran in 1.12s\n"
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: files defining eval_hessian_vals_coo_lower_tri": [
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py"
+              ],
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: definitions source": {
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py": [
+                  {
+                    "lineno": 118,
+                    "source": "    def eval_hessian_vals_coo_lower_tri(\n        self, obj_factor: float, lagrange: np.ndarray\n    ) -> np.ndarray:\n        \"\"\"Evaluate the lower-triangular Lagrangian Hessian and return its nonzero values.\n\n        Computes obj_factor * hess_f + sum(lagrange[i] * hess_gi), where f is the objective\n        and gi are the constraints. The values correspond to the sparsity pattern from\n        get_p\u2026"
+                  }
+                ]
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: forward-pinning usage": {
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py": {
+                  "eval_hessian_vals_coo_lower_tri": {
+                    "uses_objective_forward": false,
+                    "uses_constraint_forward": false,
+                    "mentions_epsilon": false
+                  }
+                }
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: signatures/defaults": {
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py": {
+                  "module": "cvxpy.reductions.solvers.nlp_solvers.diff_engine.c_problem",
+                  "owner": "cvxpy.reductions.solvers.nlp_solvers.diff_engine.c_problem.C_problem",
+                  "found": true,
+                  "signature": "(self, obj_factor: float, lagrange: numpy.ndarray) -> numpy.ndarray",
+                  "defaults": {}
+                }
+              }
+            },
+            "fixed_values": {
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)": {
+                "returncode": 0,
+                "tail": "s                                                                        [100%]\n1 skipped, 504 deselected in 1.65s\n"
+              },
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: coptpy": {
+                "importable": false,
+                "error": "ModuleNotFoundError: No module named 'coptpy'"
+              },
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: test file exists": true,
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: files mentioning copt_exp_soc_1": [
+                "cvxpy/tests/test_conic_solvers.py"
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: files defining test_exp_soc_1": [
+                "cvxpy/tests/solver_test_helpers.py"
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: enclosing defs of copt_exp_soc_1": [
+                {
+                  "name": "test_copt_exp_soc_1",
+                  "lineno": 3019,
+                  "source": "    def test_copt_exp_soc_1(self) -> None:\n        # Tighten tolerances so the exponential-cone dual values converge\n        # to the 3 decimal places the test checks.\n        StandardTestMixedCPs.test_exp_soc_1(solver='COPT', FeasTol=1e-9, DualTol=1e-9)"
+                }
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: test_exp_soc_1 def source": [
+                [
+                  {
+                    "lineno": 1472,
+                    "source": "    def test_exp_soc_1(solver, places: int = 3, duals: bool = True, **kwargs) -> SolverTestHelper:\n        sth = expcone_socp_1()\n        sth.solve(solver, **kwargs)\n        sth.verify_objective(places)\n        sth.verify_primal_values(places)\n        if duals:\n            sth.check_complementarity(places)\n            sth.verify_dual_values(places)\n        return sth"
+                  }
+                ]
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: copt files": [
+                "cvxpy/reductions/solvers/conic_solvers/copt_conif.py",
+                "cvxpy/reductions/solvers/nlp_solvers/copt_nlpif.py",
+                "cvxpy/reductions/solvers/qp_solvers/copt_qpif.py",
+                "cvxpy/tests/test_copt_write.py"
+              ],
+              "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances) :: copt tolerance/bound lines": {
+                "cvxpy/reductions/solvers/conic_solvers/copt_conif.py": [
+                  "19: def _add_psd_bound_rows(A, b, dims, lb, ub):",
+                  "20: \"\"\"Add finite variable bounds as explicit inequality rows.",
+                  "34: extra_rows.append(_bound_selector(n_ub, n, np.flatnonzero(finite_ub), 1.0))",
+                  "41: extra_rows.append(_bound_selector(n_lb, n, np.flatnonzero(finite_lb), -1.0))",
+                  "46: bound_block = sp.vstack(extra_rows, format='csr')",
+                  "47: A = sp.vstack([A[:insert_at], bound_block, A[insert_at:]], format='csc')",
+                  "49: dims[s.LEQ_DIM] += bound_block.shape[0]",
+                  "54: def _bound_selector(num_rows, num_cols, cols, value):",
+                  "83: 3: s.UNBOUNDED,           # unbounded",
+                  "84: 4: s.INF_OR_UNB,          # infeasible or unbounded",
+                  "222: # For PSD path (dualized), variable bounds must be added as",
+                  "223: # explicit constraints since loadConeMatrix doesn't support bounds.",
+                  "227: A, b = _add_psd_bound_rows(A, b, dims, psd_lb, psd_ub)"
+                ],
+                "cvxpy/reductions/solvers/nlp_solvers/copt_nlpif.py": [
+                  "33: 3: s.UNBOUNDED,           # unbounded",
+                  "34: 4: s.INF_OR_UNB,          # infeasible or unbounded",
+                  "92: - \"lb\": Lower bounds on the primal variables",
+                  "93: - \"ub\": Upper bounds on the primal variables",
+                  "94: - \"cl\": Lower bounds on the constraints",
+                  "95: - \"cu\": Upper bounds on the constraints",
+                  "122: bounds = data[\"_bounds\"]",
+                  "128: oracles = Oracles(bounds.new_problem, verbose=verbose, use_hessian=use_hessian)",
+                  "131: if bounds.new_problem.parameters():",
+                  "132: oracles.update_params(bounds.new_problem)",
+                  "134: oracles = Oracles(bounds.new_problem, verbose=verbose, use_hessian=use_hessian)",
+                  "249: lb, ub,                             # Variable bounds",
+                  "250: cl, cu,                             # Constraint bounds"
+                ],
+                "cvxpy/reductions/solvers/qp_solvers/copt_qpif.py": [
+                  "29: 3: s.UNBOUNDED,           # unbounded",
+                  "30: 4: s.INF_OR_UNB,          # infeasible or unbounded"
+                ],
+                "cvxpy/tests/test_copt_write.py": []
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: files defining check_gradient": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: files mentioning check_gradient": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: definitions source": {
+                "cvxpy/tests/nlp_tests/derivative_checker.py": [
+                  {
+                    "lineno": 212,
+                    "source": "    def check_gradient(self, x=None, epsilon=1e-6):\n        \"\"\" Compare C-based gradient with numerical approximation using finite differences.\n\n        The central-difference step is ~eps_machine**(1/3), which balances\n        truncation error (O(epsilon**2)) against floating-point cancellation\n        (O(eps_machine * |objective| / epsilon)). A smaller step such as 1e-8\n        makes the cancell\u2026"
+                  }
+                ]
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: signatures/defaults": {
+                "cvxpy/tests/nlp_tests/derivative_checker.py": {
+                  "module": "cvxpy.tests.nlp_tests.derivative_checker",
+                  "owner": "cvxpy.tests.nlp_tests.derivative_checker.DerivativeChecker",
+                  "found": true,
+                  "signature": "(self, x=None, epsilon=1e-06)",
+                  "defaults": {
+                    "x": "None",
+                    "epsilon": "1e-06"
+                  }
+                }
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: forward-pinning usage": {
+                "cvxpy/tests/nlp_tests/derivative_checker.py": {
+                  "check_gradient": {
+                    "uses_objective_forward": true,
+                    "uses_constraint_forward": false,
+                    "mentions_epsilon": true
+                  }
+                }
+              },
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: test files mentioning check_gradient": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: pytest cvxpy/tests/nlp_tests/derivative_checker.py": {
+                "returncode": 5,
+                "tail": "\nno tests ran in 1.11s\n"
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: files defining eval_hessian_vals_coo_lower_tri": [
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py"
+              ],
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: definitions source": {
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py": [
+                  {
+                    "lineno": 118,
+                    "source": "    def eval_hessian_vals_coo_lower_tri(\n        self, obj_factor: float, lagrange: np.ndarray\n    ) -> np.ndarray:\n        \"\"\"Evaluate the lower-triangular Lagrangian Hessian and return its nonzero values.\n\n        Computes obj_factor * hess_f + sum(lagrange[i] * hess_gi), where f is the objective\n        and gi are the constraints. The values correspond to the sparsity pattern from\n        get_p\u2026"
+                  }
+                ]
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: forward-pinning usage": {
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py": {
+                  "eval_hessian_vals_coo_lower_tri": {
+                    "uses_objective_forward": false,
+                    "uses_constraint_forward": false,
+                    "mentions_epsilon": false
+                  }
+                }
+              },
+              "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: signatures/defaults": {
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py": {
+                  "module": "cvxpy.reductions.solvers.nlp_solvers.diff_engine.c_problem",
+                  "owner": "cvxpy.reductions.solvers.nlp_solvers.diff_engine.c_problem.C_problem",
+                  "found": true,
+                  "signature": "(self, obj_factor: float, lagrange: numpy.ndarray) -> numpy.ndarray",
+                  "defaults": {}
+                }
+              }
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 3,
+        "n_judged": 3,
+        "n_reproduced": 1,
+        "evaluable": true,
+        "n_diverged": 1,
+        "n_unobserved": 0,
+        "n_contested": 0,
+        "unobserved": [],
+        "verdict": "diverged",
+        "examples": [
+          {
+            "input": "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)",
+            "expected_output": "Test passes when called as StandardTestMixedCPs.test_exp_soc_1(solver='COPT', FeasTol=1e-9, DualTol=1e-9)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Test fails: exp-cone dual values do not converge to the 3 decimal places the test asserts",
+            "outcome": "diverged",
+            "revisions_differ": true,
+            "buggy": {
+              "record": "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)",
+              "observed": {
+                "returncode": 0,
+                "tail": ".                                                                        [100%]\n1 passed, 505 deselected in 1.74s\n"
+              },
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)",
+              "observed": {
+                "returncode": 0,
+                "tail": "s                                                                        [100%]\n1 skipped, 504 deselected in 1.65s\n"
+              },
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)",
+            "expected_output": "True; gradient match when epsilon=1e-6, the balanced central-difference step ~ eps_machine**(1/3)",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "False; spurious gradient mismatch due to floating-point cancellation O(eps_machine*|objective|/epsilon)",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: files defining check_gradient",
+              "observed": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case) :: files defining check_gradient",
+              "observed": [
+                "cvxpy/tests/nlp_tests/derivative_checker.py"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)",
+            "expected_output": "Hessian values at x once objective_forward(x) and constraint_forward(x) pin the evaluation point",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "Hessian values correspond to the stale point, not to x",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: files defining eval_hessian_vals_coo_lower_tri",
+              "observed": [
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning) :: files defining eval_hessian_vals_coo_lower_tri",
+              "observed": [
+                "cvxpy/reductions/solvers/nlp_solvers/diff_engine/c_problem.py"
+              ],
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 5,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 2,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "At buggy commit a918e45f, `pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1` FAILS (exp-cone dual values miss the 3-decimal assertion) and/or the NLP derivative check_gradient returns False spuriously; the same test(s) PASS at fixed commit 74e1506400b3412a26548dcb122c52030e60d61a."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-05-24T22:30:12-07:00",
+      "fixed_commit_date": "2026-05-26T11:12:07-07:00",
+      "reproducing_test_present": true,
+      "build_detected": "build-requires:pybind11|setup.py:ext_modules",
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-05-26T11:12:07-07:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.11/site-packages/cvxpy/__init__.py",
+          "build_requires": [
+            "scipy >= 1.13.0",
+            "setuptools >= 68.1.0",
+            "wheel",
+            "pybind11"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "pandas": "3.0.3",
+            "matplotlib": "3.10.9",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.47.0",
+            "scipy": "1.17.1",
+            "setuptools": "82.0.1",
+            "wheel": "0.47.0",
+            "pybind11": "3.0.4"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest",
+            "hypothesis"
+          ],
+          "output": "--- end of build log ---\ncp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (43.2 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 43.2/43.2 MB 103.9 MB/s eta 0:00:00\nDownloading sparsediffpy-0.3.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (12.1 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 12.1/12.1 MB 122.2 MB/s eta 0:00:00\nDownloading cffi-2.1.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (217 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 217.8/217.8 kB 100.1 MB/s eta 0:00:00\nDownloading jinja2-3.1.6-py3-none-any.whl (134 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 134.9/134.9 kB 97.1 MB/s eta 0:00:00\nDownloading joblib-1.6.0-py3-none-any.whl (306 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 306.1/306.1 kB 105.2 MB/s eta 0:00:00\nDownloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nDownloading markupsafe-3.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 48.2/48.2 kB 84.0 MB/s eta 0:00:00\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.10.0-cp311-cp311-linux_x86_64.whl size=4287725 sha256=91675059df395a241dad44cf5d7e38f03e5b0249cb9ccf938eba167aa51c6f9d\n  Stored in directory: /tmp/pip-ephem-wheel-cache-m2gzjkg8/wheels/7a/c8/70/342a4b2ca4a60343455ece8242a212feaf29d87eafb2e36875\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, qdldl, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.10.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 qdldl-0.1.9.post1 scs-3.3.1 sparsediffpy-0.3.0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.11/site-packages/cvxpy/__init__.py",
+          "build_requires": [
+            "scipy >= 1.13.0",
+            "setuptools >= 68.1.0",
+            "wheel",
+            "pybind11"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.6",
+            "pandas": "3.0.3",
+            "matplotlib": "3.10.9",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.47.0",
+            "scipy": "1.17.1",
+            "setuptools": "82.0.1",
+            "wheel": "0.47.0",
+            "pybind11": "3.0.4"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest",
+            "hypothesis"
+          ],
+          "output": "--- end of build log ---\n311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (43.2 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 43.2/43.2 MB 117.0 MB/s eta 0:00:00\nDownloading sparsediffpy-0.3.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (12.1 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 12.1/12.1 MB 123.0 MB/s eta 0:00:00\nDownloading cffi-2.1.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (217 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 217.8/217.8 kB 48.8 MB/s eta 0:00:00\nDownloading jinja2-3.1.6-py3-none-any.whl (134 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 134.9/134.9 kB 97.6 MB/s eta 0:00:00\nDownloading joblib-1.6.0-py3-none-any.whl (306 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 306.1/306.1 kB 103.7 MB/s eta 0:00:00\nDownloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nDownloading markupsafe-3.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 48.2/48.2 kB 79.4 MB/s eta 0:00:00\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.10.0-cp311-cp311-linux_x86_64.whl size=4288193 sha256=f0d9f992b883f1caf204695079be87fbc7f3be8603d9b0b408d04ac832413ae1\n  Stored in directory: /tmp/pip-ephem-wheel-cache-wpwzy6v9/wheels/66/e8/0a/314f729eb52aac577b0236a9e48994cc52bd408221ae24d8eb\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, qdldl, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.10.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 qdldl-0.1.9.post1 scs-3.3.1 sparsediffpy-0.3.0\n\n[notice] A new release of pip is available: 24.0 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 6,
+    "history": [
+      {
+        "planner": {
+          "goal": "",
+          "milestones": []
+        }
+      },
+      {
+        "plan_retry": {
+          "attempt": 1,
+          "reason": "Your previous answer could not be read as a plan. Answer by calling the submit tool with the plan object itself \u2014 no prose, no code fences."
+        }
+      },
+      {
+        "planner": {
+          "goal": "Reproduce the special-value/derivative defect at buggy commit a918e45f (spurious check_gradient failure from the tiny default central-difference epsilon, plus the exp-cone COPT tolerance issue) and show the fixed commit 74e15064 behaves differently.",
+          "milestones": [
+            "buggy_environment_and_repro_test [buggy] \u2014 The buggy revision's built venv is importable, COPT availability is known/enabled, the revision's own derivative-test helper is located, and the reproducing test is actually executed on the buggy revision. (3 steps, verify: steps_succeeded, test_ran)",
+            "buggy_defect_observed [buggy] \u2014 The reported numerical defect is reproduced on the buggy revision: the revision's own default central-difference epsilon produces a spurious gradient mismatch on a large-objective function, and the report's own examples are evaluated here. (2 steps, verify: probe_ran, probe_shows_defect)",
+            "fixed_environment_and_repro_test [fixed] \u2014 The fixed revision's built venv is importable, COPT is importable there too, and the same reproducing test is executed on the fixed revision. (2 steps, verify: steps_succeeded, test_ran)",
+            "fixed_behaviour_differs [fixed] \u2014 The identical probe on the fixed revision is clean and the report's examples are evaluated there, establishing that the buggy and fixed revisions behave differently. (2 steps, verify: probe_ran, probe_clean, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import cvxpy, numpy, scipy; print('cvxpy', cvxpy.__version__); print('numpy', numpy.__version__); print('scipy', scipy.__version__)\"; echo '--- copt ---'; cd /workspace/buggy && (python -I -c \"import coptpy; print('coptpy', coptpy.__version__)\" || echo COPT_NOT_IMPORTABLE); echo '--- derivative helper ---'; cd /workspace/buggy && (python -I -c \"import inspect, cvxpy.tests.test_derivative as td; src = inspect.getsource(td); lines = [l for l in src.splitlines() if 'epsilon' in l or 'def check_gradient' in l or 'eval_hessian_vals_coo_lower_tri' in l]; print('\\n'.join(lines)[:3000])\" || echo MODULE_INSPECT_FAILED)",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 2.31
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && (python -I -c \"import coptpy; print('coptpy already present', coptpy.__version__)\" || pip install coptpy); python -I -c \"import coptpy; print('coptpy ok', coptpy.__version__)\" || echo COPT_STILL_MISSING",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 4.01
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k copt_exp_soc_1 --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning -rs --tb=short",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 2.47
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_and_repro_test",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            },
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test pass on buggy"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "gradient_default_epsilon_large_objective",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(gradient_default_epsilon_large_objective) \u2014 Probe the buggy revision's derivative-test helper default epsilon and emulate its central-difference gradient check on a large-objective (logistic-style) function, recording the returned match flag, the finite-difference gradient and the relative error."
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "probe_error",
+        "pathology": null,
+        "reasons": [
+          "the probe itself could not run (ImportError: cannot import name 'check_gradient' from 'cvxpy.tests.test_derivative' (/workspace/buggy/.venv/lib/python3.11/site-packages/cvxpy/tests/test_deriva) \u2014 fix the probe, not the revision"
+        ],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_defect_observed",
+          "verified": false,
+          "results": [
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "",
+          "milestones": []
+        }
+      },
+      {
+        "plan_retry": {
+          "attempt": "replan",
+          "reason": "Your previous answer could not be read as a plan. Answer by calling the submit tool with the plan object itself \u2014 no prose, no code fences."
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k test_copt_expcone_1 -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.72
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k test_copt_expcone_1 -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.72
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k test_copt_expcone_1 -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.73
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k test_copt_expcone_1 -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.62
+      },
+      {
+        "reproducing_test_run": {
+          "case": "test_copt_expcone_1",
+          "command": "python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k test_copt_expcone_1 -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+          "package": "cvxpy",
+          "statuses": {
+            "buggy": "pass",
+            "fixed": "no_tests"
+          },
+          "exit_codes": {
+            "buggy": 0,
+            "fixed": 0
+          },
+          "also_tried": [],
+          "attempts": [
+            {
+              "case": "test_copt_expcone_1",
+              "command": "python -I -m pytest --pyargs cvxpy.tests.test_conic_solvers -k test_copt_expcone_1 -q -rs --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning",
+              "buggy": "pass",
+              "fixed": "no_tests"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.0,
+          3019.0,
+          1472.0,
+          212.0,
+          1e-06,
+          5.0,
+          118.0
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.0,
+          3019.0,
+          1472.0,
+          212.0,
+          1e-06,
+          5.0,
+          118.0
+        ]
+      },
+      {
+        "example_probe_repair": {
+          "examples_repaired": [
+            "check_gradient(x=None, epsilon=1e-8) on an NLP derivative test, x defaulting to self.x0 with a large objective value (logistic case)",
+            "eval_hessian_vals_coo_lower_tri called after a previous forward pass at a different point (no objective_forward(x)/constraint_forward(x) pinning)",
+            "pytest cvxpy/tests/test_conic_solvers.py -k copt_exp_soc_1 -> StandardTestMixedCPs.test_exp_soc_1(solver='COPT') with no tolerance kwargs (default tolerances)"
+          ],
+          "observed_before": 0,
+          "observed_after": 3
+        }
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 3,
+            "recorded": 20,
+            "error": null,
+            "could_not_evaluate": 0
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 3,
+            "recorded": 20,
+            "error": null,
+            "could_not_evaluate": 0
+          },
+          "preamble": "generated probe",
+          "observed": 3
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "pass->no_tests",
+        "fail_to_pass": false,
+        "numeric_verdict": "diverged",
+        "examples_verdict": "diverged",
+        "examples": "1/3"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "SETUP_FAILURE",
+        "rationale": "every selected test was SKIPPED on fixed (COPT is not installed.)"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "deepseek-v4-flash",
+      "calls": 17,
+      "input_tokens": 38017,
+      "output_tokens": 240004,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.333533
+    }
+  },
+  {
+    "slug": "cvxpy_3246",
+    "bug_type": "correctness",
+    "image": "python:3.12",
+    "status": "PARTIALLY_REPRODUCED",
+    "reasoning": "pevr",
+    "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/2 reported example(s))",
+    "transition": "fail->pass",
+    "fail_to_pass": true,
+    "numeric_verdict": "diverged",
+    "examples_verdict": "not_reproduced",
+    "setup_cause": {},
+    "probe_code": {
+      "buggy": {
+        "reported_examples": "import numpy as np\nimport cvxpy as cp\n\nNAME1 = \"AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)\"\nNAME2 = \"AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)\"\n\nEXAMPLES = [(NAME1, (2, 3)), (NAME2, (4, 2))]\n\n\ndef to_arr(v):\n    try:\n        import scipy.sparse as sp\n        if sp.issparse(v):\n            return np.asarray(v.todense(), dtype=float)\n    except Exception:\n        pass\n    try:\n        return np.asarray(v, dtype=float)\n    except Exception:\n        return np.array(v, dtype=object)\n\n\ndef numerical_grad(shape, seed=0, eps=1e-6):\n    rng = np.random.default_rng(seed)\n    X = rng.standard_normal(shape)\n\n    def f(M):\n        return np.linalg.svd(M, compute_uv=False)[0]\n\n    G = np.zeros(shape, dtype=float)\n    it = np.nditer(X, flags=['multi_index'])\n    while not it.finished:\n        idx = it.multi_index\n        Xp = X.copy()\n        Xp[idx] += eps\n        Xm = X.copy()\n        Xm[idx] -= eps\n        G[idx] = (f(Xp) - f(Xm)) / (2.0 * eps)\n        it.iternext()\n    return X, G\n\n\ndef get_grad(expr, x, shape):\n    try:\n        g = expr.grad\n    except AttributeError:\n        if hasattr(cp, 'grad'):\n            g = cp.grad(expr)\n        else:\n            raise\n\n    if callable(g) and not isinstance(g, (dict, np.ndarray)):\n        try:\n            g = g()\n        except TypeError:\n            try:\n                g = g(x)\n            except TypeError:\n                pass\n\n    if isinstance(g, dict):\n        try:\n            if x in g:\n                return to_arr(g[x])\n        except Exception:\n            pass\n        vals = list(g.values())\n        if len(vals) == 1:\n            return to_arr(vals[0])\n        for k, v in g.items():\n            if tuple(getattr(k, 'shape', ())) == tuple(shape):\n                return to_arr(v)\n        raise RuntimeError(\n            \"unrecognized grad keys: \" + repr([type(k).__name__ for k in g.keys()]))\n\n    if isinstance(g, (list, tuple)):\n        for item in g:\n            if isinstance(item, tuple) and len(item) == 2 and item[0] is x:\n                return to_arr(item[1])\n        if len(g) == 1:\n            return to_arr(g[0])\n\n    try:\n        return to_arr(g[x])\n    except Exception:\n        pass\n    return to_arr(g)\n\n\ndef analytical_grad(shape, seed=0):\n    rng = np.random.default_rng(seed)\n    X = rng.standard_normal(shape)\n    x = cp.Variable(shape)\n    expr = cp.sigma_max(x)\n    x.value = X\n    try:\n        _ = expr.value\n    except Exception:\n        pass\n    return get_grad(expr, x, shape)\n\n\nfor name, shape in EXAMPLES:\n    try:\n        g = analytical_grad(shape)\n        probe(name, g.tolist())\n    except Exception as e:\n        probe(name, \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n    try:\n        _, gn = numerical_grad(shape)\n        probe(name + \" [numerical gradient]\", gn.tolist())\n    except Exception as e:\n        probe(name + \" [numerical gradient]\",\n              \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n    try:\n        g = analytical_grad(shape)\n        _, gn = numerical_grad(shape)\n        probe(name + \" [max abs diff]\",\n              float(np.max(np.abs(np.asarray(g, dtype=float) - gn))))\n    except Exception as e:\n        probe(name + \" [max abs diff]\",\n              \"__error__: \" + type(e).__name__ + \": \" + str(e))",
+        "described_examples": "import cvxpy as cp\n\ncases = [\n    (\n        \"AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)\",\n        (2, 3),\n    ),\n    (\n        \"AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)\",\n        (4, 2),\n    ),\n]\n\nfor text, shape in cases:\n    try:\n        x = cp.Variable(shape)\n        result = cp.sigma_max(x)\n        probe(text, result)\n    except Exception as e:\n        probe_exception(text, e)"
+      },
+      "fixed": {
+        "reported_examples": "import numpy as np\nimport cvxpy as cp\n\nNAME1 = \"AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)\"\nNAME2 = \"AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)\"\n\nEXAMPLES = [(NAME1, (2, 3)), (NAME2, (4, 2))]\n\n\ndef to_arr(v):\n    try:\n        import scipy.sparse as sp\n        if sp.issparse(v):\n            return np.asarray(v.todense(), dtype=float)\n    except Exception:\n        pass\n    try:\n        return np.asarray(v, dtype=float)\n    except Exception:\n        return np.array(v, dtype=object)\n\n\ndef numerical_grad(shape, seed=0, eps=1e-6):\n    rng = np.random.default_rng(seed)\n    X = rng.standard_normal(shape)\n\n    def f(M):\n        return np.linalg.svd(M, compute_uv=False)[0]\n\n    G = np.zeros(shape, dtype=float)\n    it = np.nditer(X, flags=['multi_index'])\n    while not it.finished:\n        idx = it.multi_index\n        Xp = X.copy()\n        Xp[idx] += eps\n        Xm = X.copy()\n        Xm[idx] -= eps\n        G[idx] = (f(Xp) - f(Xm)) / (2.0 * eps)\n        it.iternext()\n    return X, G\n\n\ndef get_grad(expr, x, shape):\n    try:\n        g = expr.grad\n    except AttributeError:\n        if hasattr(cp, 'grad'):\n            g = cp.grad(expr)\n        else:\n            raise\n\n    if callable(g) and not isinstance(g, (dict, np.ndarray)):\n        try:\n            g = g()\n        except TypeError:\n            try:\n                g = g(x)\n            except TypeError:\n                pass\n\n    if isinstance(g, dict):\n        try:\n            if x in g:\n                return to_arr(g[x])\n        except Exception:\n            pass\n        vals = list(g.values())\n        if len(vals) == 1:\n            return to_arr(vals[0])\n        for k, v in g.items():\n            if tuple(getattr(k, 'shape', ())) == tuple(shape):\n                return to_arr(v)\n        raise RuntimeError(\n            \"unrecognized grad keys: \" + repr([type(k).__name__ for k in g.keys()]))\n\n    if isinstance(g, (list, tuple)):\n        for item in g:\n            if isinstance(item, tuple) and len(item) == 2 and item[0] is x:\n                return to_arr(item[1])\n        if len(g) == 1:\n            return to_arr(g[0])\n\n    try:\n        return to_arr(g[x])\n    except Exception:\n        pass\n    return to_arr(g)\n\n\ndef analytical_grad(shape, seed=0):\n    rng = np.random.default_rng(seed)\n    X = rng.standard_normal(shape)\n    x = cp.Variable(shape)\n    expr = cp.sigma_max(x)\n    x.value = X\n    try:\n        _ = expr.value\n    except Exception:\n        pass\n    return get_grad(expr, x, shape)\n\n\nfor name, shape in EXAMPLES:\n    try:\n        g = analytical_grad(shape)\n        probe(name, g.tolist())\n    except Exception as e:\n        probe(name, \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n    try:\n        _, gn = numerical_grad(shape)\n        probe(name + \" [numerical gradient]\", gn.tolist())\n    except Exception as e:\n        probe(name + \" [numerical gradient]\",\n              \"__error__: \" + type(e).__name__ + \": \" + str(e))\n\n    try:\n        g = analytical_grad(shape)\n        _, gn = numerical_grad(shape)\n        probe(name + \" [max abs diff]\",\n              float(np.max(np.abs(np.asarray(g, dtype=float) - gn))))\n    except Exception as e:\n        probe(name + \" [max abs diff]\",\n              \"__error__: \" + type(e).__name__ + \": \" + str(e))",
+        "described_examples": "import cvxpy as cp\n\ncases = [\n    (\n        \"AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)\",\n        (2, 3),\n    ),\n    (\n        \"AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)\",\n        (4, 2),\n    ),\n]\n\nfor text, shape in cases:\n    try:\n        x = cp.Variable(shape)\n        result = cp.sigma_max(x)\n        probe(text, result)\n    except Exception as e:\n        probe_exception(text, e)"
+      }
+    },
+    "report": {
+      "status": "PARTIALLY_REPRODUCED",
+      "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/2 reported example(s))",
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric_verdict": "diverged",
+      "examples_verdict": "not_reproduced",
+      "success_criterion": "Running pytest cvxpy/tests/test_grad.py -k 'sigma_max_nonsquare or sigma_max_tall' on buggy commit 008eb3af yields test failures/errors for the non-square sigma_max configs; the same selector passes once the full_matrices=False fix is applied.",
+      "agent_notes": "",
+      "evidence": {
+        "test": {
+          "buggy": {
+            "status": "fail",
+            "exit_code": 1,
+            "failure_kind": "",
+            "passed": null,
+            "failed": 6,
+            "errors": null
+          },
+          "fixed": {
+            "status": "pass",
+            "exit_code": 0,
+            "failure_kind": "",
+            "passed": 6,
+            "failed": null,
+            "errors": null
+          }
+        },
+        "probes": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)": "Expression(CONVEX, NONNEGATIVE, ())",
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)": "Expression(CONVEX, NONNEGATIVE, ())"
+            },
+            "fixed_values": {
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)": "Expression(CONVEX, NONNEGATIVE, ())",
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)": "Expression(CONVEX, NONNEGATIVE, ())"
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)": "__error__: ValueError: shapes (2,2) and (3,3) not aligned: 2 (dim 1) != 3 (dim 0)",
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3) [numerical gradient]": [
+                [
+                  0.13467990600535273,
+                  -0.38680413727565366,
+                  0.586422428394684
+                ],
+                [
+                  0.1315782746091898,
+                  -0.37789617185479685,
+                  0.5729173228052886
+                ]
+              ],
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3) [max abs diff]": "__error__: ValueError: shapes (2,2) and (3,3) not aligned: 2 (dim 1) != 3 (dim 0)",
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)": "__error__: ValueError: shapes (4,4) and (2,2) not aligned: 4 (dim 1) != 2 (dim 0)",
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2) [numerical gradient]": [
+                [
+                  0.022985845449241538,
+                  0.012778022751014362
+                ],
+                [
+                  0.3071418909206258,
+                  0.17074273628292502
+                ],
+                [
+                  -0.14710356222025212,
+                  -0.081776095894881
+                ],
+                [
+                  0.8046229597047372,
+                  0.4472966074198226
+                ]
+              ],
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2) [max abs diff]": "__error__: ValueError: shapes (4,4) and (2,2) not aligned: 4 (dim 1) != 2 (dim 0)"
+            },
+            "fixed_values": {
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)": [
+                [
+                  0.13467990615485045
+                ],
+                [
+                  0.13157827448724954
+                ],
+                [
+                  -0.3868041373604406
+                ],
+                [
+                  -0.3778961718305509
+                ],
+                [
+                  0.5864224284307332
+                ],
+                [
+                  0.5729173226837712
+                ]
+              ],
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3) [numerical gradient]": [
+                [
+                  0.13467990600535273,
+                  -0.38680413727565366,
+                  0.586422428394684
+                ],
+                [
+                  0.1315782746091898,
+                  -0.37789617185479685,
+                  0.5729173228052886
+                ]
+              ],
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3) [max abs diff]": "__error__: ValueError: operands could not be broadcast together with shapes (6,1) (2,3) ",
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)": [
+                [
+                  0.02298584524618286
+                ],
+                [
+                  0.3071418910440998
+                ],
+                [
+                  -0.14710356207658495
+                ],
+                [
+                  0.8046229596244681
+                ],
+                [
+                  0.012778022886523403
+                ],
+                [
+                  0.1707427362856423
+                ],
+                [
+                  -0.08177609580034347
+                ],
+                [
+                  0.447296607237493
+                ]
+              ],
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2) [numerical gradient]": [
+                [
+                  0.022985845449241538,
+                  0.012778022751014362
+                ],
+                [
+                  0.3071418909206258,
+                  0.17074273628292502
+                ],
+                [
+                  -0.14710356222025212,
+                  -0.081776095894881
+                ],
+                [
+                  0.8046229597047372,
+                  0.4472966074198226
+                ]
+              ],
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2) [max abs diff]": "__error__: ValueError: operands could not be broadcast together with shapes (8,1) (4,2) "
+            }
+          }
+        ],
+        "examples": [
+          {
+            "input": "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)",
+            "expected_output": "Analytical gradient matches the numerical gradient to machine precision (economy-size SVD via LA.svd(values[0], full_matrices=False)).",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError crash in gradient computation (LA.svd(values[0]) with default full_matrices=True yields full unitary matrices with misaligned inner dimensions); analytical gradient fails to match numerical gradient. No concrete numeric value given.",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)",
+              "observed": "Expression(CONVEX, NONNEGATIVE, ())",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)",
+              "observed": "Expression(CONVEX, NONNEGATIVE, ())",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)",
+            "expected_output": "Analytical gradient matches the numerical gradient to machine precision after switching to economy-size SVD.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError crash in gradient computation due to full_matrices=True SVD on non-square matrix; analytical gradient does not match numerical gradient. No concrete numeric value given.",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)",
+              "observed": "Expression(CONVEX, NONNEGATIVE, ())",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)",
+              "observed": "Expression(CONVEX, NONNEGATIVE, ())",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ],
+        "execution": {
+          "buggy": {
+            "n_commands": 3,
+            "n_failed": 1,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          },
+          "fixed": {
+            "n_commands": 2,
+            "n_failed": 0,
+            "ran_test": true,
+            "failed_setup_or_build": []
+          }
+        }
+      },
+      "workspace": {
+        "buggy_dir": "/workspace/buggy",
+        "fixed_dir": "/workspace/fixed",
+        "buggy_provisioned": true,
+        "fixed_provisioned": true,
+        "test_patch_applied": true,
+        "test_deps": {
+          "installed": [
+            "pytest",
+            "hypothesis",
+            "tzdata"
+          ]
+        },
+        "error": "",
+        "buggy_commit_date": "2026-03-19T15:19:31-07:00",
+        "fixed_commit_date": "2026-03-20T22:35:16-04:00",
+        "reproducing_test_present": true,
+        "build_detected": "build-requires:pybind11|setup.py:ext_modules",
+        "system_packages": {
+          "installed": [
+            "build-essential",
+            "gfortran",
+            "pkg-config",
+            "ninja-build",
+            "libopenblas-dev",
+            "liblapack-dev"
+          ]
+        },
+        "era": "2026-03-20T22:35:16-04:00",
+        "build": {
+          "buggy": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/buggy/.venv/lib/python3.12/site-packages/cvxpy/__init__.py",
+            "build_requires": [
+              "scipy >= 1.13.0",
+              "setuptools >= 68.1.0",
+              "wheel",
+              "pybind11"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.3",
+              "pandas": "3.0.1",
+              "matplotlib": "3.10.8",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.46.0",
+              "scipy": "1.17.1",
+              "setuptools": "82.0.1",
+              "wheel": "0.46.3",
+              "pybind11": "3.0.2"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest",
+              "hypothesis"
+            ],
+            "output": "--- end of build log ---\n6_64.manylinux_2_28_x86_64.whl.metadata (2.7 kB)\nCollecting cloudpickle>=3.0 (from joblib->osqp>=1.0.0->cvxpy==1.9.0)\n  Downloading cloudpickle-3.1.2-py3-none-any.whl.metadata (7.1 kB)\nDownloading sparsediffpy-0.1.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (235 kB)\nDownloading clarabel-0.11.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (1.2 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 1.2/1.2 MB 96.1 MB/s eta 0:00:00\nDownloading highspy-1.15.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (5.0 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 5.0/5.0 MB 123.3 MB/s eta 0:00:00\nDownloading osqp-1.1.3-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (354 kB)\nDownloading scs-3.3.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (43.2 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 43.2/43.2 MB 95.0 MB/s eta 0:00:00\nDownloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (221 kB)\nDownloading jinja2-3.1.6-py3-none-any.whl (134 kB)\nDownloading joblib-1.6.0-py3-none-any.whl (306 kB)\nDownloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nDownloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.9.0-cp312-cp312-linux_x86_64.whl size=1544681 sha256=37ae498230d8a1fa77618bc57c8c6fa45af217021ba3005ac5b7160e4b7e6c85\n  Stored in directory: /tmp/pip-ephem-wheel-cache-8gk30i3u/wheels/7a/8e/f6/6361a05021faea16c41b60355501cb8542c208befbd0798736\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.9.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 scs-3.3.1 sparsediffpy-0.1.3\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          },
+          "fixed": {
+            "built": true,
+            "exit_code": 0,
+            "imports_from": "/workspace/fixed/.venv/lib/python3.12/site-packages/cvxpy/__init__.py",
+            "build_requires": [
+              "scipy >= 1.13.0",
+              "setuptools >= 68.1.0",
+              "wheel",
+              "pybind11"
+            ],
+            "installed_for_build": [],
+            "pretend_version": false,
+            "remedies": [],
+            "dropped_pins": [],
+            "sanitizer": null,
+            "era_pins": {
+              "numpy": "2.4.3",
+              "pandas": "3.0.1",
+              "matplotlib": "3.10.8",
+              "pyparsing": "3.3.2",
+              "llvmlite": "0.46.0",
+              "scipy": "1.17.1",
+              "setuptools": "82.0.1",
+              "wheel": "0.46.3",
+              "pybind11": "3.0.2"
+            },
+            "repinned_for_build": {},
+            "venv_programs": {},
+            "pyargs_plugin": true,
+            "test_extras": [
+              "pytest",
+              "hypothesis"
+            ],
+            "output": "--- end of build log ---\n_64.manylinux_2_28_x86_64.whl.metadata (2.7 kB)\nCollecting cloudpickle>=3.0 (from joblib->osqp>=1.0.0->cvxpy==1.9.0)\n  Downloading cloudpickle-3.1.2-py3-none-any.whl.metadata (7.1 kB)\nDownloading sparsediffpy-0.1.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (235 kB)\nDownloading clarabel-0.11.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (1.2 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 1.2/1.2 MB 12.1 MB/s eta 0:00:00\nDownloading highspy-1.15.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (5.0 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 5.0/5.0 MB 113.5 MB/s eta 0:00:00\nDownloading osqp-1.1.3-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (354 kB)\nDownloading scs-3.3.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (43.2 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 43.2/43.2 MB 116.2 MB/s eta 0:00:00\nDownloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (221 kB)\nDownloading jinja2-3.1.6-py3-none-any.whl (134 kB)\nDownloading joblib-1.6.0-py3-none-any.whl (306 kB)\nDownloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nDownloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.9.0-cp312-cp312-linux_x86_64.whl size=1544664 sha256=952b7b375dc3b862ee8a71b7779351f1675bc1d8d9ca6dae8f7da537957671ce\n  Stored in directory: /tmp/pip-ephem-wheel-cache-sewub0z2/wheels/71/38/20/6358bc83d061b0e5b7f2ca1588a2c1d520ab055cf84e576666\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.9.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 scs-3.3.1 sparsediffpy-0.1.3\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+          }
+        },
+        "runtime": {
+          "skipped": "not a pure-Python instance"
+        },
+        "test_requirements": {
+          "buggy": {
+            "files": []
+          },
+          "fixed": {
+            "files": []
+          }
+        },
+        "cargo_workspace": {
+          "buggy": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          },
+          "fixed": {
+            "applied": false,
+            "retargets": [],
+            "resolves": null,
+            "reason": "not a Cargo workspace"
+          }
+        },
+        "node_dependencies": {
+          "skipped": "not a JavaScript/TypeScript instance"
+        },
+        "cmake": {
+          "skipped": "not a C/C++ instance"
+        }
+      }
+    },
+    "comparison": {
+      "buggy": {
+        "status": "fail",
+        "exit_code": 1,
+        "failure_kind": "",
+        "passed": null,
+        "failed": 6,
+        "errors": null
+      },
+      "fixed": {
+        "status": "pass",
+        "exit_code": 0,
+        "failure_kind": "",
+        "passed": 6,
+        "failed": null,
+        "errors": null
+      },
+      "transition": "fail->pass",
+      "fail_to_pass": true,
+      "numeric": {
+        "n_pairs": 2,
+        "verdict": "diverged",
+        "pairs": [
+          {
+            "label": "described_examples",
+            "outcome": "absent",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": false,
+            "buggy_values": {
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)": "Expression(CONVEX, NONNEGATIVE, ())",
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)": "Expression(CONVEX, NONNEGATIVE, ())"
+            },
+            "fixed_values": {
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)": "Expression(CONVEX, NONNEGATIVE, ())",
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)": "Expression(CONVEX, NONNEGATIVE, ())"
+            }
+          },
+          {
+            "label": "reported_examples",
+            "outcome": "diverged",
+            "buggy": {
+              "present": false,
+              "reasons": []
+            },
+            "fixed": {
+              "present": false,
+              "reasons": []
+            },
+            "buggy_status": "ok",
+            "fixed_status": "ok",
+            "values_differ": true,
+            "buggy_values": {
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)": "__error__: ValueError: shapes (2,2) and (3,3) not aligned: 2 (dim 1) != 3 (dim 0)",
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3) [numerical gradient]": [
+                [
+                  0.13467990600535273,
+                  -0.38680413727565366,
+                  0.586422428394684
+                ],
+                [
+                  0.1315782746091898,
+                  -0.37789617185479685,
+                  0.5729173228052886
+                ]
+              ],
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3) [max abs diff]": "__error__: ValueError: shapes (2,2) and (3,3) not aligned: 2 (dim 1) != 3 (dim 0)",
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)": "__error__: ValueError: shapes (4,4) and (2,2) not aligned: 4 (dim 1) != 2 (dim 0)",
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2) [numerical gradient]": [
+                [
+                  0.022985845449241538,
+                  0.012778022751014362
+                ],
+                [
+                  0.3071418909206258,
+                  0.17074273628292502
+                ],
+                [
+                  -0.14710356222025212,
+                  -0.081776095894881
+                ],
+                [
+                  0.8046229597047372,
+                  0.4472966074198226
+                ]
+              ],
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2) [max abs diff]": "__error__: ValueError: shapes (4,4) and (2,2) not aligned: 4 (dim 1) != 2 (dim 0)"
+            },
+            "fixed_values": {
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)": [
+                [
+                  0.13467990615485045
+                ],
+                [
+                  0.13157827448724954
+                ],
+                [
+                  -0.3868041373604406
+                ],
+                [
+                  -0.3778961718305509
+                ],
+                [
+                  0.5864224284307332
+                ],
+                [
+                  0.5729173226837712
+                ]
+              ],
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3) [numerical gradient]": [
+                [
+                  0.13467990600535273,
+                  -0.38680413727565366,
+                  0.586422428394684
+                ],
+                [
+                  0.1315782746091898,
+                  -0.37789617185479685,
+                  0.5729173228052886
+                ]
+              ],
+              "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3) [max abs diff]": "__error__: ValueError: operands could not be broadcast together with shapes (6,1) (2,3) ",
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)": [
+                [
+                  0.02298584524618286
+                ],
+                [
+                  0.3071418910440998
+                ],
+                [
+                  -0.14710356207658495
+                ],
+                [
+                  0.8046229596244681
+                ],
+                [
+                  0.012778022886523403
+                ],
+                [
+                  0.1707427362856423
+                ],
+                [
+                  -0.08177609580034347
+                ],
+                [
+                  0.447296607237493
+                ]
+              ],
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2) [numerical gradient]": [
+                [
+                  0.022985845449241538,
+                  0.012778022751014362
+                ],
+                [
+                  0.3071418909206258,
+                  0.17074273628292502
+                ],
+                [
+                  -0.14710356222025212,
+                  -0.081776095894881
+                ],
+                [
+                  0.8046229597047372,
+                  0.4472966074198226
+                ]
+              ],
+              "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2) [max abs diff]": "__error__: ValueError: operands could not be broadcast together with shapes (8,1) (4,2) "
+            }
+          }
+        ]
+      },
+      "examples": {
+        "n_examples": 2,
+        "n_judged": 2,
+        "n_reproduced": 0,
+        "evaluable": true,
+        "n_diverged": 0,
+        "n_unobserved": 0,
+        "n_contested": 0,
+        "unobserved": [],
+        "verdict": "not_reproduced",
+        "examples": [
+          {
+            "input": "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)",
+            "expected_output": "Analytical gradient matches the numerical gradient to machine precision (economy-size SVD via LA.svd(values[0], full_matrices=False)).",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError crash in gradient computation (LA.svd(values[0]) with default full_matrices=True yields full unitary matrices with misaligned inner dimensions); analytical gradient fails to match numerical gradient. No concrete numeric value given.",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)",
+              "observed": "Expression(CONVEX, NONNEGATIVE, ())",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "AtomTestConfig('sigma_max_nonsquare', lambda x: cp.sigma_max(x), [(2, 3)], 'unrestricted') -> cp.sigma_max(x) with x shape (2,3)",
+              "observed": "Expression(CONVEX, NONNEGATIVE, ())",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          },
+          {
+            "input": "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)",
+            "expected_output": "Analytical gradient matches the numerical gradient to machine precision after switching to economy-size SVD.",
+            "expected_value": null,
+            "expected_from": "prose",
+            "buggy_output_reported": "ValueError crash in gradient computation due to full_matrices=True SVD on non-square matrix; analytical gradient does not match numerical gradient. No concrete numeric value given.",
+            "outcome": "same_on_both",
+            "revisions_differ": false,
+            "buggy": {
+              "record": "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)",
+              "observed": "Expression(CONVEX, NONNEGATIVE, ())",
+              "evaluation_error": "",
+              "matches_expected": null,
+              "matches_reported_buggy": null
+            },
+            "fixed": {
+              "record": "AtomTestConfig('sigma_max_tall', lambda x: cp.sigma_max(x), [(4, 2)], 'unrestricted') -> cp.sigma_max(x) with x shape (4,2)",
+              "observed": "Expression(CONVEX, NONNEGATIVE, ())",
+              "evaluation_error": "",
+              "matches_expected": null
+            }
+          }
+        ]
+      },
+      "execution": {
+        "buggy": {
+          "n_commands": 3,
+          "n_failed": 1,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        },
+        "fixed": {
+          "n_commands": 2,
+          "n_failed": 0,
+          "ran_test": true,
+          "failed_setup_or_build": []
+        }
+      },
+      "success_criterion": "Running pytest cvxpy/tests/test_grad.py -k 'sigma_max_nonsquare or sigma_max_tall' on buggy commit 008eb3af yields test failures/errors for the non-square sigma_max configs; the same selector passes once the full_matrices=False fix is applied."
+    },
+    "workspace": {
+      "buggy_dir": "/workspace/buggy",
+      "fixed_dir": "/workspace/fixed",
+      "buggy_provisioned": true,
+      "fixed_provisioned": true,
+      "test_patch_applied": true,
+      "test_deps": {
+        "installed": [
+          "pytest",
+          "hypothesis",
+          "tzdata"
+        ]
+      },
+      "error": "",
+      "buggy_commit_date": "2026-03-19T15:19:31-07:00",
+      "fixed_commit_date": "2026-03-20T22:35:16-04:00",
+      "reproducing_test_present": true,
+      "build_detected": "build-requires:pybind11|setup.py:ext_modules",
+      "system_packages": {
+        "installed": [
+          "build-essential",
+          "gfortran",
+          "pkg-config",
+          "ninja-build",
+          "libopenblas-dev",
+          "liblapack-dev"
+        ]
+      },
+      "era": "2026-03-20T22:35:16-04:00",
+      "build": {
+        "buggy": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/buggy/.venv/lib/python3.12/site-packages/cvxpy/__init__.py",
+          "build_requires": [
+            "scipy >= 1.13.0",
+            "setuptools >= 68.1.0",
+            "wheel",
+            "pybind11"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.3",
+            "pandas": "3.0.1",
+            "matplotlib": "3.10.8",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.46.0",
+            "scipy": "1.17.1",
+            "setuptools": "82.0.1",
+            "wheel": "0.46.3",
+            "pybind11": "3.0.2"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest",
+            "hypothesis"
+          ],
+          "output": "--- end of build log ---\n6_64.manylinux_2_28_x86_64.whl.metadata (2.7 kB)\nCollecting cloudpickle>=3.0 (from joblib->osqp>=1.0.0->cvxpy==1.9.0)\n  Downloading cloudpickle-3.1.2-py3-none-any.whl.metadata (7.1 kB)\nDownloading sparsediffpy-0.1.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (235 kB)\nDownloading clarabel-0.11.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (1.2 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 1.2/1.2 MB 96.1 MB/s eta 0:00:00\nDownloading highspy-1.15.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (5.0 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 5.0/5.0 MB 123.3 MB/s eta 0:00:00\nDownloading osqp-1.1.3-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (354 kB)\nDownloading scs-3.3.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (43.2 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 43.2/43.2 MB 95.0 MB/s eta 0:00:00\nDownloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (221 kB)\nDownloading jinja2-3.1.6-py3-none-any.whl (134 kB)\nDownloading joblib-1.6.0-py3-none-any.whl (306 kB)\nDownloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nDownloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.9.0-cp312-cp312-linux_x86_64.whl size=1544681 sha256=37ae498230d8a1fa77618bc57c8c6fa45af217021ba3005ac5b7160e4b7e6c85\n  Stored in directory: /tmp/pip-ephem-wheel-cache-8gk30i3u/wheels/7a/8e/f6/6361a05021faea16c41b60355501cb8542c208befbd0798736\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.9.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 scs-3.3.1 sparsediffpy-0.1.3\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        },
+        "fixed": {
+          "built": true,
+          "exit_code": 0,
+          "imports_from": "/workspace/fixed/.venv/lib/python3.12/site-packages/cvxpy/__init__.py",
+          "build_requires": [
+            "scipy >= 1.13.0",
+            "setuptools >= 68.1.0",
+            "wheel",
+            "pybind11"
+          ],
+          "installed_for_build": [],
+          "pretend_version": false,
+          "remedies": [],
+          "dropped_pins": [],
+          "sanitizer": null,
+          "era_pins": {
+            "numpy": "2.4.3",
+            "pandas": "3.0.1",
+            "matplotlib": "3.10.8",
+            "pyparsing": "3.3.2",
+            "llvmlite": "0.46.0",
+            "scipy": "1.17.1",
+            "setuptools": "82.0.1",
+            "wheel": "0.46.3",
+            "pybind11": "3.0.2"
+          },
+          "repinned_for_build": {},
+          "venv_programs": {},
+          "pyargs_plugin": true,
+          "test_extras": [
+            "pytest",
+            "hypothesis"
+          ],
+          "output": "--- end of build log ---\n_64.manylinux_2_28_x86_64.whl.metadata (2.7 kB)\nCollecting cloudpickle>=3.0 (from joblib->osqp>=1.0.0->cvxpy==1.9.0)\n  Downloading cloudpickle-3.1.2-py3-none-any.whl.metadata (7.1 kB)\nDownloading sparsediffpy-0.1.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (235 kB)\nDownloading clarabel-0.11.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (1.2 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 1.2/1.2 MB 12.1 MB/s eta 0:00:00\nDownloading highspy-1.15.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (5.0 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 5.0/5.0 MB 113.5 MB/s eta 0:00:00\nDownloading osqp-1.1.3-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (354 kB)\nDownloading scs-3.3.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (43.2 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 43.2/43.2 MB 116.2 MB/s eta 0:00:00\nDownloading cffi-2.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (221 kB)\nDownloading jinja2-3.1.6-py3-none-any.whl (134 kB)\nDownloading joblib-1.6.0-py3-none-any.whl (306 kB)\nDownloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)\nDownloading markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (22 kB)\nDownloading pycparser-3.0-py3-none-any.whl (48 kB)\nBuilding wheels for collected packages: cvxpy\n  Building wheel for cvxpy (pyproject.toml): started\n  Building wheel for cvxpy (pyproject.toml): finished with status 'done'\n  Created wheel for cvxpy: filename=cvxpy-1.9.0-cp312-cp312-linux_x86_64.whl size=1544664 sha256=952b7b375dc3b862ee8a71b7779351f1675bc1d8d9ca6dae8f7da537957671ce\n  Stored in directory: /tmp/pip-ephem-wheel-cache-sewub0z2/wheels/71/38/20/6358bc83d061b0e5b7f2ca1588a2c1d520ab055cf84e576666\nSuccessfully built cvxpy\nInstalling collected packages: sparsediffpy, pycparser, MarkupSafe, highspy, cloudpickle, scs, joblib, jinja2, cffi, osqp, clarabel, cvxpy\nSuccessfully installed MarkupSafe-3.0.3 cffi-2.1.1 clarabel-0.11.1 cloudpickle-3.1.2 cvxpy-1.9.0 highspy-1.15.1 jinja2-3.1.6 joblib-1.6.0 osqp-1.1.3 pycparser-3.0 scs-3.3.1 sparsediffpy-0.1.3\n\n[notice] A new release of pip is available: 25.0.1 -> 26.2.1\n[notice] To update, run: pip install --upgrade pip"
+        }
+      },
+      "runtime": {
+        "skipped": "not a pure-Python instance"
+      },
+      "test_requirements": {
+        "buggy": {
+          "files": []
+        },
+        "fixed": {
+          "files": []
+        }
+      },
+      "cargo_workspace": {
+        "buggy": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        },
+        "fixed": {
+          "applied": false,
+          "retargets": [],
+          "resolves": null,
+          "reason": "not a Cargo workspace"
+        }
+      },
+      "node_dependencies": {
+        "skipped": "not a JavaScript/TypeScript instance"
+      },
+      "cmake": {
+        "skipped": "not a C/C++ instance"
+      }
+    },
+    "benchmark_image": "",
+    "packaging": {},
+    "iterations": 4,
+    "history": [
+      {
+        "planner": {
+          "goal": "",
+          "milestones": []
+        }
+      },
+      {
+        "plan_retry": {
+          "attempt": 1,
+          "reason": "Your previous answer could not be read as a plan. Answer by calling the submit tool with the plan object itself \u2014 no prose, no code fences."
+        }
+      },
+      {
+        "planner": {
+          "goal": "Show that cp.sigma_max's gradient is broken for non-square matrices on the buggy commit (ValueError / non-matching analytical gradient) and works on the fixed commit, using the targeted grad tests plus paired numerical probes and the report's own examples.",
+          "milestones": [
+            "buggy_environment_ready [buggy] \u2014 The buggy revision's built virtualenv imports cvxpy/numpy/scipy, the sigma_max atom still uses the default full-matrices SVD, and the added non-square test configs are present in the applied test file. (2 steps, verify: steps_succeeded)",
+            "buggy_bug_observable [buggy] \u2014 On the buggy revision the targeted sigma_max non-square gradient tests fail, the paired gradient probe yields NaN (gradient call raises ValueError instead of a value), and the report's own examples are recorded on the buggy revision. (3 steps, verify: test_ran, test_fails, probe_ran, probe_shows_defect)",
+            "fixed_environment_ready [fixed] \u2014 The fixed revision's built virtualenv imports cvxpy and its sigma_max atom uses the economy-size SVD (full_matrices=False) with the tests present. (2 steps, verify: steps_succeeded)",
+            "fixed_behaves_differently [fixed] \u2014 On the fixed revision the same targeted tests pass, the identical paired gradient probe is clean (analytical gradient matches the numerical gradient for both non-square shapes), the report's examples are recorded, and the two revisions differ. (3 steps, verify: test_ran, test_passes, probe_ran, probe_clean, revisions_differ)"
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -c \"import cvxpy, numpy, scipy, pytest, hypothesis; print('cvxpy', cvxpy.__version__); print('numpy', numpy.__version__); print('scipy', scipy.__version__)\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 1.69
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && echo '--- sigma_max.py ---' && grep -n 'svd\\|full_matrices' cvxpy/atoms/sigma_max.py; echo '--- test_grad.py configs ---' && grep -n 'sigma_max_nonsquare\\|sigma_max_tall' cvxpy/tests/test_grad.py",
+        "purpose": "inspect",
+        "exit_code": 0,
+        "runtime_s": 0.13
+      },
+      {
+        "verification": {
+          "milestone": "buggy_environment_ready",
+          "verified": true,
+          "results": [
+            {
+              "check": "steps_succeeded",
+              "passed": true,
+              "detail": "every step completed"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "buggy",
+        "command": "cd /workspace/buggy && python -I -m pytest --pyargs cvxpy.tests.test_grad -k 'sigma_max_nonsquare or sigma_max_tall' --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning -q",
+        "purpose": "test",
+        "exit_code": 1,
+        "runtime_s": 2.85
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "sigma_max_grad_nonsquare_tall",
+        "language": "python",
+        "status": "probe_generation_error",
+        "errors": [
+          "record at least one observation with `probe(name, value)`."
+        ]
+      },
+      {
+        "step_error": "PROBE_GENERATION_ERROR\nRequested language: python\n\nProblems:\n  - record at least one observation with `probe(name, value)`.\n\nThe python probe contract: a complete Python script. Builtins injected: probe(name, value) and probe_iteration(**fields). The revision's directory is the cwd and on sys.path, so an import resolves to THIS revision.\n\nRegenerate only the probe, following that contract.",
+        "step": "[buggy] run_numerical_probe(sigma_max_grad_nonsquare_tall) \u2014 Record the analytical-vs-numerical sigma_max gradient difference for shapes (2,3) and (4,2); on buggy the gradient call raises ValueError so the recorded value is NaN"
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "verification": {
+          "milestone": "buggy_bug_observable",
+          "verified": false,
+          "results": [
+            {
+              "check": "test_ran",
+              "passed": true,
+              "detail": "test fail on buggy"
+            },
+            {
+              "check": "test_fails",
+              "passed": true,
+              "detail": "test fail on buggy (milestone required fail)"
+            },
+            {
+              "check": "probe_ran",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            },
+            {
+              "check": "probe_shows_defect",
+              "passed": false,
+              "detail": "the milestone ran no probe"
+            }
+          ]
+        }
+      },
+      {
+        "replanner": {
+          "goal": "",
+          "milestones": []
+        }
+      },
+      {
+        "plan_retry": {
+          "attempt": "replan",
+          "reason": "Your previous answer could not be read as a plan. Answer by calling the submit tool with the plan object itself \u2014 no prose, no code fences."
+        }
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -c \"import cvxpy, numpy, scipy, pytest, hypothesis; print('cvxpy', cvxpy.__version__); print('numpy', numpy.__version__); print('scipy', scipy.__version__)\"",
+        "purpose": "setup",
+        "exit_code": 0,
+        "runtime_s": 1.52
+      },
+      {
+        "tool": "run_shell_command",
+        "revision": "fixed",
+        "command": "cd /workspace/fixed && python -I -m pytest --pyargs cvxpy.tests.test_grad -k 'sigma_max_nonsquare or sigma_max_tall' --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning -q",
+        "purpose": "test",
+        "exit_code": 0,
+        "runtime_s": 1.85
+      },
+      {
+        "mirrored_procedure": {
+          "mirrored_from": "buggy",
+          "onto": "fixed",
+          "setup_commands": 1,
+          "test_command": "cd /workspace/fixed && python -I -m pytest --pyargs cvxpy.tests.test_grad -k 'sigma_max_nonsquare or sigma_max_tall' --confcutdir=.venv -W ignore::pytest.PytestDeprecationWarning -q",
+          "exit_code": 0
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.13467990600535273,
+          -0.38680413727565366,
+          0.586422428394684,
+          0.1315782746091898,
+          -0.37789617185479685,
+          0.5729173228052886,
+          0.022985845449241538,
+          0.012778022751014362,
+          0.3071418909206258,
+          0.17074273628292502
+        ]
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "reported_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": [
+          0.13467990615485045,
+          0.13157827448724954,
+          -0.3868041373604406,
+          -0.3778961718305509,
+          0.5864224284307332,
+          0.5729173226837712,
+          0.13467990600535273,
+          -0.38680413727565366,
+          0.586422428394684,
+          0.1315782746091898
+        ]
+      },
+      {
+        "example_sweep": {
+          "buggy": {
+            "status": "ok",
+            "checked": 2,
+            "recorded": 6,
+            "error": null,
+            "could_not_evaluate": 4
+          },
+          "fixed": {
+            "status": "ok",
+            "checked": 2,
+            "recorded": 6,
+            "error": null,
+            "could_not_evaluate": 2
+          },
+          "preamble": "generated probe",
+          "observed": 2
+        }
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "buggy",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "tool": "run_numerical_probe",
+        "revision": "fixed",
+        "label": "described_examples",
+        "language": "python",
+        "status": "ok",
+        "pathology": false,
+        "reasons": [],
+        "expected": null,
+        "observed": []
+      },
+      {
+        "described_examples": {
+          "n_described": 2,
+          "buggy": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "fixed": {
+            "status": "ok",
+            "n_records": 2,
+            "target_reached": true
+          },
+          "unusable": {}
+        }
+      },
+      {
+        "tool": "compare_execution_results",
+        "transition": "fail->pass",
+        "fail_to_pass": true,
+        "numeric_verdict": "diverged",
+        "examples_verdict": "not_reproduced",
+        "examples": "0/2"
+      },
+      {
+        "tool": "finalize_reproduction",
+        "status": "PARTIALLY_REPRODUCED",
+        "rationale": "reproducing test FAILS on buggy and PASSES on fixed, but the reported values do not separate the revisions (0/2 reported example(s))"
+      }
+    ],
+    "error": "",
+    "usage": {
+      "model": "deepseek-v4-flash",
+      "calls": 9,
+      "input_tokens": 21444,
+      "output_tokens": 124639,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "cost_usd": 0.17395900000000003
+    }
+  }
+]

@@ -1,0 +1,107 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_66678_gpt-5.4-nano/mined/pandas-dev__pandas_66678.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 17116,
+    "output_tokens": 3914,
+    "cost_usd": 0.008315,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66678,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66678",
+      "buggy_commit": "6663b2123b9a90c1d77212d7928c2a915fc69c38",
+      "fixed_commit": "18e2ea6f3344b064169b24618fc5e8480c288b56",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 9237,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas rolling covariance/correlation accuracy bug (GH#66678 / PR#66678) where incremental accumulators become poisoned after a large/outlier/large-offset value leaves the rolling window, leading to wrong results and sometimes NaNs for later windows. Use the project\u2019s own failing regression test `test_rolling_cov_corr_outlier_exit_no_nan` (and optionally the oracle-based tests around it) so the buggy revision fails and the fixed revision passes.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "cython",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "pandas"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "git clone https://github.com/pandas-dev/pandas.git",
+            "cd pandas",
+            "python -m pip install -U pip",
+            "python -m pip install cython numpy python-dateutil tzdata pytest",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy is numerically relevant; the defect is float64 accuracy. The exact NumPy version can matter for bit-level comparisons, so keep it consistent across buggy and fixed runs.",
+            "Cython is required to build pandas from source; the failing code path lives in pandas\u2019 cythonized window internals."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/window/test_pairwise.py -k \"test_rolling_cov_corr_outlier_exit_no_nan\" -q",
+        "reproducing_test": "pandas/tests/window/test_pairwise.py::test_rolling_cov_corr_outlier_exit_no_nan",
+        "success_criterion": "On the buggy revision, `test_rolling_cov_corr_outlier_exit_no_nan` fails because the rolling `cov`/`corr` results for windows at/after `window-1` become NaN (or differ from the expected two-pass (np.cov/np.corrcoef) values beyond the test\u2019s tolerance). On the fixed revision (PR#66678 merged commit), the same test passes: no NaNs appear in `result.iloc[window-1:]` and the full series matches the recomputed oracle with the test\u2019s tolerances.",
+        "numerical_probe": "NaN poisoning or silent accumulator drift after the large \u00b11e12 value leaves the rolling window; specifically in `calc_corr` a negative ssqdm_x can cause sqrt-of-negative -> NaN, and separately incremental cov/corr accumulators can become silently wrong for later windows.",
+        "input_output_examples": [
+          {
+            "input": "x = pd.Series([1.0, 2.0, 1e12, 1e7, 6.0, 5.0, 8.0, 7.0]); y = pd.Series([2.0, 1.0, 3.0, -1e12, 4.0, 7.0, 6.0, 9.0]); x.rolling(5).cov(y).iloc[4:7].tolist()",
+            "buggy_output": "[1.099968..., -0.300072..., -0.800026...]",
+            "expected_output": "[1.1, -0.3, -0.8]"
+          }
+        ],
+        "risks": [
+          "Platform/toolchain dependency: pandas window accuracy issues may be sensitive to CPU/BLAS/extended precision; run on the same architecture (x86_64/ARM64) and OS for both revisions.",
+          "Build config dependency: ensure both revisions are built with the same compiler and flags; C-extension build differences could change floating-point behavior.",
+          "Dependency/version sensitivity: although the strategy does not require pinned versions, NumPy float64 math and any BLAS-linked behavior can affect exact ulp-level results; keep NumPy version identical across buggy and fixed runs.",
+          "Not all environments will reliably hit the NaN-then-poisoning mode; using the exact test `test_rolling_cov_corr_outlier_exit_no_nan` is preferred because it asserts `not result.iloc[window-1:].isna().any()`.",
+          "The test diff also introduces additional oracle-based tests (`test_rolling_cov_corr_outlier_exit` and `test_rolling_cov_corr_shared_offset`) that compute expected values using `np.cov`/`np.corrcoef` and may be more robust than the no-NaN-only check; if only silent error (not NaNs) occurs, the full `tm.assert_series_equal` portion of `test_rolling_cov_corr_outlier_exit_no_nan` should still fail."
+        ],
+        "oracle": {
+          "kind": "unknown",
+          "tolerance": "rtol=1e-5, atol=0 for the assert_series_equal portion of `test_rolling_cov_corr_outlier_exit_no_nan`",
+          "reference_source": "The test computes expected rolling values using a two-pass oracle: for each window it calls `np.cov` (method='cov') or `np.corrcoef` (method='corr') on deviations recentered by `chunk_x[0]`/`chunk_y[0]` (translation-invariant) and asserts the resulting full Series.",
+          "why": "The oracle in this specific test is independent of pandas\u2019 incremental accumulator implementation; it recomputes each rolling window from scratch."
+        },
+        "fails_on_buggy": {
+          "type": "string",
+          "description": "The assertion that fails can be either (a) `assert not result.iloc[window - 1 :].isna().any()` due to NaNs in later windows, because incremental accumulators lead to negative ssqdm_x and `calc_corr` takes sqrt of a negative; or (b) the subsequent `tm.assert_series_equal(..., rtol=1e-5, atol=0)` because even if NaNs are absent, later windows are silently wrong after the large value leaves the window.",
+          "expected": "After the large \u00b11e12 exits (in this test, for window=3 the large values are at indices 2 and 3), `result` is not equal to the two-pass oracle within the test tolerance."
+        },
+        "passes_on_fixed": {
+          "type": "string",
+          "description": "All later windows match the two-pass oracle within `rtol=1e-5, atol=0`, and `result.iloc[window-1:]` contains no NaNs (for both `method in ['cov','corr']`)."
+        }
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 4959,
+        "output_tokens": 1294,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002609
+      },
+      "miner_usage": {
+        "input_tokens": 12157,
+        "output_tokens": 2620,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.005706,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

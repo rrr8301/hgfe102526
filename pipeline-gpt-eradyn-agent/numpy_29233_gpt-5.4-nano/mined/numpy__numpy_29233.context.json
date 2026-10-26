@@ -1,0 +1,285 @@
+{
+  "repo": "numpy/numpy",
+  "pr_number": 29233,
+  "reference": "https://github.com/numpy/numpy/pull/29233",
+  "buggy_commit": "0481076809a56806dac995af5319b952a2ca0109",
+  "fixed_commit": "70b6cdacda4c7c78be23f1349f872ce12fd49269",
+  "pr_date": "",
+  "category": "correctness",
+  "view": "hbec",
+  "withheld": [],
+  "environment": {
+    "language": "Python",
+    "language_version": "3.12",
+    "dependencies": [
+      {
+        "name": "numpy",
+        "constraint": "2.x (tested on v2.3.0 and v2.2.5)",
+        "documented": true,
+        "numerically_relevant": true,
+        "source": "issue#29225: \"This issue occurs in NumPy versions 2.x (tested on v2.3.0 and v2.2.5)\""
+      }
+    ],
+    "installation_commands": [],
+    "build_commands": [],
+    "test_commands": [
+      "python -c \"import numpy, sys; sys.exit(numpy.test() is False)\""
+    ],
+    "system_packages": [],
+    "era_constraints": [
+      "explicit: numpy 2.x (tested on v2.3.0 and v2.2.5)  [numerically relevant]"
+    ],
+    "numerical_backend": null,
+    "dependency_constraints": [
+      {
+        "package": "numpy",
+        "documented_constraint": "2.x (tested on v2.3.0 and v2.2.5)",
+        "era_ceiling": null,
+        "numerically_relevant": true,
+        "kind": "explicit",
+        "source": "issue#29225: \"This issue occurs in NumPy versions 2.x (tested on v2.3.0 and v2.2.5)\""
+      }
+    ]
+  },
+  "numerical_failure": {
+    "category": "correctness",
+    "affected_api": "numpy.resize",
+    "observed_behavior": "Calling `np.resize` with an unsigned integer `new_shape` (e.g., `np.uint32(1)`) emits `RuntimeWarning: overflow encountered in scalar negative`, then raises `SystemError: <built-in function concatenate> returned NULL without setting an exception`.",
+    "expected_behavior": "`np.resize` should compute the required repeat count for the resize without overflowing via scalar negation of an unsigned integer, and return the resized array (e.g., for the shown inputs, the expected result for `np.uint32(1)` is `res = [23]`).",
+    "manifestation": "exception",
+    "trigger_conditions": [
+      "Using `np.resize(a, new_shape)` where `new_shape` is an unsigned NumPy integer type (e.g., `np.uint32(1)`), in NumPy versions 2.x (tested on 2.3.0 and 2.2.5).",
+      "The failure path involves computing `repeats` using `repeats = -(-new_size // a.size)  # ceil division`, which negates an unsigned integer and underflows."
+    ],
+    "input_output_examples": [
+      {
+        "input": "np.resize(np.array([[23, 95], [66, 37]]), np.uint32(1))",
+        "buggy_output": "RuntimeWarning: overflow encountered in scalar negative; then `SystemError: <built-in function concatenate> returned NULL without setting an exception`.",
+        "expected_output": "res = [23]",
+        "value_kind": "exception",
+        "source": "issue#29225 reproduce example and reproducer trace; expected result shown for the int32 case with the same `new_shape` value."
+      },
+      {
+        "input": "np.resize(np.array([[23, 95], [66, 37]]), np.int32(1))",
+        "buggy_output": "res = [23]",
+        "expected_output": "res = [23]",
+        "value_kind": "array",
+        "source": "issue#29225 reproduce example"
+      },
+      {
+        "input": "np.resize(np.array([[23, 95], [66, 37]]), np.uint64(1))",
+        "buggy_output": "`OverflowError: cannot fit 'numpy.uint64' into an index-sized integer`.",
+        "expected_output": null,
+        "value_kind": "exception",
+        "source": "issue#29225 reproduce example"
+      }
+    ],
+    "oracle_clues": [
+      "The issue reports that `np.resize(..., np.int32(1))` returns `res = [23]` while `np.resize(..., np.uint32(1))` raises a `SystemError` after a `RuntimeWarning` due to overflow from scalar negative.",
+      "The fix changes the repeat computation from negating `new_size` (`repeats = -(-new_size // a.size)`) to ceiling division without negating `new_size` (`repeats = (new_size + a.size - 1) // a.size`).",
+      "The discrepancy is specifically tied to unsigned integer `new_shape` underflow during negation, leading to a large positive repeats value and then allocation/concatenation failure (manifesting as the `SystemError`)."
+    ]
+  },
+  "numerical_characteristics": {
+    "dtype": null,
+    "precision": null,
+    "magnitude": null,
+    "tolerance": null,
+    "category_specific_evidence": [
+      "Bug mechanism: \u201cThe negation of an unsigned int underflows and creates a large positive repeats, which leads to allocations failures and/or swapping.\u201d",
+      "Reproducer values: `np.resize(np.array([[23, 95], [66, 37]]), np.uint32(1))` triggers `RuntimeWarning: overflow encountered in scalar negative` and then `SystemError: <built-in function concatenate> returned NULL without setting an exception`.",
+      "Reproducer values: `np.resize(np.array([[23, 95], [66, 37]]), np.uint64(1))` raises `OverflowError: cannot fit 'numpy.uint64' into an index-sized integer`.",
+      "Correctness/property violated: the resize implementation\u2019s ceil-division logic should be computed without negating `new_size`; the old code used `repeats = -(-new_size // a.size)  # ceil division`, but for unsigned `new_size` this violates safe arithmetic (negation underflows).",
+      "Patch property/formula: \u201cceiling division without negating new_size\u201d via `repeats = (new_size + a.size - 1) // a.size`, followed by `a = concatenate((a,) * repeats)[:new_size]`.",
+      "Test evidence: `test_unsigned_resize` asserts unsigned resize matches signed resize for `dt_pair in [(np.int32, np.uint32), (np.int64, np.uint64)]` using `arr = np.array([[23, 95], [66, 37]])` and `np.resize(arr, dt_pair[0](1))` equals `np.resize(arr, dt_pair[1](1))`."
+    ],
+    "reproduction_risks": [
+      "Using unsigned resize sizes can produce overflow/underflow paths that may crash with `SystemError` or raise `OverflowError` depending on dtype (`np.uint32` vs `np.uint64`).",
+      "The observed behavior depends on NumPy versions in 2.x (issue notes tested on v2.3.0 and v2.2.5), so results may differ outside those versions.",
+      "The reproduction should avoid relying on a specific exception type beyond what\u2019s shown (`SystemError` for `np.uint32(1)`, `OverflowError` for `np.uint64(1)`) since error text is part of the evidence."
+    ]
+  },
+  "provenance": [
+    {
+      "field": "environment.language",
+      "value": "Python",
+      "source": "issue",
+      "evidence_location": "issue:issue#29225"
+    },
+    {
+      "field": "environment.language_version",
+      "value": "3.12",
+      "source": "issue",
+      "evidence_location": "issue:issue#29225"
+    },
+    {
+      "field": "environment.test_commands",
+      "value": [
+        "python -c \"import numpy, sys; sys.exit(numpy.test() is False)\""
+      ],
+      "source": "issue",
+      "evidence_location": "issue:issue#29225"
+    },
+    {
+      "field": "environment.dependency",
+      "value": "numpy",
+      "source": "issue#29225: \"This issue occurs in NumPy versions 2.x (tested on v2.3.0 and v2.2.5)\"",
+      "evidence_location": "issue:issue#29225"
+    },
+    {
+      "field": "numerical_failure.affected_api",
+      "value": "numpy.resize",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.observed_behavior",
+      "value": "Calling `np.resize` with an unsigned integer `new_shape` (e.g., `np.uint32(1)`) emits `RuntimeWarning: overflow encountered in scalar negative`, then raises `SystemError: <built-in function concatenate> returned NULL without setting an exception`.",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.expected_behavior",
+      "value": "`np.resize` should compute the required repeat count for the resize without overflowing via scalar negation of an unsigned integer, and return the resized array (e.g., for the shown inputs, the expected result for `np.uint32(1)` is `res = [23]`).",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.manifestation",
+      "value": "exception",
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.trigger_conditions",
+      "value": 2,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.oracle_clues",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_failure.input_output_examples",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.category_specific_evidence",
+      "value": 6,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    },
+    {
+      "field": "numerical_characteristics.reproduction_risks",
+      "value": 3,
+      "source": "commit",
+      "evidence_location": "commit:commits"
+    }
+  ],
+  "retrieval": {
+    "environment": {
+      "view": "hbec",
+      "refs": [
+        "issue:issue#29225",
+        "readme:README.md",
+        "pr_body:PR#29233",
+        "readme:README.md",
+        "commit:commits",
+        "diff:numpy/_core/fromnumeric.py:1607-1614",
+        "issue:issue#29225",
+        "issue:issue#29225"
+      ],
+      "n_passages": 8
+    },
+    "failure": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "pr_body:PR#29233",
+        "issue:issue#29225",
+        "issue:issue#29225",
+        "diff:numpy/_core/fromnumeric.py:1607-1614",
+        "issue:issue#29225",
+        "issue:issue#29225",
+        "issue:issue#29225"
+      ],
+      "n_passages": 8
+    },
+    "characteristics": {
+      "view": "hbec",
+      "refs": [
+        "commit:commits",
+        "pr_body:PR#29233",
+        "issue:issue#29225",
+        "test_diff:numpy/_core/tests/test_numeric.py:79-91",
+        "issue:issue#29225",
+        "diff:numpy/_core/fromnumeric.py:1607-1614",
+        "issue:issue#29225",
+        "issue:issue#29225"
+      ],
+      "n_passages": 8
+    },
+    "completeness": {
+      "hbec": {
+        "task": "hbec",
+        "category": "correctness",
+        "checked": 4,
+        "score": 1.0,
+        "required_total": 2,
+        "required_present": 2,
+        "required_missing": [],
+        "expected_missing": [
+          {
+            "path": "environment.build_commands",
+            "why": "a compiled project that is not built is not the revision under test"
+          }
+        ],
+        "present": [
+          "environment.test_commands",
+          "environment.dependencies",
+          "environment.language_version"
+        ]
+      },
+      "brtg": {
+        "task": "brtg",
+        "category": "correctness",
+        "checked": 7,
+        "score": 1.0,
+        "required_total": 5,
+        "required_present": 5,
+        "required_missing": [],
+        "expected_missing": [],
+        "present": [
+          "numerical_failure.affected_api",
+          "numerical_failure.observed_behavior",
+          "numerical_failure.expected_behavior",
+          "numerical_failure.trigger_conditions",
+          "numerical_failure.input_output_examples",
+          "numerical_failure.manifestation",
+          "numerical_characteristics.category_specific_evidence"
+        ]
+      }
+    },
+    "isolation": {
+      "view": "hbec",
+      "withheld": [],
+      "citation_violations": [],
+      "leaked_ngrams": [],
+      "ok": true
+    }
+  },
+  "usage": {
+    "input_tokens": 6240,
+    "output_tokens": 1393,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.00299,
+    "llm_calls": 3
+  },
+  "errors": {},
+  "expansions": []
+}

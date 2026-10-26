@@ -1,0 +1,90 @@
+{
+  "input": "pipeline-gpt-5.4-nano/numpy_31858_gpt-5.4-nano/mined/numpy__numpy_31858.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 19358,
+    "output_tokens": 2985,
+    "cost_usd": 0.007603,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "numpy/numpy",
+      "pr_number": 31858,
+      "reference": "https://github.com/numpy/numpy/pull/31858",
+      "buggy_commit": "4dee265afc098a296a62666f6356d4927b67848f",
+      "fixed_commit": "9df8516d6c933927b3bb9a7b8fd10f523e627ffd",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 6310,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the confirmed signed integer overflow/UB in numpy.datetime64 scalar conversion to Python int via .item() for daily datetimes near np.int64 minimum. The project\u2019s added test (`test_datetime64_item_int64_min_edge_case`) should fail on the buggy revision (4dee265afc09) by triggering UBSan/runtime error (or otherwise not returning the expected int), and pass on the fixed revision in PR #31858 by returning `info.min + offset` for all specified offsets.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.13.9",
+          "pip_packages": [
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "# Build numpy from source twice: once on buggy commit and once on the fixed commit from PR #31858.\n# Use an instrumented build so signed overflow triggers a runtime failure consistent with the report.\n# (Tooling: clang preferred for UBSan). The exact commands/flags may vary by CI image.\n\n# Example (adjust paths/versions to match your build system):\n# 1) Buggy build\ngit clone https://github.com/numpy/numpy.git\ncd numpy\ngit checkout 4dee265afc09\npython -m pip install -U pip setuptools wheel\npython -m pip install -r requirements.txt\n# Configure + compile with UBSan for signed overflow detection\n# (one of the common variants):\n#   export CC=clang\n#   export CFLAGS=\"-O1 -g -fsanitize=undefined -fno-sanitize-recover=undefined\"\n#   export LDFLAGS=\"-fsanitize=undefined\"\n#   python -m pip install -v .\n\n# 2) Fixed build\ncd /path/to/numpy\ngit checkout <FIXED_COMMIT_FROM_PR_31858>   # (use the commit that includes the fix described)\n# rebuild/install with the same sanitizer flags as above\n# python -m pip install -v ."
+          ],
+          "pinned_because": [
+            "NumPy has unbounded version constraints in the provided evidence; to ensure the failing behavior toggles, build from source at the exact buggy commit (4dee265afc09) and at the PR\u2019s fixed revision."
+          ]
+        },
+        "test_command": "python -m pytest -q numpy/_core/tests/test_datetime.py -k test_datetime64_item_int64_min_edge_case",
+        "reproducing_test": "def test_datetime64_item_int64_min_edge_case(self):\n    info = np.iinfo(np.int64)\n\n    for offset in [1, 2, 100, 1000, 10000]:\n        dt64 = np.datetime64(info.min + offset, \"D\")\n        result = dt64.item()\n        assert result == info.min + offset\n        assert isinstance(result, int)",
+        "success_criterion": "On the buggy revision (commit 4dee265afc09) the test fails: calling `dt64.item()` for daily datetimes with value `np.iinfo(np.int64).min + offset` triggers a signed integer overflow UB in `numpy/_core/src/multiarray/datetime.c` and is surfaced as a runtime error under UBSan (or otherwise prevents returning the expected `int`), so either the exception is raised and the assertion never passes, or `result != info.min + offset`.\nOn the fixed revision (the PR\u2019s commit that includes the overflow fix described for `datetime.c`), the test passes: `dt64.item()` returns a Python `int` equal to `info.min + offset` for all offsets [1, 2, 100, 1000, 10000].",
+        "numerical_probe": "Use the exact construction that triggers the overflow path: `info = np.iinfo(np.int64)`; `dt64 = np.datetime64(info.min + offset, \"D\")`; then evaluate `dt64.item()`.",
+        "input_output_examples": [
+          {
+            "input": "import numpy as np\ninfo = np.iinfo(np.int64)\ndt64 = np.datetime64(info.min + 1, \"D\")\ndt64.item()",
+            "buggy_output": "runtime error: signed integer overflow:\n-9223372036854775807 - 10957 cannot be represented in type 'npy_int64' (aka 'long')",
+            "expected_output": "returns Python int equal to info.min + 1 (and isinstance(..., int) is True)"
+          }
+        ],
+        "risks": [
+          "This defect is reported via an UndefinedBehaviorSanitizer runtime error; if you run without UBSan/clang instrumentation, the buggy code may not reliably fail (it may produce an incorrect value instead of raising). The reproduction success depends on compiling NumPy with signed-overflow UB sanitization enabled (e.g., UBSan `-fsanitize=undefined` with non-recovering behavior).",
+          "The evidence specifically uses unit 'D' (daily). If you change the unit, the `days_to_yearsdays` path and the overflowing expression `( *days_ ) - (365*30 + 7)` may not be exercised.",
+          "The evidence does not provide a fixed commit hash. You must use the PR\u2019s merged/fixed commit from numpy/numpy#31858 and rebuild with identical toolchain and sanitizer flags so the test toggles from failing to passing.",
+          "Sanitizer behavior and error wording can differ by compiler version and platform (x86_64 vs others). The key transition is whether the test raises during `.item()` and/or mismatches the expected `int`."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "Project test expectation (assert exact equality to `info.min + offset` and type is `int`).",
+          "why": "The added regression test asserts exact integer equality and that the result is a Python int; the reported bug is UB surfaced by sanitizer rather than a floating-point tolerance issue."
+        },
+        "fails_on_buggy": "The test fails when `dt64.item()` is executed for `offset in [1,2,100,1000,10000]` on commit 4dee265afc09 because signed integer overflow UB in `numpy/_core/src/multiarray/datetime.c` is detected (e.g., UBSan runtime error like `-9223372036854775807 - 10957 cannot be represented in type 'npy_int64'`).",
+        "passes_on_fixed": "The test passes on the fixed PR revision because the conversion avoids the overflowing arithmetic (per PR summary) and returns `int(info.min + offset)` for each specified offset."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 2684,
+        "output_tokens": 1366,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002244
+      },
+      "miner_usage": {
+        "input_tokens": 16674,
+        "output_tokens": 1619,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.005359,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "input": "pipeline-gpt-5.4-nano/numpy_31688_gpt-5.4-nano/mined/numpy__numpy_31688.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 18419,
+    "output_tokens": 3003,
+    "cost_usd": 0.007439,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "numpy/numpy",
+      "pr_number": 31688,
+      "reference": "https://github.com/numpy/numpy/pull/31688",
+      "buggy_commit": "7db129300a754b6df58115f744d37fa3b9f0704f",
+      "fixed_commit": "cd1cfb8ef69f07a045180295224cc2fcddf821a1",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 5676,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the correctness bug in numpy.datetime64 scalar `.item()` near `np.int64` minimum, which triggers signed integer overflow in `days_to_yearsdays` under UBsan. The goal is a test failure on the buggy revision and a pass on the fixed revision using NumPy\u2019s own `test_datetime.py` added test.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.13.9",
+          "pip_packages": [
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "C compiler toolchain (e.g., gcc/clang)",
+            "Python development headers (python3-dev)"
+          ],
+          "build_commands": [
+            "# Use a fresh build directory\nmkdir -p build && cd build\n\n# Install NumPy build deps for your environment (example; adjust to your distro)\n# python -m pip install -U pip setuptools wheel\n\n# Configure with UBsan enabled so the undefined behavior turns into a runtime failure.\n# Use CFLAGS/CXXFLAGS to enable integer overflow detection.\n# IMPORTANT: pick a compiler that supports UBSan (clang recommended).\nexport CC=clang\nexport CXX=clang++\nexport CFLAGS='-O1 -g -fsanitize=undefined'\nexport CXXFLAGS='-O1 -g -fsanitize=undefined'\nexport LDFLAGS='-fsanitize=undefined'\n\n# Build and install NumPy from source at the requested revision.\n# First, build buggy commit 7db129300a75.\n# (Repeat the build/install for the fixed commit as well.)\n\npython -m pip install -e . -v --no-build-isolation"
+          ],
+          "pinned_because": [
+            "Py3.13.9 is specified by the provided environment; keep it to match the original failure context.",
+            "UBUndefinedBehaviorSanitizer is required for the observed manifestation (a runtime error on signed integer overflow). Since no platform/toolchain is otherwise documented, the build must enable UBSan and use a supporting compiler."
+          ]
+        },
+        "test_command": "python -m pytest numpy/_core/tests/test_datetime.py -k datetime64_item_int64_min_edge_case -q",
+        "reproducing_test": "In `numpy/_core/tests/test_datetime.py`, run `test_datetime64_item_int64_min_edge_case` as provided in the diff (the test constructs `np.datetime64(np.iinfo(np.int64).min + offset, 'D')` for offsets `[1,2,100,1000,10000]`, calls `.item()`, and asserts the result equals `info.min + offset` and is `int`).",
+        "success_criterion": "On the buggy revision `7db129300a75`, `test_datetime64_item_int64_min_edge_case` fails: `.item()` for at least one offset triggers UBSan-reported undefined behavior (signed integer overflow) in `numpy/_core/src/multiarray/datetime.c:171:31` inside `days_to_yearsdays`, so the test aborts with a runtime error rather than reaching the `assert` statements.\nOn the fixed revision (the commit where PR #31688 is corrected), the same test passes: `.item()` returns a Python `int` equal to `info.min + offset` for all offsets in `[1, 2, 100, 1000, 10000]`, and UBSan does not report overflow.",
+        "numerical_probe": "No separate numeric inspection is required beyond what the test already asserts: `result = dt64.item()` and `assert result == info.min + offset` plus `assert isinstance(result, int)`. The key transition is whether `.item()` triggers the UBSan runtime error for `dt64 = np.datetime64(np.iinfo(np.int64).min + offset, 'D')`.",
+        "input_output_examples": [
+          {
+            "input": "import numpy as np; info = np.iinfo(np.int64); dt64 = np.datetime64(info.min + 1, 'D'); dt64.item()",
+            "buggy_output": "Runtime error: signed integer overflow: -9223372036854775807 - 10957 cannot be represented in type 'npy_int64' (aka 'long') (reported at ../../numpy/_core/src/multiarray/datetime.c:171:31 in days_to_yearsdays)",
+            "expected_output": ""
+          }
+        ],
+        "risks": [
+          "Platform/toolchain sensitivity: the failure mode described is UBSan-detected undefined behavior. Without building with `-fsanitize=undefined` (and using a compiler that supports it), the test may not fail in the same way (it may instead silently produce an incorrect value or pass).",
+          "Compiler-specific UBSan behavior: clang vs gcc may differ in how integer overflow UB is reported and whether it aborts the process. Prefer clang if possible.",
+          "Targeting the `.item()` path is essential: if the test is modified to avoid `.item()` (or uses a different datetime unit than `'D'`), it may not call `days_to_yearsdays` and thus may not hit the overflow-prone subtraction.",
+          "Only the `npy_int64`-backed datetime days path is relevant; ensure the scalar is constructed with day unit `'D'` so the internal conversion uses `days_to_yearsdays`.",
+          "The exact fixed commit hash is not provided in the context; you must substitute the PR\u2019s merged/fixed commit for the 'fixed revision' step to achieve the passing transition."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "NumPy\u2019s own expected behavior encoded in the provided test: for `dt64 = np.datetime64(info.min + offset, 'D')`, `dt64.item()` must return `info.min + offset` as a Python `int`.",
+          "why": "This is a correctness boundary and should be exact; the test asserts exact equality and exact type (`int`)."
+        },
+        "fails_on_buggy": "Fails because `.item()` triggers UBSan runtime error (signed integer overflow) in `days_to_yearsdays` at `numpy/_core/src/multiarray/datetime.c:171:31`, aborting before the assertions complete (observed overflow example: `-9223372036854775807 - 10957` for offset `1`).",
+        "passes_on_fixed": "After applying the PR #31688 fix, `.item()` no longer triggers UBSan overflow and returns `int(info.min + offset)` for all offsets `[1, 2, 100, 1000, 10000]`, so the assertions succeed."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 2545,
+        "output_tokens": 1343,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002188
+      },
+      "miner_usage": {
+        "input_tokens": 15874,
+        "output_tokens": 1660,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0052510000000000005,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

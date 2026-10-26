@@ -1,0 +1,31 @@
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 77bca8571e93e..f274b7ec94a6d 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -366,6 +366,7 @@ Datetimelike
+ - Bug in adding a :class:`DateOffset` with a ``milliseconds`` component to a :class:`Timestamp` returning a microsecond-resolution result, inconsistent with the millisecond-resolution result of the equivalent :class:`DatetimeIndex` and :class:`Series` operations (:issue:`64806`)
+ - Bug in adding non-nano :class:`DatetimeIndex` with non-vectorized offsets (e.g. :class:`CustomBusinessDay`, :class:`CustomBusinessMonthEnd`) having a sub-unit ``offset`` parameter incorrectly truncating the result or raising ``AttributeError`` (:issue:`56586`)
+ - Bug in subtracting :class:`BusinessHour` (or :class:`CustomBusinessHour`) from a :class:`Timestamp` giving incorrect results when the subtraction would land exactly on the business-hour opening time (:issue:`33682`)
++- Bug in subtracting two :class:`Timestamp` objects whose difference lands exactly on the ``NaT`` sentinel raising ``AssertionError``, or with ``python -O`` returning a corrupt :class:`Timedelta` for which :func:`isna` was ``False``, instead of raising :class:`OutOfBoundsDatetime` (:issue:`66552`)
+ 
+ Timedelta
+ ^^^^^^^^^
+diff --git a/pandas/_libs/tslibs/timestamps.pyx b/pandas/_libs/tslibs/timestamps.pyx
+index 10c278c5e9dbb..668418520b9e3 100644
+--- a/pandas/_libs/tslibs/timestamps.pyx
++++ b/pandas/_libs/tslibs/timestamps.pyx
+@@ -693,6 +693,14 @@ cdef class _Timestamp(ABCTimestamp):
+             # Timedelta
+             try:
+                 res_value = self._value - other._value
++                if res_value == NPY_NAT:
++                    # GH#66552 int64 can hold this difference, but the value is
++                    #  the NaT sentinel, so it is not representable as a
++                    #  Timedelta. Raise like the neighbouring difference one
++                    #  step further out of bounds does.
++                    raise OutOfBoundsTimedelta(
++                        "Result is not representable as a pandas.Timedelta."
++                    )
+                 return Timedelta._from_value_and_reso(res_value, self._creso)
+             except (OverflowError, OutOfBoundsDatetime, OutOfBoundsTimedelta) as err:
+                 if both_timestamps:

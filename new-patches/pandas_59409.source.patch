@@ -1,0 +1,122 @@
+diff --git a/doc/source/whatsnew/v3.0.0.rst b/doc/source/whatsnew/v3.0.0.rst
+index 3de65fe6f682c..f95314b40d049 100644
+--- a/doc/source/whatsnew/v3.0.0.rst
++++ b/doc/source/whatsnew/v3.0.0.rst
+@@ -618,6 +618,7 @@ Groupby/resample/rolling
+ 
+ Reshaping
+ ^^^^^^^^^
++- Bug in :func:`qcut` where values at the quantile boundaries could be incorrectly assigned (:issue:`59355`)
+ - Bug in :meth:`DataFrame.join` inconsistently setting result index name (:issue:`55815`)
+ - Bug in :meth:`DataFrame.unstack` producing incorrect results when ``sort=False`` (:issue:`54987`, :issue:`55516`)
+ - Bug in :meth:`DataFrame.unstack` producing incorrect results when manipulating empty :class:`DataFrame` with an :class:`ExtentionDtype` (:issue:`59123`)
+diff --git a/pandas/core/array_algos/quantile.py b/pandas/core/array_algos/quantile.py
+index 5c933294fb944..b2f78182b9bf0 100644
+--- a/pandas/core/array_algos/quantile.py
++++ b/pandas/core/array_algos/quantile.py
+@@ -94,9 +94,9 @@ def quantile_with_mask(
+         flat = np.array([fill_value] * len(qs))
+         result = np.repeat(flat, len(values)).reshape(len(values), len(qs))
+     else:
+-        result = _nanpercentile(
++        result = _nanquantile(
+             values,
+-            qs * 100.0,
++            qs,
+             na_value=fill_value,
+             mask=mask,
+             interpolation=interpolation,
+@@ -108,7 +108,7 @@ def quantile_with_mask(
+     return result
+ 
+ 
+-def _nanpercentile_1d(
++def _nanquantile_1d(
+     values: np.ndarray,
+     mask: npt.NDArray[np.bool_],
+     qs: npt.NDArray[np.float64],
+@@ -116,7 +116,7 @@ def _nanpercentile_1d(
+     interpolation: str,
+ ) -> Scalar | np.ndarray:
+     """
+-    Wrapper for np.percentile that skips missing values, specialized to
++    Wrapper for np.quantile that skips missing values, specialized to
+     1-dimensional case.
+ 
+     Parameters
+@@ -142,7 +142,7 @@ def _nanpercentile_1d(
+         # equiv: 'np.array([na_value] * len(qs))' but much faster
+         return np.full(len(qs), na_value)
+ 
+-    return np.percentile(
++    return np.quantile(
+         values,
+         qs,
+         # error: No overload variant of "percentile" matches argument
+@@ -152,7 +152,7 @@ def _nanpercentile_1d(
+     )
+ 
+ 
+-def _nanpercentile(
++def _nanquantile(
+     values: np.ndarray,
+     qs: npt.NDArray[np.float64],
+     *,
+@@ -161,7 +161,7 @@ def _nanpercentile(
+     interpolation: str,
+ ):
+     """
+-    Wrapper for np.percentile that skips missing values.
++    Wrapper for np.quantile that skips missing values.
+ 
+     Parameters
+     ----------
+@@ -180,7 +180,7 @@ def _nanpercentile(
+ 
+     if values.dtype.kind in "mM":
+         # need to cast to integer to avoid rounding errors in numpy
+-        result = _nanpercentile(
++        result = _nanquantile(
+             values.view("i8"),
+             qs=qs,
+             na_value=na_value.view("i8"),
+@@ -196,7 +196,7 @@ def _nanpercentile(
+         # Caller is responsible for ensuring mask shape match
+         assert mask.shape == values.shape
+         result = [
+-            _nanpercentile_1d(val, m, qs, na_value, interpolation=interpolation)
++            _nanquantile_1d(val, m, qs, na_value, interpolation=interpolation)
+             for (val, m) in zip(list(values), list(mask))
+         ]
+         if values.dtype.kind == "f":
+@@ -215,7 +215,7 @@ def _nanpercentile(
+                 result = result.astype(values.dtype, copy=False)
+         return result
+     else:
+-        return np.percentile(
++        return np.quantile(
+             values,
+             qs,
+             axis=1,
+diff --git a/pandas/core/reshape/tile.py b/pandas/core/reshape/tile.py
+index 18517199f073c..b3f946f289891 100644
+--- a/pandas/core/reshape/tile.py
++++ b/pandas/core/reshape/tile.py
+@@ -358,7 +358,16 @@ def qcut(
+     x_idx = _preprocess_for_cut(x)
+     x_idx, _ = _coerce_to_type(x_idx)
+ 
+-    quantiles = np.linspace(0, 1, q + 1) if is_integer(q) else q
++    if is_integer(q):
++        quantiles = np.linspace(0, 1, q + 1)
++        # Round up rather than to nearest if not representable in base 2
++        np.putmask(
++            quantiles,
++            q * quantiles != np.arange(q + 1),
++            np.nextafter(quantiles, 1),
++        )
++    else:
++        quantiles = q
+ 
+     bins = x_idx.to_series().dropna().quantile(quantiles)
+ 

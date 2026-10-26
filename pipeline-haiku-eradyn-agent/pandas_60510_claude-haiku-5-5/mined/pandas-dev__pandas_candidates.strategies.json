@@ -1,0 +1,100 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/pandas_60510_claude-haiku-5-5/mined/pandas-dev__pandas_60510.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 18710,
+    "output_tokens": 6671,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 60510,
+      "reference": "https://github.com/pandas-dev/pandas/pull/60510",
+      "buggy_commit": "b667fdf8dd4e1ea8bf2e001fbfe23beeb4735a51",
+      "fixed_commit": "6cbe941c4512b86156eb06a26d253f4aa30b0304",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7458,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#60506 by building the buggy pandas commit b667fdf8dd4e from source, applying the developer's test_dataframe_float32_dtype to pandas/tests/tools/test_to_datetime.py, and running that single test. On the buggy revision, to_datetime on a float32 DataFrame does not match the expected nanosecond-precision Timestamps, so the test fails. On the fixed revision (PR #60510, which casts float dtypes to float64 in coerce() before int64 overflow handling) it passes. Pinned versions come from the issue (numpy 2.1.2, dateutil 2.9.0.post0, pytz 2024.2), which I rely on as documented constraints; the pandas 2.2.3 release is not installed because the code under test is the source build. Platform is the main uncertainty: the report is Windows AMD64, and the transition may not appear on Linux.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.12.7",
+          "pip_packages": [
+            "numpy==2.1.2",
+            "python-dateutil==2.9.0.post0",
+            "pytz==2024.2",
+            "cython",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation -Ceditable-verbose=true"
+          ],
+          "pinned_because": [
+            "numpy==2.1.2: explicit version in issue#60506 and numerically relevant (float32 casting and datetime coercion depend on the numpy version)",
+            "python-dateutil==2.9.0.post0 and pytz==2024.2: explicit in issue#60506 but not numerically relevant; pinned only to match the reported environment",
+            "pandas is not installed as a 2.2.3 release: the buggy commit is built from source, since installing the release would replace the code under test",
+            "cython is unpinned: no documented or era constraint in the evidence, so the latest compatible release is used"
+          ]
+        },
+        "test_command": "git checkout b667fdf8dd4e && git apply test.patch && python -m pip install -ve . --no-build-isolation -Ceditable-verbose=true && python -m pytest pandas/tests/tools/test_to_datetime.py -k test_dataframe_float32_dtype -q",
+        "reproducing_test": "pandas/tests/tools/test_to_datetime.py::test_dataframe_float32_dtype (method inside the test class that defines the df and cache fixtures): result = to_datetime(df.astype(np.float32), cache=cache), compared with tm.assert_series_equal against Timestamp('20150204 06:58:10.001002003') and Timestamp('20160305 07:59:11.001002003')",
+        "success_criterion": "Buggy revision b667fdf8dd4e with the test patch applied: test_dataframe_float32_dtype FAILS, because the float32 path returns Timestamps that differ from the expected nanosecond values. Fixed revision (the PR #60510 commit): the same test PASSES, because values are cast to float64 before overflow handling. The transition is the pass/fail change of this one test.",
+        "numerical_probe": "Run the single test with pytest -k test_dataframe_float32_dtype on the buggy and fixed builds. Use the fixture df from the test class; do not add separate value checks.",
+        "input_output_examples": [
+          {
+            "input": "df with columns ['year','month','day','hour','minute','second'] built from integer rows such as [2024, 1, 7, 11, 42, 13]; ts32 = pd.to_datetime(df.astype('float32'), utc=True)",
+            "buggy_output": "ts32 differs from ts (print(ts - ts32) shows nonzero differences)",
+            "expected_output": "ts32 equal to ts and ts64 (ts.equals(ts32) is True)"
+          }
+        ],
+        "risks": [
+          "Platform: the reported failure is on Windows 10 AMD64 with numpy 2.1.2. If the buggy behaviour is platform-specific (for example, default integer width or float rounding in the Windows build), the test may pass on Linux on the buggy revision, so the transition would not occur there. If so, run the test on a Windows AMD64 environment.",
+          "The test expects sub-second components (.001002003). The df fixture must supply millisecond, microsecond and nanosecond values for the expected Timestamps to be meaningful. The evidence does not show this fixture, so it is assumed to come from the test file at the buggy commit.",
+          "The fix depends on the float-to-float64 cast occurring before the int64 overflow handling in coerce(). A reproduction that bypasses coerce() (for example, calling a lower-level helper directly) may not exercise the affected path, so use the public to_datetime entry point.",
+          "No numeric tolerance is given; the test uses exact equality (assert_series_equal), so the pass/fail boundary is exact equality, not a tolerance.",
+          "Source build: the buggy commit must compile with Cython and numpy 2.1.2. If the build fails, the transition cannot be observed; use --no-build-isolation so the pinned numpy is used.",
+          "pandas 2.2.3 is an explicit constraint from the issue, but the buggy commit is a development build, so pinning the release would not reproduce the commit under test. This is a deliberate choice."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "test_dataframe_float32_dtype expected Timestamps in pandas/tests/tools/test_to_datetime.py (from PR #60510)",
+          "why": "tm.assert_series_equal uses exact equality on the datetime64 values, and the issue reproducer uses ts.equals, so no tolerance applies."
+        },
+        "fails_on_buggy": "On b667fdf8dd4e, the float32 input loses precision in the sub-second digits (float32 has about 24 bits of mantissa), so the returned Series differs from the expected nanosecond Timestamps and assert_series_equal raises an AssertionError.",
+        "passes_on_fixed": "On the fixed revision, coerce() casts float dtype values to float64 before the overflow handling, so the float32 result matches the float64 path and the expected Timestamps, and assert_series_equal passes."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 5260,
+        "output_tokens": 3501,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 13450,
+        "output_tokens": 3170,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

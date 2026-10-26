@@ -1,0 +1,112 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/pandas_66394_claude-haiku-5-5/mined/pandas-dev__pandas_66394.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 19273,
+    "output_tokens": 4960,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66394,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66394",
+      "buggy_commit": "389c06f9d7d9a5695552e2f152f7155fefcc3a69",
+      "fixed_commit": "76bac9e32eeee63f003ffecd431e8463a35e9b3c",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 5648,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#66394 in pandas: maybe_downcast_numeric casts out-of-range floats/objects to int64 without a bounds check, so 2**63 is corrupted on aarch64 (saturates to int64 max) and Series.loc enlargement or DataFrame.combine misbehaves. The developer's tests in pandas/tests/dtypes/cast/test_downcast.py, pandas/tests/frame/methods/test_combine.py and pandas/tests/series/indexing/test_setitem.py must fail on the buggy commit 389c06f9d7d9 and pass on the fixed revision. Build pandas from source with Cython and no build isolation.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "cython",
+            "meson-python",
+            "meson",
+            "ninja",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "git",
+            "a C/C++ compiler toolchain (gcc or clang)"
+          ],
+          "build_commands": [
+            "git checkout 389c06f9d7d9",
+            "pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "numpy: no documented constraint and no era table entry in the evidence; unpinned, so the strategy chooses the current release compatible with the buggy revision's build, and this choice is unverified",
+            "python-dateutil: unbounded per evidence, not numerically relevant, left unpinned",
+            "tzdata: unbounded per evidence, not numerically relevant, left unpinned",
+            "cython: unbounded per evidence, installed before the editable build as the README instructs"
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/dtypes/cast/test_downcast.py pandas/tests/frame/methods/test_combine.py pandas/tests/series/indexing/test_setitem.py -k 'out_of_integer_range or within_integer_range or do_round_out_of_range or combine_object_result or out_of_int64_range or within_int64_range' -v",
+        "reproducing_test": "pandas/tests/dtypes/cast/test_downcast.py::test_downcast_float_out_of_integer_range, pandas/tests/dtypes/cast/test_downcast.py::test_downcast_object_out_of_integer_range, pandas/tests/dtypes/cast/test_downcast.py::test_downcast_do_round_out_of_range, pandas/tests/frame/methods/test_combine.py::test_combine_object_result_not_castable_to_int, pandas/tests/series/indexing/test_setitem.py::test_setitem_enlarge_out_of_int64_range",
+        "success_criterion": "On buggy commit 389c06f9d7d9 the out-of-range tests fail: on aarch64 the int64 setitem test sees 2**63 stored as 9223372036854775807 (and the RuntimeWarning 'invalid value encountered in cast' raised as an error under warnings filter), and the combine test raises OverflowError from astype; on x86_64 the float64/object tests fail at the RuntimeWarning or OverflowError path. On the fixed revision all of these pass: the value is kept unchanged (float64 result for the Series case, object result for the combine case) with no RuntimeWarning, and the within-range tests still downcast exactly.",
+        "numerical_probe": "ser = pd.Series([1, 2], dtype='int64'); ser.loc[2] = 2**63; print(ser.dtype, ser.values) ; np.array([2.0**63]).astype(np.int64) under np.errstate(all='raise') to observe the cast",
+        "input_output_examples": [
+          {
+            "input": "ser = pd.Series([1, 2], dtype=\"int64\"); ser.loc[2] = 2**63",
+            "buggy_output": "dtype int64, values [1, 2, 9223372036854775807] on arm64; dtype float64 on x86_64 with RuntimeWarning 'invalid value encountered in cast'",
+            "expected_output": "dtype float64, values [1.0, 2.0, 9.223372036854776e18], no RuntimeWarning"
+          },
+          {
+            "input": "df1.combine(df2, lambda s1, s2: pd.Series([2**64, 2**64], dtype=object))",
+            "buggy_output": "OverflowError: Python int too large to convert to C long",
+            "expected_output": "object-dtype result holding 2**64 values, no error"
+          }
+        ],
+        "risks": [
+          "Platform-dependent: the corruption appears only where the float-to-int64 cast saturates (aarch64 FCVTZS). On x86_64 the buggy commit gives float64 and the setitem test may pass there, so the transition is only fully visible on arm64 hardware; if the grader runs on x86_64 the setitem case may not transition.",
+          "Out-of-range float-to-int cast is undefined behaviour; the RuntimeWarning and result vary across numpy versions, and the numpy version is unconstrained in the evidence.",
+          "float64 cannot represent 2**63 - 1, so the losslessness check in float64 space conflates adjacent int64 values; the test relies on the fix's strict upper bound float(int(iinfo.max)+1).",
+          "The evidence does not state a numpy version or the pandas-era dependency constraints; the unpinned numpy choice may not match the buggy commit's build, and build failures are possible on newer numpy with an old Cython.",
+          "Test ids in the -k filter are inferred from the diff; if the test file layout differs on the buggy commit, selection may match zero tests and the transition cannot be confirmed.",
+          "The DataFrame.combine test's OverflowError path may depend on the platform C long width (Windows uses 32-bit long), so it may not reproduce identically on every OS."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": null,
+          "why": "The tests use tm.assert_numpy_array_equal and tm.assert_series_equal, which compare dtype and values exactly; the warning filter treats RuntimeWarning as an error."
+        },
+        "fails_on_buggy": "On the buggy revision maybe_downcast_numeric performs astype(int64) with no range check: on arm64 the out-of-range value saturates to 9223372036854775807 and the equality check (np.allclose with rtol=0 in float64 space) passes, so the result is wrongly int64; on x86_64 or with the RuntimeWarning raised as error the assertion fails; the object-dtype combine test raises OverflowError from astype, failing the test.",
+        "passes_on_fixed": "With the bounds check (values >= iinfo.min and < float(int(iinfo.max)+1), NaN and inf rejected, object casts that fail treated as no downcast) the out-of-range values are returned unchanged with no RuntimeWarning, and the in-range tests still downcast exactly, so all listed tests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6996,
+        "output_tokens": 2270,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 12277,
+        "output_tokens": 2690,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

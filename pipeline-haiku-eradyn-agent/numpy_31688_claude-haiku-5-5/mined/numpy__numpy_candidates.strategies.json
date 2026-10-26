@@ -1,0 +1,105 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/numpy_31688_claude-haiku-5-5/mined/numpy__numpy_31688.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 21290,
+    "output_tokens": 5960,
+    "cost_usd": 0,
+    "llm_calls": 4
+  },
+  "strategies": [
+    {
+      "repo": "numpy/numpy",
+      "pr_number": 31688,
+      "reference": "https://github.com/numpy/numpy/pull/31688",
+      "buggy_commit": "7db129300a754b6df58115f744d37fa3b9f0704f",
+      "fixed_commit": "cd1cfb8ef69f07a045180295224cc2fcddf821a1",
+      "bug_type": "correctness",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 3991,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the UB-triggered wrong/undefined datetime64.item() conversion near INT64_MIN by building NumPy at the buggy commit 7db129300a75 with UndefinedBehaviorSanitizer enabled, then running the added test test_datetime64_item_int64_min_edge_case. Under UBSan the buggy build reports signed overflow in days_to_yearsdays (datetime.c:171) and the test fails; the fixed revision computes without overflow and the test passes. Without a sanitizer the transition is not guaranteed, because wrapping arithmetic may or may not yield a wrong value.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": "3.13",
+          "pip_packages": [
+            "pytest",
+            "hypothesis",
+            "meson-python",
+            "ninja",
+            "cython"
+          ],
+          "system_packages": [
+            "clang (preferred) or gcc with matching libubsan runtime",
+            "ninja",
+            "a C compiler toolchain for NumPy's C extensions"
+          ],
+          "build_commands": [
+            "git checkout 7db129300a75",
+            "CC=clang CXX=clang++ pip install --no-build-isolation -e . -Csetup-args=-Db_sanitize=undefined -Csetup-args=-Db_lundef=false -Csetup-args=-Dbuildtype=debug",
+            "export LD_PRELOAD=$(clang -print-file-name=libclang_rt.ubsan_standalone.so)"
+          ],
+          "pinned_because": [
+            "python_version 3.13 is taken from the observed trace (cp313, Python 3.13.9); the evidence does not state a constraint, so treat it as observed rather than required",
+            "pytest and hypothesis have no documented or era constraint; they are unpinned and only needed for running the test",
+            "numpy has no documented constraint; the build is from the buggy source tree itself, so no numpy version is pinned",
+            "build-time tools (meson-python, ninja, cython) are inferred from NumPy's standard editable build, not stated in the evidence"
+          ]
+        },
+        "test_command": "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 python -m pytest numpy/_core/tests/test_datetime.py -k test_datetime64_item_int64_min_edge_case -v",
+        "reproducing_test": "numpy/_core/tests/test_datetime.py::TestDateTime::test_datetime64_item_int64_min_edge_case (added in the diff after test_arithmetic_valid_boundary; the enclosing class name is inferred from placement and should be confirmed with grep)",
+        "success_criterion": "On buggy 7db129300a75 built with UBSan, the test fails: the loop calls np.datetime64(info.min + offset, 'D').item() and UBSan aborts at days_to_yearsdays with signed overflow on (*days_) - (365*30 + 7), so the test does not pass. On the fixed revision the same build reports no overflow, item() returns an int equal to info.min + offset for offsets 1, 2, 100, 1000, 10000, and the test passes.",
+        "numerical_probe": "np.datetime64(np.iinfo(np.int64).min + 1, 'D').item() under a UBSan build, observing whether the overflow report fires",
+        "input_output_examples": [
+          {
+            "input": "import numpy as np; info = np.iinfo(np.int64); dt64 = np.datetime64(info.min + 1, 'D'); dt64.item()",
+            "buggy_output": "UBSan runtime error: -9223372036854775807 - 10957 cannot be represented in type 'npy_int64' (datetime.c:171)",
+            "expected_output": "an int equal to info.min + 1 with no UBSan report"
+          }
+        ],
+        "risks": [
+          "Overflow is undefined behavior: without a sanitizer build the buggy run may return a value that happens to match or may still assert-fail; the sanitizer build is the only configuration where the transition is assured, and the plain pytest run is not a reliable fallback.",
+          "The given test_commands entry (python -c 'import numpy; numpy.test()') runs the whole suite and does not select this test, so it is not used; the pytest -k selector is used instead.",
+          "Requires a platform where UBSan is available (Linux x86_64 with clang/gcc and libubsan is assumed). On macOS or Windows, or with a toolchain lacking the UBSan runtime, the sanitizer build may not be possible, so the transition cannot be reproduced there.",
+          "LD_PRELOAD of the UBSan runtime is needed when the Python interpreter is not itself linked against it; omitting it can cause the sanitizer to be silently absent.",
+          "The test asserts against info.min + offset, which is itself near the int64 boundary; the expected value must be exact integer equality, and any wrapping in the fixed build would also break equality.",
+          "Build paths and the cp313/Python 3.13.9 details are environment-specific observations from the trace and should not be treated as required versions.",
+          "Editable meson builds of NumPy are slow; the build-time flags above assume the meson-python backend in use at this commit, which is not confirmed by the evidence."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "the test's own assertion result == info.min + offset, plus isinstance(result, int)",
+          "why": "item() on out-of-range datetime64 'D' values returns a Python int, so an exact integer comparison is the correct oracle; no floating-point tolerance applies."
+        },
+        "fails_on_buggy": "Under UBSan the assertion never gets reached: the signed-overflow report at days_to_yearsdays (datetime.c:171) aborts the run with halt_on_error=1, so pytest reports a failure. Without UBSan the wrapped value may or may not equal info.min + offset, so the failure is not guaranteed.",
+        "passes_on_fixed": "On the fixed revision the arithmetic is reordered to extract 400-year cycles before subtracting the offset, so no overflow is reported under UBSan and item() returns the exact int for each offset, making the assertions hold."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 3794,
+        "output_tokens": 3822,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 17496,
+        "output_tokens": 2138,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 3
+      }
+    }
+  ]
+}

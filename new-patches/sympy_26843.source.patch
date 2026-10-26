@@ -1,0 +1,367 @@
+diff --git a/sympy/polys/domains/finitefield.py b/sympy/polys/domains/finitefield.py
+index 92ecbaeb52dd..d21e0035a35b 100644
+--- a/sympy/polys/domains/finitefield.py
++++ b/sympy/polys/domains/finitefield.py
+@@ -31,51 +31,78 @@
+     flint = None
+ 
+ 
+-def _modular_int_factory(mod, dom, symmetric, self):
++def _modular_int_factory_nmod(mod):
++    # nmod only recognises int
++    index = operator.index
++    mod = index(mod)
++    nmod = flint.nmod
++    nmod_poly = flint.nmod_poly
++
++    # flint's nmod is only for moduli up to 2^64-1 (on a 64-bit machine)
++    try:
++        nmod(0, mod)
++    except OverflowError:
++        return None, None
++
++    def ctx(x):
++        try:
++            return nmod(x, mod)
++        except TypeError:
++            return nmod(index(x), mod)
+ 
+-    # Use flint if available
+-    if flint is not None:
++    def poly_ctx(cs):
++        return nmod_poly(cs, mod)
+ 
+-        nmod = flint.nmod
+-        fmpz_mod_ctx = flint.fmpz_mod_ctx
+-        index = operator.index
++    return ctx, poly_ctx
+ 
+-        try:
+-            mod = dom.convert(mod)
+-        except CoercionFailed:
+-            raise ValueError('modulus must be an integer, got %s' % mod)
+ 
+-        # mod might be e.g. Integer
++def _modular_int_factory_fmpz_mod(mod):
++    index = operator.index
++    fctx = flint.fmpz_mod_ctx(mod)
++    fctx_poly = flint.fmpz_mod_poly_ctx(mod)
++    fmpz_mod_poly = flint.fmpz_mod_poly
++
++    def ctx(x):
+         try:
+-            fmpz_mod_ctx(mod)
++            return fctx(x)
+         except TypeError:
+-            mod = index(mod)
++            # x might be Integer
++            return fctx(index(x))
++
++    def poly_ctx(cs):
++        return fmpz_mod_poly(cs, fctx_poly)
++
++    return ctx, poly_ctx
+ 
+-        # flint's nmod is only for moduli up to 2^64-1 (on a 64-bit machine)
+-        try:
+-            nmod(0, mod)
+-        except OverflowError:
+-            # Use fmpz_mod
+-            fctx = fmpz_mod_ctx(mod)
+-
+-            def ctx(x):
+-                try:
+-                    return fctx(x)
+-                except TypeError:
+-                    # x might be Integer
+-                    return fctx(index(x))
+-        else:
+-            # Use nmod
+-            def ctx(x):
+-                try:
+-                    return nmod(x, mod)
+-                except TypeError:
+-                    return nmod(index(x), mod)
+ 
+-        return ctx
++def _modular_int_factory(mod, dom, symmetric, self):
++    # Convert the modulus to ZZ
++    try:
++        mod = dom.convert(mod)
++    except CoercionFailed:
++        raise ValueError('modulus must be an integer, got %s' % mod)
++
++    ctx, poly_ctx, is_flint = None, None, False
++
++    # Don't use flint if the modulus is not prime as it often crashes.
++    if flint is not None and mod.is_prime():
++
++        is_flint = True
++
++        # Try to use flint's nmod first
++        ctx, poly_ctx = _modular_int_factory_nmod(mod)
+ 
+-    # Use the Python implementation
+-    return ModularIntegerFactory(mod, dom, symmetric, self)
++        if ctx is None:
++            # Use fmpz_mod for larger moduli
++            ctx, poly_ctx = _modular_int_factory_fmpz_mod(mod)
++
++    if ctx is None:
++        # Use the Python implementation if flint is not available or the
++        # modulus is not prime.
++        ctx = ModularIntegerFactory(mod, dom, symmetric, self)
++        poly_ctx = None  # not used
++
++    return ctx, poly_ctx, is_flint
+ 
+ 
+ @public
+@@ -188,7 +215,12 @@ def __init__(self, mod, symmetric=True):
+         if mod <= 0:
+             raise ValueError('modulus must be a positive integer, got %s' % mod)
+ 
+-        self.dtype = _modular_int_factory(mod, dom, symmetric, self)
++        ctx, poly_ctx, is_flint = _modular_int_factory(mod, dom, symmetric, self)
++
++        self.dtype = ctx
++        self._poly_ctx = poly_ctx
++        self._is_flint = is_flint
++
+         self.zero = self.dtype(0)
+         self.one = self.dtype(1)
+         self.dom = dom
+diff --git a/sympy/polys/matrices/_dfm.py b/sympy/polys/matrices/_dfm.py
+index ef55138b3bcd..c2f6f16922e0 100644
+--- a/sympy/polys/matrices/_dfm.py
++++ b/sympy/polys/matrices/_dfm.py
+@@ -151,7 +151,7 @@ def _check(cls, rep, shape, domain):
+     @classmethod
+     def _supports_domain(cls, domain):
+         """Return True if the given domain is supported by DFM."""
+-        return domain in (ZZ, QQ) or domain.is_FF
++        return domain in (ZZ, QQ) or domain.is_FF and domain._is_flint
+ 
+     @classmethod
+     def _get_flint_func(cls, domain):
+diff --git a/sympy/polys/polyclasses.py b/sympy/polys/polyclasses.py
+index 55780f086709..7b677510c85f 100644
+--- a/sympy/polys/polyclasses.py
++++ b/sympy/polys/polyclasses.py
+@@ -128,7 +128,7 @@
+ if GROUND_TYPES == 'flint':
+     import flint
+     def _supported_flint_domain(D):
+-        return D.is_ZZ or D.is_QQ or D.is_FF
++        return D.is_ZZ or D.is_QQ or D.is_FF and D._is_flint
+ else:
+     flint = None
+     def _supported_flint_domain(D):
+@@ -1762,10 +1762,7 @@ def _get_flint_poly_cls(cls, dom):
+         elif dom.is_QQ:
+             return flint.fmpq_poly
+         elif dom.is_FF:
+-            if type(dom.one) is flint.nmod:
+-                return lambda rep: flint.nmod_poly(rep, dom.characteristic())
+-            else:
+-                return lambda rep: flint.fmpz_mod_poly(rep, dom.characteristic())
++            return dom._poly_ctx
+         else:
+             raise RuntimeError("Domain %s is not supported with flint" % dom)
+ 
+@@ -1913,7 +1910,7 @@ def _quo_ground(f, c):
+         return f.from_rep(f._rep // c, f.dom)
+ 
+     def _exquo_ground(f, c):
+-        """Exact quotient of ``f`` by a an element of the ground domain. """
++        """Exact quotient of ``f`` by an element of the ground domain. """
+         q, r = divmod(f._rep, c)
+         if r:
+             raise ExactQuotientFailed(f, c)
+@@ -2040,14 +2037,20 @@ def l2_norm_squared(f):
+ 
+     def clear_denoms(f):
+         """Clear denominators, but keep the ground domain. """
+-        denom = f._rep.denom()
+-        numer = f.from_rep(f._cls(f._rep.numer()), f.dom)
+-        return denom, numer
++        R = f.dom
++        if R.is_QQ:
++            denom = f._rep.denom()
++            numer = f.from_rep(f._cls(f._rep.numer()), f.dom)
++            return denom, numer
++        elif R.is_ZZ or R.is_FiniteField:
++            return R.one, f
++        else:
++            raise NotImplementedError
+ 
+     def _integrate(f, m=1, j=0):
+         """Computes the ``m``-th order indefinite integral of ``f`` in ``x_j``. """
+         assert j == 0
+-        if f.dom.is_QQ:
++        if f.dom.is_Field:
+             rep = f._rep
+             for i in range(m):
+                 rep = rep.integral()
+@@ -2064,6 +2067,10 @@ def _diff(f, m=1, j=0):
+         return f.from_rep(rep, f.dom)
+ 
+     def _eval(f, a):
++        # XXX: This method is called with many different input types. Ideally
++        # we could use e.g. fmpz_poly.__call__ here but more thought needs to
++        # go into which types this is supposed to be called with and what types
++        # it should return.
+         return f.to_DMP_Python()._eval(a)
+ 
+     def _eval_lev(f, a, j):
+@@ -2082,34 +2089,45 @@ def _gcdex(f, g):
+ 
+     def _invert(f, g):
+         """Invert ``f`` modulo ``g``, if possible. """
+-        if f.dom.is_QQ:
++        R = f.dom
++        if R.is_Field:
+             gcd, F_inv, _ = f._rep.xgcd(g._rep)
+-            if gcd != 1:
++            # XXX: Should be gcd != 1 but nmod_poly does not compare equal to
++            # other types.
++            if gcd != 0*gcd + 1:
+                 raise NotInvertible("zero divisor")
+-            return f.from_rep(F_inv, f.dom)
++            return f.from_rep(F_inv, R)
+         else:
++            # fmpz_poly does not have xgcd or invert and this is not well
++            # defined in general.
+             return f.to_DMP_Python()._invert(g.to_DMP_Python()).to_DUP_Flint()
+ 
+     def _revert(f, n):
+         """Compute ``f**(-1)`` mod ``x**n``. """
++        # XXX: Use fmpz_series etc for reversion?
++        # Maybe python-flint should provide revert for fmpz_poly...
+         return f.to_DMP_Python()._revert(n).to_DUP_Flint()
+ 
+     def _subresultants(f, g):
+         """Computes subresultant PRS sequence of ``f`` and ``g``. """
++        # XXX: Maybe _fmpz_poly_pseudo_rem_cohen could be used...
+         R = f.to_DMP_Python()._subresultants(g.to_DMP_Python())
+         return [ g.to_DUP_Flint() for g in R ]
+ 
+     def _resultant_includePRS(f, g):
+         """Computes resultant of ``f`` and ``g`` via PRS. """
++        # XXX: Maybe _fmpz_poly_pseudo_rem_cohen could be used...
+         res, R = f.to_DMP_Python()._resultant_includePRS(g.to_DMP_Python())
+         return res, [ g.to_DUP_Flint() for g in R ]
+ 
+     def _resultant(f, g):
+         """Computes resultant of ``f`` and ``g``. """
++        # XXX: Use fmpz_mpoly etc when possible...
+         return f.to_DMP_Python()._resultant(g.to_DMP_Python())
+ 
+     def discriminant(f):
+         """Computes discriminant of ``f``. """
++        # XXX: Use fmpz_mpoly etc when possible...
+         return f.to_DMP_Python().discriminant()
+ 
+     def _cofactors(f, g):
+@@ -2138,16 +2156,24 @@ def _lcm(f, g):
+ 
+     def _cancel(f, g):
+         """Cancel common factors in a rational function ``f/g``. """
++        assert f.dom == g.dom
++        R = f.dom
++
+         # Think carefully about how to handle denominators and coefficient
+         # canonicalisation if more domains are permitted...
+-        assert f.dom == g.dom in (ZZ, QQ)
++        assert R.is_ZZ or R.is_QQ or R.is_FiniteField
+ 
+-        if f.dom.is_QQ:
++        if R.is_FiniteField:
++            h = f._gcd(g)
++            F, G = f.exquo(h), g.exquo(h)
++            return R.one, R.one, F, G
++
++        if R.is_QQ:
+             cG, F = f.clear_denoms()
+             cF, G = g.clear_denoms()
+         else:
+-            cG, F = f.dom.one, f
+-            cF, G = g.dom.one, g
++            cG, F = R.one, f
++            cF, G = R.one, g
+ 
+         cH = cF.gcd(cG)
+         cF, cG = cF // cH, cG // cH
+@@ -2178,6 +2204,7 @@ def _trunc(f, p):
+ 
+     def monic(f):
+         """Divides all coefficients by ``LC(f)``. """
++        # XXX: python-flint should add monic
+         return f._exquo_ground(f.LC())
+ 
+     def content(f):
+@@ -2246,6 +2273,7 @@ def sqf_part(f):
+ 
+     def sqf_list(f, all=False):
+         """Returns a list of square-free factors of ``f``. """
++        # XXX: python-flint should provide square free factorisation.
+         coeff, factors = f.to_DMP_Python().sqf_list(all=all)
+         return coeff, [ (g.to_DUP_Flint(), k) for g, k in factors ]
+ 
+@@ -2310,6 +2338,9 @@ def _isolate_real_roots_sqf(f, eps, inf, sup, fast):
+         return f.to_DMP_Python()._isolate_real_roots_sqf(eps, inf, sup, fast)
+ 
+     def _isolate_all_roots(f, eps, inf, sup, fast):
++        # fmpz_poly and fmpq_poly have a complex_roots method that could be
++        # used here. It probably makes more sense to add analogous methods in
++        # python-flint though.
+         return f.to_DMP_Python()._isolate_all_roots(eps, inf, sup, fast)
+ 
+     def _isolate_all_roots_sqf(f, eps, inf, sup, fast):
+@@ -2354,7 +2385,8 @@ def is_quadratic(f):
+     @property
+     def is_monomial(f):
+         """Returns ``True`` if ``f`` is zero or has only one term. """
+-        return f.to_DMP_Python().is_monomial
++        fr = f._rep
++        return fr.degree() < 0 or not any(fr[n] for n in range(fr.degree()))
+ 
+     @property
+     def is_monic(f):
+@@ -2374,20 +2406,33 @@ def is_homogeneous(f):
+     @property
+     def is_sqf(f):
+         """Returns ``True`` if ``f`` is a square-free polynomial. """
+-        return f.to_DMP_Python().is_sqf
++        g = f._rep.gcd(f._rep.derivative())
++        return g.degree() <= 0
+ 
+     @property
+     def is_irreducible(f):
+         """Returns ``True`` if ``f`` has no factors over its domain. """
+-        return f.to_DMP_Python().is_irreducible
++        _, factors = f._rep.factor()
++        if len(factors) == 0:
++            return True
++        elif len(factors) == 1:
++            return factors[0][1] == 1
++        else:
++            return False
+ 
+     @property
+     def is_cyclotomic(f):
+         """Returns ``True`` if ``f`` is a cyclotomic polynomial. """
++        if f.dom.is_QQ:
++            try:
++                f = f.convert(ZZ)
++            except CoercionFailed:
++                return False
+         if f.dom.is_ZZ:
+             return bool(f._rep.is_cyclotomic())
+         else:
+-            return f.to_DMP_Python().is_cyclotomic
++            # This is what dup_cyclotomic_p does...
++            return False
+ 
+ 
+ def init_normal_DMF(num, den, lev, dom):

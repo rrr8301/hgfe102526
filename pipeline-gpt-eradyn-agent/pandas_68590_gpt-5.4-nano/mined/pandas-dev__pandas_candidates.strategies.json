@@ -1,0 +1,105 @@
+{
+  "input": "pipeline-gpt-5.4-nano/pandas_68590_gpt-5.4-nano/mined/pandas-dev__pandas_68590.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "openai",
+  "model": "gpt-5.4-nano",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 13717,
+    "output_tokens": 3579,
+    "cost_usd": 0.007217,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 68590,
+      "reference": "https://github.com/pandas-dev/pandas/pull/68590",
+      "buggy_commit": "14de06cf28232d7b5cc2b1a2b58fbc59a815db2d",
+      "fixed_commit": "4478d75cc3b5a1015499f81ca297792a2afa6a5e",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "openai",
+      "model": "gpt-5.4-nano",
+      "context_chars": 8673,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce pandas sparse datetime/timedelta densification bug (GH#68590) by running the newly added SparseArray tests on the buggy revision 14de06cf2823; the failing assertions compare SparseArray.to_dense (and related casts) against the expected dense NumPy/pandas results for nanosecond-boxed fill values, including cases where the fill_value is NaN/NaT-like or has a unit different from the SparseArray subtype.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "numpy",
+            "pandas",
+            "cython",
+            "python-dateutil",
+            "tzdata"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "pip install cython",
+            "pip install .",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "Need pandas build from source and extension compilation; no exact NumPy version constraint is given in the provided passages, so the strategy assumes the project\u2019s minimum supported NumPy works for the reproduction but may require pinning by CI\u2019s usual constraints if the failure depends on a specific NumPy datetime/timedelta casting behavior."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/arrays/sparse/test_array.py -k \"to_dense_datetimelike_non_numpy_fill or to_dense_datetimelike_fill_other_unit\"",
+        "reproducing_test": "pandas/tests/arrays/sparse/test_array.py::test_to_dense_datetimelike_non_numpy_fill and pandas/tests/arrays/sparse/test_array.py::test_to_dense_datetimelike_fill_other_unit",
+        "success_criterion": "On buggy revision 14de06cf2823, at least one parametrization of the two tests fails because arr.to_dense() (and/or np.asarray(arr, dtype='i8' ) expectations) does not match the dense/expected values due to mishandled fill_value normalization (ns->us truncation, or unit-mismatch treated as raw integers). On the fixed revision from PR#68590 (same tests), the assertions pass because SparseArray densification routes fill_value through _promote_for_fill, normalizing it to the subtype\u2019s own unit and dtype-consistent NumPy scalar.",
+        "numerical_probe": "No standalone numeric probing required; the tests assert exact equality of the full resulting dense arrays (tm.assert_numpy_array_equal) for datetimelike SparseArray densification across unit/kind and fill_value construction (np.nan/NaT-like and ns-boxed fill).",
+        "input_output_examples": [
+          {
+            "input": "SparseArray with dtype kind/unit f\"M8[{unit}]\" from values=np.array([1,2,3],dtype='i8').astype(f\"{kind}[{unit}]\"); fill_value= pd.Timestamp(values[1]).as_unit('ns') with boxed=True/False; call arr.to_dense()",
+            "buggy_output": "arr.to_dense() does not equal values (wrong fill_value normalization: ns fill truncated to us, and/or unit-mismatch treated as raw integer), causing tm.assert_numpy_array_equal failure",
+            "expected_output": "arr.to_dense() equals values with fill_value correctly normalized to the subtype unit"
+          },
+          {
+            "input": "SparseArray built with values=np.array([1,2,3],dtype='i8').astype(f\"{kind}[{unit}]\"); if na_fill=True then values[1]='NaT' and fill_value=np.nan; call arr.to_dense() and also np.asarray(arr,dtype='i8')",
+            "buggy_output": "Dense result/type conversions mismatch expected; either object-dtype dense comparison or i8 cast comparison fails because NaN/NaT-like fill is not normalized consistently with dense behavior",
+            "expected_output": "arr.to_dense() equals values; np.asarray(arr,dtype='i8') equals np.asarray(values,dtype='i8')"
+          },
+          {
+            "input": "SparseArray with datetime64/timedelta64 subtype where unit differs from fill's ns unit; call np.asarray(arr,dtype='i8')",
+            "buggy_output": "np.asarray(arr,dtype='i8') differs from dense numeric cast because unit-mismatch fill_value was interpreted via numeric cast rather than datetime/timedelta promotion",
+            "expected_output": "np.asarray(arr,dtype='i8') matches numeric cast of the dense values"
+          }
+        ],
+        "risks": [
+          "The provided context does not specify exact pandas/NumPy versions besides \u201cNumPy is a dependency\u201d; this defect may only surface for certain NumPy versions or depending on how NumPy truncates Timestamp/Timedelta when passed through np.full/np.asarray. If the failure does not reproduce, pin NumPy to the CI-tested minimum/maximum versions used by pandas for datetime64/timedelta64 handling and rerun.",
+          "The evidence specifies the transition is accuracy-related and depends on datetimelike casting semantics; behavior may vary across platforms/architectures. Run on the same OS/arch as where it was originally observed (or at least x86_64 Linux).",
+          "If the test suite uses optional dependencies or build flags that alter sparse/extension behavior, ensure a standard editable build (the build_commands provided) so the compiled components match the revision.",
+          "Do not substitute a different test selection: the exact parameterized tests and their assertions are what must fail/pass across buggy vs fixed revisions."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "Dense result equivalence against constructed NumPy/pandas expected arrays inside the tests (tm.assert_numpy_array_equal(arr.to_dense(), values), tm.assert_numpy_array_equal(np.asarray(arr,dtype=object), expected), and i8 cast equality).",
+          "why": "The tests compare whole arrays for exact equality; the bug is about incorrect fill_value normalization (truncation or unit mismatch interpreted as integers), which produces deterministic value mismatches rather than small floating error."
+        },
+        "fails_on_buggy": "During execution of the two parametrized tests in test_array.py, tm.assert_numpy_array_equal will detect that arr.to_dense() (and/or the explicit dtype cast comparisons like np.asarray(arr,dtype='i8')) differ from the expected dense values because the buggy code path does not route fill_value through _promote_for_fill (leading to Timestamp/Timedelta ns truncation to us and/or unit-mismatch interpreted as raw integers).",
+        "passes_on_fixed": "With the PR#68590 fix applied (routing _densify and to_dense/Series.to_numpy through _promote_for_fill), all parametrizations in test_to_dense_datetimelike_non_numpy_fill and test_to_dense_datetimelike_fill_other_unit match the expected dense arrays and the tests pass."
+      },
+      "error": "",
+      "usage": {
+        "model": "gpt-5.4-nano",
+        "input_tokens": 3946,
+        "output_tokens": 1341,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.002465
+      },
+      "miner_usage": {
+        "input_tokens": 9771,
+        "output_tokens": 2238,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.004752,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

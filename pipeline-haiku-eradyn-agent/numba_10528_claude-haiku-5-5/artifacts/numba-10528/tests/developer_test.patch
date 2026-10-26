@@ -1,0 +1,96 @@
+diff --git a/numba/tests/complex_usecases.py b/numba/tests/complex_usecases.py
+index 113cd69217a..01ac6fadf87 100644
+--- a/numba/tests/complex_usecases.py
++++ b/numba/tests/complex_usecases.py
+@@ -4,6 +4,8 @@
+ def div_usecase(x, y):
+     return x / y
+ 
++def mul_usecase(x, y):
++    return x * y
+ 
+ def real_usecase(x):
+     return x.real
+diff --git a/numba/tests/support.py b/numba/tests/support.py
+index 31ce5cb181c..8b4de3d7365 100644
+--- a/numba/tests/support.py
++++ b/numba/tests/support.py
+@@ -109,9 +109,10 @@
+      "Not supported on Python 3.13+ on Windows"
+  )
+ 
+-skip_if_py314= unittest.skipIf(
+-     utils.PYVERSION == (3, 14), "Test unstable on 3.14"
+- )
++skip_unless_py314_or_later = unittest.skipUnless(
++    utils.PYVERSION >= (3, 14),
++    "needs Python 3.14+"
++)
+ 
+ skip_if_linux_aarch64 = unittest.skipIf(
+     sys.platform.startswith('linux') and platform.machine() == 'aarch64',
+diff --git a/numba/tests/test_complex.py b/numba/tests/test_complex.py
+index 8de1f61ec6b..e8e58312e14 100644
+--- a/numba/tests/test_complex.py
++++ b/numba/tests/test_complex.py
+@@ -3,7 +3,7 @@
+ import sys
+ 
+ from numba import jit, types
+-from numba.tests.support import TestCase, skip_if_py314
++from numba.tests.support import TestCase, skip_unless_py314_or_later
+ from .complex_usecases import *
+ import unittest
+ 
+@@ -114,11 +114,42 @@ def test_div(self, flags=enable_pyobj_flags):
+                        (types.complex64, types.complex64)]
+         self.run_binary(div_usecase, value_types, values, flags=flags)
+ 
+-    @skip_if_py314
+     def test_div_npm(self):
+         self.test_div(flags=no_pyobj_flags)
+ 
+ 
++@skip_unless_py314_or_later
++class TestComplexNaNRecovery(BaseComplexTest, TestCase):
++    """
++    Verify CPython NaN-recovery for complex mul / div.
++    """
++
++    def special_values(self):
++        # 1e200 (large finite) is here so mul can overflow before recovering
++        reals = [-0.0, +0.0, 1, -1, 1e200,
++                 float('-inf'), float('+inf'), float('nan')]
++        return [complex(x, y) for x, y in itertools.product(reals, reals)]
++
++    def test_mul(self, flags=no_pyobj_flags):
++        values = list(itertools.product(self.special_values(),
++                                        self.special_values()))
++        value_types = [(types.complex128, types.complex128)]
++        self.run_binary(mul_usecase, value_types, values, flags=flags)
++
++    def test_div(self, flags=no_pyobj_flags):
++        values = list(itertools.product(self.special_values(),
++                                        self.special_values()))
++        value_types = [(types.complex128, types.complex128)]
++        self.run_binary(div_usecase, value_types, values, flags=flags)
++
++    def test_div_zero(self, flags=no_pyobj_flags):
++        cfunc = jit((types.complex128, types.complex128), **flags)(div_usecase)
++        for denom in [0j, complex(0.0, 0.0), complex(-0.0, -0.0),
++                      complex(0.0, -0.0), complex(-0.0, 0.0)]:
++            with self.assertRaises(ZeroDivisionError):
++                cfunc(1+1j, denom)
++
++
+ class TestCMath(BaseComplexTest, TestCase):
+     """
+     Tests for cmath module support.
+@@ -208,7 +239,6 @@ def test_log_base(self, flags=enable_pyobj_flags):
+         self.run_binary(log_base_usecase, value_types, values, flags=flags,
+                         ulps=3)
+ 
+-    @skip_if_py314
+     def test_log_base_npm(self):
+         self.test_log_base(flags=no_pyobj_flags)
+ 

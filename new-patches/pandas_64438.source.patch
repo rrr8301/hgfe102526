@@ -1,0 +1,213 @@
+diff --git a/asv_bench/benchmarks/inference.py b/asv_bench/benchmarks/inference.py
+index ce3935d2cd0ac..9b22d7e651365 100644
+--- a/asv_bench/benchmarks/inference.py
++++ b/asv_bench/benchmarks/inference.py
+@@ -110,6 +110,8 @@ def setup(self):
+         self.ts_sec = Series(range(1521080307, 1521685107), dtype="int64")
+         self.ts_sec_uint = Series(range(1521080307, 1521685107), dtype="uint64")
+         self.ts_sec_float = self.ts_sec.astype("float64")
++        # Non-round floats exercise cast_from_unit_vectorized (GH#57366)
++        self.ts_sec_float_fractional = self.ts_sec_float + 0.5
+ 
+         self.ts_nanosec = 1_000_000 * self.ts_sec
+         self.ts_nanosec_uint = 1_000_000 * self.ts_sec_uint
+@@ -135,6 +137,9 @@ def time_sec_int64(self):
+     def time_sec_float64(self):
+         to_datetime(self.ts_sec_float, unit="s")
+ 
++    def time_sec_float64_fractional(self):
++        to_datetime(self.ts_sec_float_fractional, unit="s")
++
+ 
+ class ToDatetimeYYYYMMDD:
+     def setup(self):
+diff --git a/doc/source/whatsnew/v3.1.0.rst b/doc/source/whatsnew/v3.1.0.rst
+index 63ab5e5b9a42b..236e65fb01dc4 100644
+--- a/doc/source/whatsnew/v3.1.0.rst
++++ b/doc/source/whatsnew/v3.1.0.rst
+@@ -121,7 +121,7 @@ Categorical
+ 
+ Datetimelike
+ ^^^^^^^^^^^^
+--
++- Bug in :class:`Timestamp` constructor, :class:`Timedelta` constructor, :func:`to_datetime`, and :func:`to_timedelta` with non-round ``float`` input and ``unit`` failing to raise when the value is just outside the representable bounds (:issue:`57366`)
+ -
+ 
+ Timedelta
+diff --git a/pandas/_libs/tslibs/conversion.pyi b/pandas/_libs/tslibs/conversion.pyi
+index 26affae577f4d..4259308f7c23a 100644
+--- a/pandas/_libs/tslibs/conversion.pyi
++++ b/pandas/_libs/tslibs/conversion.pyi
+@@ -4,11 +4,12 @@ from datetime import (
+ )
+ 
+ import numpy as np
++import numpy.typing as npt
+ 
+ DT64NS_DTYPE: np.dtype
+ TD64NS_DTYPE: np.dtype
+ 
+ def localize_pydatetime(dt: datetime, tz: tzinfo | None) -> datetime: ...
+ def cast_from_unit_vectorized(
+-    values: np.ndarray, unit: str, out_unit: str = ...
+-) -> np.ndarray: ...
++    values: npt.NDArray[np.float64], unit: str, out_unit: str = ...
++) -> npt.NDArray[np.int64]: ...
+diff --git a/pandas/_libs/tslibs/conversion.pyx b/pandas/_libs/tslibs/conversion.pyx
+index f56c97fb50e59..624bedf45a413 100644
+--- a/pandas/_libs/tslibs/conversion.pyx
++++ b/pandas/_libs/tslibs/conversion.pyx
+@@ -6,7 +6,6 @@ cimport numpy as cnp
+ from libc.math cimport log10
+ from numpy cimport (
+     PyDatetimeScalarObject,
+-    float64_t,
+     int32_t,
+     int64_t,
+ )
+@@ -79,7 +78,6 @@ from pandas._libs.tslibs.tzconversion cimport (
+ from pandas._libs.tslibs.util cimport (
+     is_float_object,
+     is_integer_object,
+-    is_nan,
+ )
+ 
+ # ----------------------------------------------------------------------
+@@ -92,9 +90,6 @@ TD64NS_DTYPE = np.dtype("m8[ns]")
+ # ----------------------------------------------------------------------
+ # Unit Conversion Helpers
+ 
+-@cython.boundscheck(False)
+-@cython.wraparound(False)
+-@cython.overflowcheck(True)
+ def cast_from_unit_vectorized(
+     ndarray values,
+     str unit,
+@@ -107,7 +102,6 @@ def cast_from_unit_vectorized(
+         int64_t m
+         int p
+         NPY_DATETIMEUNIT in_reso, out_reso
+-        Py_ssize_t i
+ 
+     assert values.dtype.kind == "f"
+ 
+@@ -131,40 +125,43 @@ def cast_from_unit_vectorized(
+     out_reso = abbrev_to_npy_unit(out_unit)
+     m, p = precision_from_unit(in_reso, out_reso)
+ 
+-    cdef:
+-        ndarray[int64_t] base, out
+-        ndarray[float64_t] frac
+-        tuple shape = (<object>values).shape
++    nan_mask = np.isnan(values)
++    # Replace NaN with 0.0 for safe int casting; NaN positions set to NPY_NAT below
++    safe = np.where(nan_mask, 0.0, values)
+ 
+-    out = np.empty(shape, dtype="i8")
+-    base = np.empty(shape, dtype="i8")
+-    frac = np.zeros(shape, dtype="f8")
++    # Split into integer and fractional parts separately to avoid precision loss
++    # from a direct float * m multiplication (GH#56037)
++    base = safe.astype("i8")
++    frac = safe - base.astype("f8")
+ 
+-    for i in range(len(values)):
+-        if is_nan(values[i]):
+-            base[i] = NPY_NAT
+-        else:
+-            base[i] = <int64_t>values[i]
+-            frac[i] = values[i] - base[i]
++    # float(iNaT) == float(INT64_MIN) == -2**63, which truncates to INT64_MIN.
++    # The original loop treated base == NPY_NAT as NaT; replicate that here.
++    nan_mask = nan_mask | (base == NPY_NAT)
++    base[nan_mask] = 0
+ 
+     if p:
+         frac = np.round(frac, p)
+ 
+-    for i in range(len(values)):
+-        try:
+-            if base[i] == NPY_NAT:
+-                out[i] = NPY_NAT
+-            else:
+-                out[i] = <int64_t>(base[i] * m) + <int64_t>(frac[i] * m)
+-        except (OverflowError, FloatingPointError) as err:
+-            # FloatingPointError can be issued if we have float dtype and have
+-            #  set np.errstate(over="raise")
++    # Overflow check: 2**63 and -(2**63) are exactly representable in float64
++    # so this comparison is exact at the boundary. The actual integer result
++    # base * m + int64(frac * m) cannot exceed the float result (truncation
++    # toward zero), so if the float result is in bounds, the int result is too.
++    if m != 1:
++        result_f = base.astype("f8") * m + frac * m
++        oob = (result_f >= 2**63) | (result_f < -(2**63))
++        non_nat = ~nan_mask
++        if (oob & non_nat).any():
++            bad_idx = int(np.where(oob & non_nat)[0][0])
+             raise OutOfBoundsDatetime(
+-                f"cannot convert input {values[i]} with the unit '{unit}'"
+-            ) from err
++                f"cannot convert input {values[bad_idx]} with the unit '{unit}'"
++            )
++
++    out = base * np.int64(m) + (frac * m).astype("i8")
++    out[nan_mask] = NPY_NAT
+     return out
+ 
+ 
++@cython.overflowcheck(True)
+ cdef int64_t cast_from_unit(
+     object ts,
+     str unit,
+@@ -227,7 +224,7 @@ cdef int64_t cast_from_unit(
+         frac = round(frac, p)
+ 
+     try:
+-        return <int64_t>(base * m) + <int64_t>(frac * m)
++        return base * m + <int64_t>(frac * m)
+     except OverflowError as err:
+         raise OutOfBoundsDatetime(
+             f"cannot convert input {ts} with the unit '{unit}'"
+diff --git a/pandas/core/arrays/timedeltas.py b/pandas/core/arrays/timedeltas.py
+index b2276cb2d19b0..7a2c4dc8e7d3d 100644
+--- a/pandas/core/arrays/timedeltas.py
++++ b/pandas/core/arrays/timedeltas.py
+@@ -40,6 +40,10 @@
+     truediv_object_array,
+ )
+ from pandas.compat.numpy import function as nv
++from pandas.errors import (
++    OutOfBoundsDatetime,
++    OutOfBoundsTimedelta,
++)
+ from pandas.util._decorators import set_module
+ from pandas.util._validators import validate_endpoints
+ 
+@@ -1186,7 +1190,12 @@ def sequence_to_td64ns(
+                 result[mask] = iNaT
+                 return result, inferred_freq
+ 
+-        data = cast_from_unit_vectorized(data, unit or "ns")
++        # If we have float32, cast to float64
++        data = data.astype(np.float64, copy=False)
++        try:
++            data = cast_from_unit_vectorized(data, unit or "ns")
++        except OutOfBoundsDatetime as err:
++            raise OutOfBoundsTimedelta(*err.args) from err
+         data[mask] = iNaT
+         data = data.view("m8[ns]")
+         copy = False
+diff --git a/pandas/core/tools/datetimes.py b/pandas/core/tools/datetimes.py
+index 34d823b21c563..b0a069de8781c 100644
+--- a/pandas/core/tools/datetimes.py
++++ b/pandas/core/tools/datetimes.py
+@@ -524,6 +524,9 @@ def _to_datetime_with_unit(arg, unit, name, utc: bool, errors: str) -> Index:
+                 )
+                 result._data[mask] = NaT
+                 return result
++
++            # if we have float32, cast to float64
++            arg = arg.astype("float64", copy=False)
+             with np.errstate(over="raise"):
+                 try:
+                     arr = cast_from_unit_vectorized(arg, unit=unit)

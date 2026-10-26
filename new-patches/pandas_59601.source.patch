@@ -1,0 +1,66 @@
+diff --git a/doc/source/whatsnew/v3.0.0.rst b/doc/source/whatsnew/v3.0.0.rst
+index 1383202154f04..35271c3e5ccde 100644
+--- a/doc/source/whatsnew/v3.0.0.rst
++++ b/doc/source/whatsnew/v3.0.0.rst
+@@ -850,6 +850,7 @@ Groupby/resample/rolling
+ - Bug in :meth:`DataFrame.ewm` and :meth:`Series.ewm` when passed ``times`` and aggregation functions other than mean (:issue:`51695`)
+ - Bug in :meth:`DataFrame.resample` and :meth:`Series.resample` were not keeping the index name when the index had :class:`ArrowDtype` timestamp dtype (:issue:`61222`)
+ - Bug in :meth:`DataFrame.resample` changing index type to :class:`MultiIndex` when the dataframe is empty and using an upsample method (:issue:`55572`)
++- Bug in :meth:`DataFrameGroupBy.agg` and :meth:`SeriesGroupBy.agg` that was returning numpy dtype values when input values are pyarrow dtype values, instead of returning pyarrow dtype values. (:issue:`53030`)
+ - Bug in :meth:`DataFrameGroupBy.agg` that raises ``AttributeError`` when there is dictionary input and duplicated columns, instead of returning a DataFrame with the aggregation of all duplicate columns. (:issue:`55041`)
+ - Bug in :meth:`DataFrameGroupBy.agg` where applying a user-defined function to an empty DataFrame returned a Series instead of an empty DataFrame. (:issue:`61503`)
+ - Bug in :meth:`DataFrameGroupBy.apply` and :meth:`SeriesGroupBy.apply` for empty data frame with ``group_keys=False`` still creating output index using group keys. (:issue:`60471`)
+diff --git a/pandas/core/groupby/ops.py b/pandas/core/groupby/ops.py
+index 75f3495041917..f68a16d88a3a8 100644
+--- a/pandas/core/groupby/ops.py
++++ b/pandas/core/groupby/ops.py
+@@ -43,6 +43,7 @@
+     ensure_platform_int,
+     ensure_uint64,
+     is_1d_only_ea_dtype,
++    is_string_dtype,
+ )
+ from pandas.core.dtypes.missing import (
+     isna,
+@@ -50,6 +51,7 @@
+ )
+ 
+ from pandas.core.arrays import Categorical
++from pandas.core.arrays.arrow.array import ArrowExtensionArray
+ from pandas.core.frame import DataFrame
+ from pandas.core.groupby import grouper
+ from pandas.core.indexes.api import (
+@@ -954,18 +956,26 @@ def agg_series(
+         -------
+         np.ndarray or ExtensionArray
+         """
++        result = self._aggregate_series_pure_python(obj, func)
++        npvalues = lib.maybe_convert_objects(result, try_float=False)
++
++        if isinstance(obj._values, ArrowExtensionArray):
++            # When obj.dtype is a string, any object can be cast. Only do so if the
++            # UDF returned strings or NA values.
++            if not is_string_dtype(obj.dtype) or lib.is_string_array(
++                npvalues, skipna=True
++            ):
++                out = maybe_cast_pointwise_result(
++                    npvalues, obj.dtype, numeric_only=True, same_dtype=preserve_dtype
++                )
++            else:
++                out = npvalues
+ 
+-        if not isinstance(obj._values, np.ndarray):
++        elif not isinstance(obj._values, np.ndarray):
+             # we can preserve a little bit more aggressively with EA dtype
+             #  because maybe_cast_pointwise_result will do a try/except
+             #  with _from_sequence.  NB we are assuming here that _from_sequence
+             #  is sufficiently strict that it casts appropriately.
+-            preserve_dtype = True
+-
+-        result = self._aggregate_series_pure_python(obj, func)
+-
+-        npvalues = lib.maybe_convert_objects(result, try_float=False)
+-        if preserve_dtype:
+             out = maybe_cast_pointwise_result(npvalues, obj.dtype, numeric_only=True)
+         else:
+             out = npvalues

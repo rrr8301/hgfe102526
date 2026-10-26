@@ -1,0 +1,115 @@
+{
+  "input": "/anon/Numerical-Benchmark/pipeline-results/pandas_68469_claude-haiku-5-5/mined/pandas-dev__pandas_68469.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 26240,
+    "output_tokens": 6168,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 68469,
+      "reference": "https://github.com/pandas-dev/pandas/pull/68469",
+      "buggy_commit": "1087a91a531b17a2ce37160cdd09f658f3991ac7",
+      "fixed_commit": "32b3ba3573f72a1e39539f4f26ca11cff324c6f1",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 8709,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce the SparseArray._take_with_fill dtype promotion bug (GH#68469) in pandas at buggy commit 1087a91a531b by building pandas from source and running the added sparse indexing and groupby tests; they should fail on the buggy revision (subtype promoted via np.result_type / maybe_promote) and pass on the fixed revision.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "numpy",
+            "python-dateutil",
+            "tzdata",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [
+            "git",
+            "a C/C++ compiler toolchain (gcc or clang) for building pandas extensions"
+          ],
+          "build_commands": [
+            "git checkout 1087a91a531b",
+            "python -m pip install cython",
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy: no documented version constraint in the README; left unpinned, so the build uses the current NumPy compatible with this pandas revision. Chosen by this strategy, not by evidence.",
+            "numpy 2.5 relevance: the commit note says numpy 2.5 deprecates unitless NaT, which the fix avoids; this is a commit note only, not a pinned requirement, so it is not enforced here. Installing a numpy release that predates or postdates 2.5 is a choice this plan leaves open.",
+            "Cython: no documented version; installed unpinned as the README instructs for source installs.",
+            "python-dateutil and tzdata: no documented constraint; installed unpinned as dependencies."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/arrays/sparse/test_indexing.py pandas/tests/groupby/test_sparse.py -k \"preserves_subtype or all_fill or datetimelike or empty or object_subtype or first_last or no_gaps\" -q",
+        "reproducing_test": "pandas/tests/arrays/sparse/test_indexing.py::test_take_fill_preserves_subtype (parametrized over int8, int32, uint16, uint64, float32); test_take_fill_datetimelike_subtype; test_take_fill_datetimelike_new_fill_is_nat; test_take_fill_empty_preserves_subtype; test_take_fill_empty_datetimelike; test_take_fill_datetimelike_no_gaps; pandas/tests/groupby/test_sparse.py::test_sparse_groupby_first_last_preserves_subtype and test_sparse_groupby_first_last_datetimelike",
+        "success_criterion": "On the buggy revision 1087a91a531b the listed tests FAIL: identity take with allow_fill=True promotes Sparse[int8,0] to int64, Sparse[uint64,0] to float64 (losing 2**63+12345 precision), datetime64 subtypes to object or datetime64[us], and empty or no-gap datetimelike takes raise DTypePromotionError or return wrong dtype. On the fixed revision (with the _promote_for_fill change) the same tests PASS, with result.dtype.subtype equal to the input subtype and tm.assert_sp_array_equal succeeding.",
+        "numerical_probe": "Take [0,1,2] with allow_fill=True from SparseArray([1,0,2**63+12345], dtype=uint64, fill_value=0) and compare the subtype and the exact uint64 value to the input.",
+        "input_output_examples": [
+          {
+            "input": "arr.take([0, 1, 2], allow_fill=True) with self.dtype Sparse[int8, 0]",
+            "buggy_output": "Sparse[int64, 0]",
+            "expected_output": "Sparse[int8, 0] (dtype round-trips)"
+          },
+          {
+            "input": "arr.take([0, 1, 2], allow_fill=True) with self.dtype Sparse[uint64, 0]",
+            "buggy_output": "Sparse[float64, 0] with values above 2**53 rounded",
+            "expected_output": "Sparse[uint64, 0] with values preserved exactly"
+          },
+          {
+            "input": "arr.take([0, 1, 2], allow_fill=True) with self.dtype Sparse[datetime64[s], Timestamp(...)]",
+            "buggy_output": "Sparse[datetime64[us]]",
+            "expected_output": "Sparse[datetime64[s]] (unit preserved)"
+          }
+        ],
+        "risks": [
+          "Platform dependence: the uint64 precision loss is a float64 rounding effect, reproducible on any IEEE-754 platform, but the test relies on 2**63+12345 which needs a 64-bit integer type; 32-bit builds may not represent it, so run on a 64-bit Linux or macOS host.",
+          "Toolchain: building pandas from source needs a working C compiler and Cython; a mismatched Cython or missing compiler will fail the build before any test runs.",
+          "NumPy version: the datetime promotion behaviour depends on the NumPy version (the numpy 2.5 unitless NaT deprecation is only a commit note). If the installed NumPy changes maybe_promote or result_type semantics, buggy and fixed revisions may both pass or both fail; pin NumPy only if the transition does not reproduce.",
+          "Tolerance: no tolerance is documented; the tests use exact equality via tm.assert_sp_array_equal, so no tolerance applies.",
+          "Sanitisers or alternate architectures are not indicated by the evidence; the defect is a logic/dtype bug not a memory or ARM-specific one, so no special platform is assumed.",
+          "The groupby first/last tests route through take only when the array stays sparse; if a pandas version densifies first/last, those tests will not transition and should be treated as secondary to the arrays tests.",
+          "The added test file also contains tests that may pass on buggy revision (e.g. object subtype keeps boxed Timestamp, all-fill-all-new), so only the preserves_subtype, datetimelike and empty tests carry the transition."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "the developer test assertions via tm.assert_sp_array_equal and dtype equality",
+          "why": "Dtype round-trip and exact uint64 values are integer or structural checks; no floating tolerance is stated in the evidence."
+        },
+        "fails_on_buggy": "On 1087a91a531b the result dtype is promoted (for example Sparse[int64] or Sparse[float64] or Sparse[object] or datetime64[us]), so the dtype equality and assert_sp_array_equal checks fail; the uint64 case also loses precision above 2**53.",
+        "passes_on_fixed": "With _promote_for_fill keeping the subtype when can_hold_element holds the fill, the result dtype equals the input subtype and assert_sp_array_equal succeeds."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 9062,
+        "output_tokens": 2232,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 17178,
+        "output_tokens": 3936,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}

@@ -1,0 +1,172 @@
+diff --git a/astropy/io/ascii/core.py b/astropy/io/ascii/core.py
+index c8d0acfa92ef..e67a911aa682 100644
+--- a/astropy/io/ascii/core.py
++++ b/astropy/io/ascii/core.py
+@@ -1175,7 +1175,14 @@ class TableOutputter(BaseOutputter):
+     Output the table as an astropy.table.Table object.
+     """
+ 
+-    default_converters = [convert_numpy(int), convert_numpy(float), convert_numpy(str)]
++    default_converters = [
++        # Use `np.int64` to ensure large integers can be read as ints
++        # on platforms such as Windows
++        # https://github.com/astropy/astropy/issues/5744
++        convert_numpy(np.int64),
++        convert_numpy(float),
++        convert_numpy(str),
++    ]
+ 
+     def __call__(self, cols, meta):
+         # Sets col.data to numpy array and col.type to io.ascii Type class (e.g.
+diff --git a/astropy/io/ascii/cparser.pyx b/astropy/io/ascii/cparser.pyx
+index 85eebd1e470c..85aa19b9d66e 100644
+--- a/astropy/io/ascii/cparser.pyx
++++ b/astropy/io/ascii/cparser.pyx
+@@ -22,6 +22,7 @@ from cpython.buffer cimport (
+     PyObject_GetBuffer,
+ )
+ from libc cimport stdio
++from libc.stdint cimport int64_t
+ 
+ from astropy.utils.data import get_readable_fileobj
+ from astropy.utils.exceptions import AstropyWarning
+@@ -92,7 +93,7 @@ cdef extern from "src/tokenizer.h":
+     void delete_tokenizer(tokenizer_t *tokenizer)
+     int skip_lines(tokenizer_t *self, int offset, int header)
+     int tokenize(tokenizer_t *self, int end, int header, int num_cols)
+-    long str_to_long(tokenizer_t *self, char *str)
++    int64_t str_to_int64_t(tokenizer_t *self, char *str)
+     double fast_str_to_double(tokenizer_t *self, char *str)
+     double str_to_double(tokenizer_t *self, char *str)
+     void start_iteration(tokenizer_t *self, int col)
+@@ -673,10 +674,13 @@ cdef class CParser:
+         if nrows != -1:
+             num_rows = nrows
+         # initialize ndarray
+-        cdef np.ndarray col = np.empty(num_rows, dtype=np.int_)
+-        cdef long converted
++        # use `int64_t` for integers to ensure large integers are converted correctly
++        # on some platforms, e.g. Windows (where `long` is 32 bits)
++        # https://github.com/astropy/astropy/issues/5744
++        cdef np.ndarray col = np.empty(num_rows, dtype=np.int64)
++        cdef int64_t converted
+         cdef int row = 0
+-        cdef long *data = <long *> col.data # pointer to raw data
++        cdef int64_t *data = <int64_t*> col.data # pointer to raw data
+         cdef char *field
+         cdef char *empty_field = t.buf # memory address of designated empty buffer
+         cdef bytes new_value
+@@ -706,12 +710,12 @@ cdef class CParser:
+                     mask.add(row)
+                     new_value = str(replace_info[0]).encode('ascii')
+                     # try converting the new value
+-                    converted = str_to_long(t, new_value)
++                    converted = str_to_int64_t(t, new_value)
+                 else:
+-                    converted = str_to_long(t, field)
++                    converted = str_to_int64_t(t, field)
+             else:
+                 # convert the field to long (widest integer type)
+-                converted = str_to_long(t, field)
++                converted = str_to_int64_t(t, field)
+ 
+             if t.code in (CONVERSION_ERROR, OVERFLOW_ERROR):
+                 # no dice
+diff --git a/astropy/io/ascii/src/tokenizer.c b/astropy/io/ascii/src/tokenizer.c
+index 834ea692424e..dadedd0152ad 100644
+--- a/astropy/io/ascii/src/tokenizer.c
++++ b/astropy/io/ascii/src/tokenizer.c
+@@ -590,12 +590,32 @@ static int ascii_strncasecmp(const char *str1, const char *str2, size_t n)
+ }
+ 
+ 
+-long str_to_long(tokenizer_t *self, char *str)
++static inline int64_t strtoi64(const char *nptr, char **endptr, int base)
++{
++    // Adapted from: https://stackoverflow.com/a/66046867
++    errno = 0;
++    long long v = strtoll(nptr, endptr, base);
++
++    #if LLONG_MIN < INT64_MIN || LLONG_MAX > INT64_MAX
++    if (v < INT64_MIN) {
++        v = INT64_MIN;
++        errno = ERANGE;
++    } else if (v > INT64_MAX) {
++        v = INT64_MAX;
++        errno = ERANGE;
++    }
++    #endif
++
++    return (int64_t) v;
++}
++
++
++int64_t str_to_int64_t(tokenizer_t *self, char *str)
+ {
+     char *tmp;
+-    long ret;
++    int64_t ret;
+     errno = 0;
+-    ret = strtol(str, &tmp, 10);
++    ret = strtoi64(str, &tmp, 10);
+ 
+     if (tmp == str || *tmp != '\0')
+         self->code = CONVERSION_ERROR;
+diff --git a/astropy/io/ascii/src/tokenizer.h b/astropy/io/ascii/src/tokenizer.h
+index 0b30a409c0c8..3b0cb6e231c8 100644
+--- a/astropy/io/ascii/src/tokenizer.h
++++ b/astropy/io/ascii/src/tokenizer.h
+@@ -10,6 +10,7 @@
+ #include <math.h>
+ #include <float.h>
+ #include <ctype.h>
++#include <stdint.h>
+ #include <sys/types.h>
+ 
+ #ifdef _MSC_VER
+@@ -101,7 +102,7 @@ void resize_col(tokenizer_t *self, int index);
+ void resize_comments(tokenizer_t *self);
+ int skip_lines(tokenizer_t *self, int offset, int header);
+ int tokenize(tokenizer_t *self, int end, int header, int num_cols);
+-long str_to_long(tokenizer_t *self, char *str);
++int64_t str_to_int64_t(tokenizer_t *self, char *str);
+ double str_to_double(tokenizer_t *self, char *str);
+ double xstrtod(const char *str, char **endptr, char decimal,
+                char expchar, char tsep, int skip_trailing);
+diff --git a/docs/changes/io.ascii/16005.bugfix.rst b/docs/changes/io.ascii/16005.bugfix.rst
+new file mode 100644
+index 000000000000..e7db72b6b765
+--- /dev/null
++++ b/docs/changes/io.ascii/16005.bugfix.rst
+@@ -0,0 +1,8 @@
++The ``io.ascii`` Python and C table readers were updated to use a 64-bit integer field by
++default when reading a column of integer numeric data. This changes the default behavior
++on Windows and potentially 32-bit architectures. Previously on those platforms, table
++columns with any long integers which overflowed the 32-bit integer would be returned
++as string columns. The new default behavior is consistent with ``numpy`` v2 and ``pandas``.
++
++The new behavior also fixed the error in reading IPAC tables with ``long`` column type
++on some platforms, e.g., Windows.
+diff --git a/docs/whatsnew/6.1.rst b/docs/whatsnew/6.1.rst
+index a7e1ef4d72a8..a692fcbc3fdb 100644
+--- a/docs/whatsnew/6.1.rst
++++ b/docs/whatsnew/6.1.rst
+@@ -23,6 +23,18 @@ By the numbers:
+ * X distinct people have contributed code
+ 
+ 
++.. _whatsnew-6.1-ascii-default-int-columns-as-int64:
++
++``io.ascii`` uses 64-integers by default for integer columns
++============================================================
++
++:mod:`~astropy.io.ascii` now uses a 64-bit integer field by
++default when reading a column of integer numeric data. This changes the default behavior
++on Windows and potentially 32-bit architectures. Previously on those platforms, table
++columns with any long integers which overflowed the 32-bit integer would be returned
++as string columns. The new default behavior is consistent with ``numpy`` v2 and ``pandas``.
++
++
+ Full change log
+ ===============
+ 

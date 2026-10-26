@@ -1,0 +1,101 @@
+{
+  "input": "pipeline_no_historic/pandas_66250/mined/pandas-dev__pandas_66250.context.json",
+  "evidence": "numeric-specific-rag",
+  "task": "reproduction",
+  "generated": "2026-10-21",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "n_strategies": 1,
+  "usage_totals": {
+    "input_tokens": 26725,
+    "output_tokens": 6918,
+    "cost_usd": 0,
+    "llm_calls": 5
+  },
+  "strategies": [
+    {
+      "repo": "pandas-dev/pandas",
+      "pr_number": 66250,
+      "reference": "https://github.com/pandas-dev/pandas/pull/66250",
+      "buggy_commit": "633e72f17a6e94dd1d350320ab10caf0c25d5300",
+      "fixed_commit": "8de38cfcaa2538414f951a81cfce958e6f1a1165",
+      "bug_type": "accuracy",
+      "task": "reproduction",
+      "evidence": "numeric-specific-rag:hbec",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "context_chars": 7617,
+      "withheld": [],
+      "strategy": {
+        "summary": "Reproduce GH#64478 / PR#66250 on pandas at buggy commit 633e72f17a6e by building pandas from source against NumPy 2.x (NEP 50 promotion is required), then running the new nanops and idxmax/idxmin regression tests. The transition is each new test failing on the buggy commit and passing on the fixed commit; the tests use exact equality on integer indices, so no tolerance is involved.",
+        "needs_build": true,
+        "language": "Python",
+        "environment": {
+          "python_version": null,
+          "pip_packages": [
+            "cython",
+            "meson-python",
+            "ninja",
+            "numpy>=2.0",
+            "python-dateutil",
+            "pytest",
+            "hypothesis"
+          ],
+          "system_packages": [],
+          "build_commands": [
+            "python -m pip install -ve . --no-build-isolation --config-settings editable-verbose=true"
+          ],
+          "pinned_because": [
+            "NumPy>=2.0 is chosen, not documented: the bug depends on NEP 50 promotion of a np.int64 scalar with uint64 arrays in np.where, which is NumPy 2 behaviour; the README gives no NumPy constraint and no era table entry exists, so this lower bound is era-inferred from the NEP 50 clue.",
+            "Cython is documented as needed for installing from source (README Installation from sources section), so it is installed before the editable build.",
+            "python-dateutil is documented as a runtime dependency; tzdata is only required on Windows/Emscripten and is not installed here.",
+            "meson-python, meson and ninja are the build backend requirements for a source build of current pandas; they are not stated in the evidence and are included as an assumption about the toolchain."
+          ]
+        },
+        "test_command": "python -m pytest pandas/tests/test_nanops.py -k \"nanargminmax or idxminmax\" -p no:cacheprovider -q",
+        "reproducing_test": "pandas/tests/test_nanops.py::test_nanargminmax_uint64_with_mask (params na_pos 0 and 3), test_idxminmax_uint64_with_na, test_nanargminmax_uint64_na_tie (params 0 and 2**64-1), test_nanargminmax_int64_na_tie, test_nanargminmax_float_inf_tie, test_idxminmax_uint64_all_zero_with_na, test_idxminmax_float_inf_tie",
+        "success_criterion": "On the buggy revision 633e72f17a6e the new regression tests in pandas/tests/test_nanops.py (the -k selection above) FAIL on the assertions: the uint64 tests return wrong positions because the int64 fill promotes uint64 to float64 and loses precision above 2**53, and the tie tests return the masked NA position. On the fixed revision (the PR#66250 commit) the same selection PASSES, with all assertions exact-equal to the unmasked reference or the first unmasked position. The transition is FAIL to PASS for the uint64 and tie tests; the int64 tie test may already pass on buggy and that is not required to transition.",
+        "numerical_probe": "nanops.nanargmax(np.array([2**63+1, 2**63+2, 2**63+3, 0], dtype=np.uint64), mask=np.array([False,False,False,True])) compared with the unmasked reference valid[values[valid].argmax()]",
+        "input_output_examples": [
+          {
+            "input": "all-zero uint64 column with a leading NA",
+            "buggy_output": "argmax/argmax position returns the NA position preceding real values",
+            "expected_output": "first unmasked position"
+          }
+        ],
+        "risks": [
+          "NEP 50 dependence: the precision loss and the float promotion occur only under NumPy 2.x promotion rules. Under NumPy 1.x value-based casting the np.int64 scalar may not promote the uint64 array, so the buggy behaviour may not appear. Use NumPy 2.x; the NumPy version is an era-inferred choice, not a documented constraint.",
+          "Bottleneck path: if bottleneck is installed, nanops may dispatch to bottleneck and bypass _get_fill_value. Do not install bottleneck, or make sure the tests run with the disable_bottleneck fixture, which the test file already parametrises for other tests. The new tests call nanops directly and do not use that fixture, so they are only reliable if bottleneck is absent.",
+          "Exact equality: all comparisons are == on integer positions and on the 2**63+k values. The tolerance is null, and the claim that a 1-ULP error is invisible does not apply because no tolerance is used.",
+          "Platform: the defect is pure integer/float promotion logic with no architecture, sanitiser or threading dependence stated in the evidence, so it should transition on any 64-bit Linux x86_64 build. Behaviour on 32-bit or Windows is unverified.",
+          "Unstated per-test outcomes: the evidence does not say whether nanargmax on [nan,-inf,-inf] (test_nanargminmax_float_inf_tie) or the int64 tie test fails on buggy. Their buggy-side outcome is unknown, and they are not guaranteed to transition.",
+          "Build toolchain: the exact meson-python/ninja versions and the compiler are not in the evidence and are assumed; a build failure would block the reproduction before any test runs.",
+          "Python version is null in the evidence; a Python version compatible with the chosen NumPy 2.x and the buggy pandas revision must be selected at build time."
+        ],
+        "oracle": {
+          "kind": "exact",
+          "tolerance": null,
+          "reference_source": "the test's own unmasked reference: values[valid].argmax(), values[valid].argmin(), values[valid].max() and values[valid].min() computed over the unmasked positions",
+          "why": "The assertions compare integer positions and integer extreme values with ==; the bug changes which index is returned, so an exact comparison separates correct from incorrect answers."
+        },
+        "fails_on_buggy": "On the buggy commit the uint64 tests build a uint64 array with values 2**63+1..2**63+3 and a masked position. The int64 fill promotes the array to float64 in np.where, so 2**63+1, 2**63+2 and 2**63+3 all round to 2**63 and the argmax/argmin position is wrong, so the == assertion fails. The tie tests fill with the dtype extreme, so the masked position wins and the == assertion against the first unmasked position fails.",
+        "passes_on_fixed": "On the fixed commit the fill stays uint64 (np.uint64(lib.u8max) for the min-fill and np.uint64(0) for the max-fill), no precision is lost, and the tie path returns the first unmasked position, so all the == assertions hold."
+      },
+      "error": "",
+      "usage": {
+        "model": "claude-haiku-5-5",
+        "input_tokens": 6455,
+        "output_tokens": 3163,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0
+      },
+      "miner_usage": {
+        "input_tokens": 20270,
+        "output_tokens": 3755,
+        "cache_read_tokens": 0,
+        "cost_usd": 0,
+        "llm_calls": 4
+      }
+    }
+  ]
+}
